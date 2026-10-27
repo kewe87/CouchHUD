@@ -142,6 +142,7 @@ public static partial class CaseHudLighting
         var message = SafeMessage(ex.Message);
         return (ex.Code, ex.Status) switch
         {
+            (CaseHudState.ApiDisabledCode, 403) => Strings.Get("casehud.apiOff"),
             ("bad_request", _) or (_, 400) => Strings.Get("casehud.err.badRequest", message),
             ("payload_too_large", _) or (_, 413) => Strings.Get("casehud.err.tooLarge"),
             ("internal", _) or (_, 500) => Strings.Get("casehud.err.internal"),

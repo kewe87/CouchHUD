@@ -6,6 +6,7 @@ import { el } from '../core/dom.js';
 import { state } from '../core/state.js';
 import { currentView, switchTab } from '../core/nav.js';
 import { quick } from './quick-menu.js';
+import { isCodeEntry } from '../core/input-help.js';
 
 const HIDE_AFTER_MS = 2200;
 const WHEEL_STEP = 60;
@@ -71,13 +72,18 @@ function target(e) {
   return e.target instanceof Element ? e.target : null;
 }
 
-const CLICKABLE = '.quick-row, .ha-card, .news-card, .tile, .action, .settings li, .settings-cats li, .file-row, .check-row, .chip, .wizard-option, .osk-key, .menu li, #tab-list li, .hint';
+const CLICKABLE = '.passcode-key, .timeup-option, .quick-row, .ha-card, .news-card, .tile, .action, .settings li, .settings-cats li, .file-row, .check-row, .chip, .wizard-option, .osk-key, .menu li, #tab-list li, .hint';
+
+// The code prompt without a menu over it: only clicks on its buttons count there.
+const codeEntry = () => !state.overlay && !quick.open && isCodeEntry(currentView());
 
 function onClick(e, dispatch) {
+  // A click next to an open menu closes it, like on any desktop, and does nothing else (not a tile behind it). The hint bar
+  // belongs to the menu: its buttons act on it.
+  if (state.overlay && !target(e)?.closest('.dialog, #hints')) return dispatch('b');
   const node = target(e)?.closest(CLICKABLE);
   if (!node) {
-    // A click next to an open menu closes it, like on any desktop.
-    if ((state.overlay && !target(e)?.closest('.dialog')) || (quick.open && !target(e)?.closest('#quick'))) dispatch('b');
+    if (quick.open && !target(e)?.closest('#quick')) dispatch('b');
     return;
   }
 
@@ -103,6 +109,11 @@ function onClick(e, dispatch) {
 }
 
 function onWheel(e, dispatch) {
+  // On the code prompt the arrows are code buttons: a wheel must not type them.
+  if (codeEntry()) {
+    wheelAccumulator = 0;
+    return;
+  }
   wheelAccumulator += e.deltaY;
   if (Math.abs(wheelAccumulator) < WHEEL_STEP) return;
   const forward = wheelAccumulator > 0;
@@ -132,7 +143,8 @@ export function attachMouse(dispatch, { pointer, mouseUnlocked } = {}) {
     void cursor.offsetWidth; // restart the squish animation
     cursor.classList.add('click');
     if (e.button === 0) onClick(e, dispatch);
-    if (e.button === 2 || e.button === 3) dispatch('b');
+    // Right button and the side button are B; on the code prompt B is a code button, so they type nothing there.
+    if ((e.button === 2 || e.button === 3) && !codeEntry()) dispatch('b');
   });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('wheel', (e) => {

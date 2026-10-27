@@ -25,6 +25,9 @@ public sealed class ServiceState(string version, Func<bool> unsafeInstall, Func<
 
     /// <summary>The caller's own codes and lock mode (P9 sets it), for Status: couch code, parents' code, stored mode (nulls: unknown).</summary>
     public Func<string, (bool? Couch, bool? Parent, string? Mode)>? CodesLookup { get; set; }
+
+    /// <summary>Whether the caller's lock was taken over from 0.4.0 and waits for an administrator's confirmation (P5 sets it).</summary>
+    public Func<string, bool>? LegacyLookup { get; set; }
 }
 
 /// <summary>
@@ -37,14 +40,17 @@ public static class BasicHandlers
     private static StatusData StatusOf(ServiceState state, string sid)
     {
         (bool? Couch, bool? Parent, string? Mode) codes = (null, null, null);
+        bool? legacy = null;
         try
         {
             if (state.CodesLookup is { } lookup) codes = lookup(sid);
+            if (state.LegacyLookup is { } legacyLookup) legacy = legacyLookup(sid) ? true : null;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
         }
-        return new StatusData(state.Version, state.UnsafeInstall, state.MigrationOf(sid), state.UptimeSeconds, state.ReleaseLookup?.Invoke(), codes.Couch, codes.Parent, codes.Mode);
+        return new StatusData(state.Version, state.UnsafeInstall, state.MigrationOf(sid), state.UptimeSeconds, state.ReleaseLookup?.Invoke(), codes.Couch, codes.Parent, codes.Mode,
+            legacy);
     }
 
     public static Dictionary<Operation, Handler> Create(ServiceState state, RecentEvents events, Func<long> wallClockMs)

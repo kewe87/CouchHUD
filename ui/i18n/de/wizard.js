@@ -77,5 +77,13 @@ export default {
   'wizard.offer.title': 'Neu: der Einrichtungsassistent',
   'wizard.offer.text': 'Modus, Look, Ton und Sperre in ein paar Schritten. Später unter Einstellungen › Info.',
   'wizard.offer.start': 'Jetzt ansehen',
-  'wizard.offer.later': 'Später'
+  'wizard.offer.later': 'Später',
+  'wizard.casehud.title': 'CaseHUD vom Sofa steuern?',
+  'wizard.casehud.lead': 'CaseHUD ist installiert, seine Schnittstelle aber aus. CouchHUD braucht sie, um Displays, Szenen und Beleuchtung zu steuern.',
+  'wizard.casehud.on': 'Einschalten',
+  'wizard.casehud.on1': 'Schaltet die API von CaseHUD für dein Konto ein',
+  'wizard.casehud.on2': 'Wie in CaseHUD unter Einstellungen → Schnittstellen',
+  'wizard.casehud.later': 'Später',
+  'wizard.casehud.later1': 'CaseHUD bleibt, wie es ist',
+  'wizard.casehud.later2': 'Jederzeit unter Einstellungen › CaseHUD'
 };

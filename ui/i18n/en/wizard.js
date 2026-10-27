@@ -77,5 +77,13 @@ export default {
   'wizard.offer.title': 'New: the setup assistant',
   'wizard.offer.text': 'Mode, look, sound and lock in a few steps. Later under Settings › Info.',
   'wizard.offer.start': 'Take a look',
-  'wizard.offer.later': 'Later'
+  'wizard.offer.later': 'Later',
+  'wizard.casehud.title': 'Control CaseHUD from the couch?',
+  'wizard.casehud.lead': 'CaseHUD is installed, but its interface is off. CouchHUD needs it to control displays, scenes and lighting.',
+  'wizard.casehud.on': 'Turn on',
+  'wizard.casehud.on1': 'Turns on CaseHUD\'s API for your account',
+  'wizard.casehud.on2': 'Same as in CaseHUD under Settings → Interfaces',
+  'wizard.casehud.later': 'Later',
+  'wizard.casehud.later1': 'CaseHUD stays as it is',
+  'wizard.casehud.later2': 'Any time under Settings › CaseHUD'
 };

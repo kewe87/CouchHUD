@@ -4,7 +4,8 @@ import { api } from '../core/api.js';
 import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
 import { currentView, move, render } from '../core/nav.js';
-import { chooseDialog } from '../components/overlay.js';
+import { chooseDialog, confirmDialog } from '../components/overlay.js';
+import { switchOffWarning } from '../core/input-help.js';
 import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
 
@@ -78,7 +79,12 @@ export function bluetoothPage() {
           try {
             if (row.kind === 'radio') {
               if (!this.radio?.available) return;
-              const radio = await attempt(() => api.setBluetooth(!this.radio.on), t('bluetooth.switchFailed'));
+              // Switching off cuts a Bluetooth controller off: ask first (Cancel is focused), and say whether it comes back by itself.
+              const warning = switchOffWarning(this.radio, !this.radio.on);
+              if (warning && !(await confirmDialog(t('bluetooth.offTitle'), t('bluetooth.offConfirm'), { message: t(warning), danger: true }))) return;
+              // The host leaves Bluetooth off only when this was confirmed by keyboard or mouse (or another pad is there).
+              const source = state.actionSource;
+              const radio = await attempt(() => api.setBluetooth(!this.radio.on, source), t('bluetooth.switchFailed'));
               if (radio) this.radio = radio;
               return render();
             }

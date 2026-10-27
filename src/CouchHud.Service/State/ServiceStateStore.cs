@@ -18,8 +18,16 @@ public sealed class AccountState
     /// <summary>The account's old SYSTEM tasks were removed (MigrateTasks).</summary>
     public bool Migrated { get; set; }
 
+    /// <summary>
+    /// Some of <see cref="Groups"/> were taken over from the lock CouchHUD 0.4.0 set (its SYSTEM tasks, finding B1): until an administrator
+    /// confirmed the account's code or mode (security review H-1), a release and every change of codes or mode needs an administrator's
+    /// approval, whatever the account holds. Gone with the last group (<see cref="StateData.Tidy"/>). Not written while false (a state of 0.4.1 reads the same).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool LegacyLock { get; set; }
+
     [JsonIgnore]
-    public bool IsEmpty => Groups.Count == 0 && CreatedKeys.Count == 0 && !Migrated;
+    public bool IsEmpty => Groups.Count == 0 && CreatedKeys.Count == 0 && !Migrated && !LegacyLock;
 }
 
 /// <summary>A service the service stopped or holds stopped: who wants it paused (account SIDs), and whether the service itself stopped it.</summary>
@@ -57,10 +65,12 @@ public sealed class StateData
         return account;
     }
 
-    /// <summary>Drops an account that holds nothing any more.</summary>
+    /// <summary>Drops an account that holds nothing any more; a taken-over lock ends with its last group.</summary>
     public void Tidy(string sid)
     {
-        if (Accounts.TryGetValue(sid, out var account) && account.IsEmpty) Accounts.Remove(sid);
+        if (!Accounts.TryGetValue(sid, out var account)) return;
+        if (account.Groups.Count == 0) account.LegacyLock = false;
+        if (account.IsEmpty) Accounts.Remove(sid);
     }
 }
 
@@ -345,6 +355,7 @@ public sealed class ServiceStateStore
             if (account.Groups.Any(g => g is null || !RequestValidator.PolicyGroupIds.Contains(g)) || account.Groups.Distinct(StringComparer.Ordinal).Count() != account.Groups.Count) return "groups";
             if (account.CreatedKeys.Any(k => k is null || !PolicyGroups.CleanupCandidates.Contains(k, StringComparer.Ordinal))
                 || account.CreatedKeys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != account.CreatedKeys.Count) return "keys";
+            if (account.LegacyLock && account.Groups.Count == 0) return "legacy lock without groups";
         }
         foreach (var (name, entry) in state.Paused)
         {

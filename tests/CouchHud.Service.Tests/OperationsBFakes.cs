@@ -149,10 +149,10 @@ internal sealed class FakeWindowsUpdate : IWindowsUpdateSession
     }
 }
 
-/// <summary>The P6 parts with fakes, in a temporary folder next to the test binaries (removed on dispose).</summary>
+/// <summary>The P6 parts with fakes, in a short temporary folder under %TEMP% (staging paths stay below MAX_PATH; removed on dispose).</summary>
 internal sealed class OperationsB : IDisposable
 {
-    public string Root { get; } = Path.Combine(AppContext.BaseDirectory, "p6-" + Guid.NewGuid().ToString("N"));
+    public string Root { get; } = Path.Combine(Path.GetTempPath(), "p6-" + Guid.NewGuid().ToString("N")[..8]);
     public TestKey CouchHudKey { get; } = new();
     public TestKey CaseHudKey { get; } = new();
     public FakeInstalled Installed { get; } = new();

@@ -29,5 +29,9 @@ public sealed class SchtasksScheduler(IProcessLauncher processes, IEventSink eve
 
     public bool EnsureStartRight(string taskName, string sid) => _acl.Ensure(taskName, sid);
 
+    public bool RestrictToAdministrators(string taskName) => _acl.Restrict(taskName);
+
+    public bool RestrictToUserStart(string taskName, string sid) => _acl.RestrictToUserStart(taskName, sid);
+
     private int Call(params string[] args) => processes.Run(Program, args, Timeout).ExitCode;
 }

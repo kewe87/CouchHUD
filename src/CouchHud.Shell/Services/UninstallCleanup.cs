@@ -64,6 +64,8 @@ public static class UninstallCleanup
                 ServiceDataCleanup.Delete(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), PrivilegedServices.Events);
         });
         Step("tasks",() => PrivilegedServices.TaskSetup.RemoveAllTasks(StuckAccounts));
+        // The task folders that are empty now (\CouchHud\<SID>, \CouchHud): only those, never one with a task left (a stuck account's).
+        Step("task folders", () => CouchHud.Privileged.TaskFolderCleanup.Run(PrivilegedServices.Events));
         Step("firewall", Firewall.Remove);
         // CouchHud took the Xbox button from the Game Bar: put back what was there (snapshot), else Windows' default.
         Step("game bar", RestoreGameBar);

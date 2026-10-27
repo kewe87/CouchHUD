@@ -31,6 +31,8 @@ import { startCaseHud } from './views/casehud.js';
 import { detailPage } from './views/detail.js';
 import { startParental } from './components/parental.js';
 import { startNotifications } from './views/notifications.js';
+import { startBluetoothRecovery } from './components/bluetooth-recovery.js';
+import { isCodeEntry } from './core/input-help.js';
 import './views/deck.js';
 import { assistantView, startAssistant } from './views/assistant.js';
 import { startWeather } from './core/weather.js';
@@ -131,6 +133,7 @@ async function init() {
   startParental({ detailPage, closeQuickMenu, redrawQuick: () => quick.open && renderQuick() });
   startAssistant();
   startNotifications();
+  startBluetoothRecovery();
   // First start: the setup assistant, with the disclaimer and privacy notice as its second step (on a locked couch only the notice).
   startFirstRun().catch(console.error);
   // Settings that add or remove a tab (assistant, smart home) ask for a refresh.
@@ -159,6 +162,7 @@ async function init() {
 
   // Controller or keyboard input hides the mouse pointer right away.
   const input = new Input((action, source) => {
+    state.actionSource = source === 'keyboard' ? 'keyboard' : 'pad';
     hideMouse();
     if (source && source !== state.inputSource) {
       state.inputSource = source;
@@ -166,7 +170,11 @@ async function init() {
     }
     onAction(action);
   });
-  attachMouse(onAction, state.info);
+  input.repeatAllowed = () => !isCodeEntry(currentView());
+  attachMouse((action) => {
+    state.actionSource = 'mouse';
+    onAction(action);
+  }, state.info);
   input.attachKeyboard();
   if (state.info.nativeInput) input.attachNative(api);
   else input.attachGamepadApi();
@@ -212,7 +220,12 @@ async function init() {
   startScreensaverWatch();
   showSession();
   api.onLibrary(setLibrary);
-  api.onPad(({ connected }) => toast(connected ? t('app.padConnected') : t('app.padDisconnected')));
+  api.onPad(async ({ connected }) => {
+    if (connected) return toast(t('app.padConnected'));
+    // The last controller is gone (Bluetooth off, battery empty): say that keyboard and mouse still work.
+    const pads = await api.getPads?.().catch(() => null);
+    toast(Array.isArray(pads) && pads.length === 0 ? t('app.padNone') : t('app.padDisconnected'), Array.isArray(pads) && pads.length === 0 ? 8000 : undefined);
+  });
 
   // Offsets depend on the layout (resolution, TV scaling).
   window.addEventListener('resize', () => currentView().update?.({ instant: true }));

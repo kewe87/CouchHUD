@@ -1,4 +1,4 @@
-import { caseHudMock } from './mock-casehud.js';
+import { caseHudMock, setMockInstallApi } from './mock-casehud.js';
 import { demoMode, applyDemo } from './mock-demo.js';
 
 // Stand-in for the host bridge so the UI can be developed in a plain browser
@@ -100,8 +100,13 @@ const wifi = {
     { ssid: 'Vodafone Hotspot', signal: 18, secured: false, security: 'open', supported: true }
   ]
 };
-const listeners = { unlocked: [], session: [], audio: [], toast: [], updates: [], catalogUpdates: [], selfUpdate: [], assistant: [], remote: [], notification: [], parental: [], browser: [], browserui: [] };
-let btOn = true;
+const listeners = { unlocked: [], session: [], audio: [], toast: [], updates: [], catalogUpdates: [], selfUpdate: [], assistant: [], remote: [], notification: [], parental: [], browser: [], browserui: [], pad: [], btRecovery: [] };
+// ?nopad: no controller and Bluetooth off (the code prompt's help for keyboard and mouse); ?btcountdown: the automatic switch-on asks.
+const noPad = new URLSearchParams(location.search).has('nopad');
+let btOn = !noPad;
+let btAutoOn = true;
+let btDeclined = false;
+if (new URLSearchParams(location.search).has('btcountdown')) setTimeout(() => listeners.btRecovery.forEach((cb) => cb({ phase: 'countdown', seconds: 10 })), 2500);
 const profiles = {};
 let dl = 0.31;
 const display = {
@@ -255,7 +260,7 @@ const ha = [
   { id: 'binary_sensor.door', domain: 'binary_sensor', name: '', state: 'off', deviceClass: 'door', controllable: false }
 ];
 ha.forEach((e) => { if (haNames[e.id]) lz(e, { name: haNames[e.id] }); });
-const settings = { language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), homeAssistantUrl: 'http://homeassistant.local:8123', homeAssistantTokenSet: true, homeAssistantPinned: ['scene.kino', 'light.tv_led'], sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, artworkCacheMb: 42, caseHudInstallAutostart: true, caseHudInstallFps: false, caseHudGamingLease: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: false, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
+const settings = { language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), homeAssistantUrl: 'http://homeassistant.local:8123', homeAssistantTokenSet: true, homeAssistantPinned: ['scene.kino', 'light.tv_led'], sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, artworkCacheMb: 42, caseHudInstallAutostart: true, caseHudInstallFps: false, caseHudInstallApi: true, caseHudGamingLease: true, bluetoothAutoOn: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: false, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
   aiProvider: 'anthropic', aiModel: '', anthropicKeySet: true, openAiKeySet: false,
   aiModels: { anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'], openai: ['gpt-5', 'gpt-5-mini'] },
   mcpEnabled: true, mcpLan: true, mcpPort: 8765, mcpToken: '3f9c1e7a5b2d48e6a0c4f1b7d9e2a6c8b5f0e3d1a7c9b2e4',
@@ -490,6 +495,8 @@ window.couchhud = {
     // The host couples these two: only one of them may own the Xbox button.
     if (key === 'guideTapInGame' && value) settings.gameBarButton = false;
     if (key === 'gameBarButton' && value) settings.guideTapInGame = false;
+    if (key === 'bluetoothAutoOn') btAutoOn = !!value;
+    if (key === 'caseHudInstallApi') setMockInstallApi(value);
     log('setSetting', key, value);
     return null;
   },
@@ -661,7 +668,8 @@ window.couchhud = {
   onInput: noop,
   onNav: noop,
   onLibrary: noop,
-  onPad: noop,
+  onPad: (cb) => listeners.pad.push(cb),
+  onBluetoothRecovery: (cb) => listeners.btRecovery.push(cb),
   onSession: (cb) => listeners.session.push(cb),
   onAudio: (cb) => listeners.audio.push(cb),
   onToast: (cb) => listeners.toast.push(cb),
@@ -732,8 +740,20 @@ window.couchhud = {
   getNotifications: async () => ({ items: structuredClone(notes), unread: notes.filter((n) => !n.read).length, windows: 'allowed' }),
   markNotificationsRead: async () => notes.forEach((n) => (n.read = true)),
   clearNotifications: async () => notes.splice(0),
-  getBluetooth: async () => ({ available: true, on: btOn }),
-  setBluetooth: async (on) => ((btOn = on), { available: true, on }),
+  getBluetooth: async () => ({ available: true, on: btOn, autoOn: btAutoOn && !btDeclined, controllersPaired: 1, controllerConnected: btOn && !noPad, pads: noPad ? 0 : 1, countdown: false }),
+  setBluetooth: async (on) => {
+    btOn = on;
+    // Like the host: a Bluetooth controller and nothing else, so the radio comes back after a countdown.
+    if (!on && btAutoOn) setTimeout(() => listeners.btRecovery.forEach((cb) => cb({ phase: 'countdown', seconds: 10 })), 800);
+    return { available: true, on, autoOn: btAutoOn, controllersPaired: 1, controllerConnected: on, pads: on ? 1 : 0, countdown: false };
+  },
+  answerBluetoothRecovery: async (keepOff) => {
+    if (!keepOff) btOn = true;
+    else btDeclined = true;
+    listeners.btRecovery.forEach((cb) => cb({ phase: keepOff ? 'idle' : 'enabled' }));
+    // Like the host: true only when it was really left off.
+    return !!keepOff;
+  },
   scanBluetooth: async () => {
     await new Promise((r) => setTimeout(r, 1500));
     return [
@@ -930,7 +950,7 @@ window.couchhud = {
   getSecurity: async () => ({ ...security, unlocked: security.couchLock === 'off' || !security.asShell || Date.now() < unlockedUntil }),
   getServiceStatus: async () => security.service,
   repairService: async () => ((security.service = { ...security.service, state: 'running', label: 'running', healthy: true, alarm: false, problem: false, repair: false }), security.service),
-  unlock: async (code) => {
+  unlock: async (code, _asNewCode = false) => {
     if (security.couchLock === 'windows') {
       setTimeout(() => { unlockedUntil = Date.now() + 120_000; listeners.unlocked.forEach((cb) => cb()); }, 1500);
       return { ok: false, pending: true };
@@ -940,8 +960,21 @@ window.couchhud = {
     if (ok) unlockedUntil = Date.now() + 120_000;
     return ok ? { ok } : { ok, waitSeconds: 0 };
   },
+  windowsSignIn: async () => {
+    if (security.couchLock !== 'windows') return { ok: false, pending: false };
+    setTimeout(() => { unlockedUntil = Date.now() + 120_000; listeners.unlocked.forEach((cb) => cb()); }, 1500);
+    return { ok: false, pending: true };
+  },
   setPasscode: async (code) => ((passcode = code), (security.hasPasscode = true), window.couchhud.getSecurity()),
-  setCouchLock: async (mode, code = null) => ((security.couchLock = mode), code && ((passcode = code), (security.hasPasscode = true)), window.couchhud.getSecurity()),
+  // Like the host with the service: the Windows lock or no lock drops the couch code.
+  // The code lock without a code that survives the switch is refused, like the host (the service drops a code set at the open couch).
+  setCouchLock: async (mode, code = null) => {
+    if (mode === 'code' && !code && security.couchLock !== 'code') throw new Error(t('mock.setCodeFirst'));
+    security.couchLock = mode;
+    if (mode !== 'code') (passcode = null), (security.hasPasscode = false);
+    if (code) (passcode = code), (security.hasPasscode = true);
+    return window.couchhud.getSecurity();
+  },
   setParentCode: async (code) => ((passcode = code), (security.hasPasscode = true), window.couchhud.getSecurity()),
   readClipboard: async () => ({ ok: false, reason: 'clipboard' }),
   holdUnlockForSetup: async () => null,
@@ -1009,7 +1042,7 @@ window.couchhud = {
     audio.devices.forEach((d) => (d.isDefault = d.id === id));
     return structuredClone(audio);
   },
-  getPads: async () => [{ index: 0, battery: 'medium' }],
+  getPads: async () => (noPad ? [] : [{ index: 0, battery: 'medium' }]),
   rumble: async () => null
 };
 

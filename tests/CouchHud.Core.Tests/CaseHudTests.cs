@@ -10,7 +10,7 @@ namespace CouchHud.Core.Tests;
 public class CaseHudTests : IDisposable
 {
     private const string Exe = @"C:\Program Files\CaseHUD\CaseHUD.exe";
-    private const string Token = "s3cr3t-token-value";
+    private const string Token = "s3cr3tTokenValue42";
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "couchhud-casehud-" + Guid.NewGuid().ToString("N"));
 
     public CaseHudTests() => Directory.CreateDirectory(_dir);
@@ -62,11 +62,11 @@ public class CaseHudTests : IDisposable
     }
 
     [Theory]
-    [InlineData("""{"apiVersion":2,"version":"2.0","port":51234,"token":"s3cr3t-token-value","pid":1234,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
-    [InlineData("""{"apiVersion":1,"version":"1","port":0,"token":"s3cr3t-token-value","pid":1234,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
-    [InlineData("""{"apiVersion":1,"version":"1","port":70000,"token":"s3cr3t-token-value","pid":1234,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
+    [InlineData("""{"apiVersion":2,"version":"2.0","port":51234,"token":"s3cr3tTokenValue42","pid":1234,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
+    [InlineData("""{"apiVersion":1,"version":"1","port":0,"token":"s3cr3tTokenValue42","pid":1234,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
+    [InlineData("""{"apiVersion":1,"version":"1","port":70000,"token":"s3cr3tTokenValue42","pid":1234,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
     [InlineData("""{"apiVersion":1,"version":"1","port":5,"token":"","pid":1234,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
-    [InlineData("""{"apiVersion":1,"version":"1","port":5,"token":"s3cr3t-token-value","pid":0,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
+    [InlineData("""{"apiVersion":1,"version":"1","port":5,"token":"s3cr3tTokenValue42","pid":0,"exe":"C:\\Program Files\\CaseHUD\\CaseHUD.exe"}""")]
     [InlineData("{ not json")]
     [InlineData("[]")]
     [InlineData("")]

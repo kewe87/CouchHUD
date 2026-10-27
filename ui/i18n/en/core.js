@@ -12,6 +12,7 @@ export default {
   'app.ended': '{name} closed',
   'app.padConnected': 'Controller connected',
   'app.padDisconnected': 'Controller disconnected',
+  'app.padNone': 'No controller connected any more – keyboard and mouse work too (Enter = A, Esc = B)',
 
   'index.pad': 'Controller',
   'index.guideMenu': 'Guide menu',

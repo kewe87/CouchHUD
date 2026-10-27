@@ -164,6 +164,15 @@ public static class OperationPolicy
     public static GrantKinds AcceptedGrants(ValidatedRequest request, LockView view)
     {
         if (!Table.TryGetValue(request.Operation, out var rule)) return GrantKinds.None;
+        var accepted = AcceptedByLock(request, view, rule);
+        // A lock of 0.4.0 not confirmed yet: nothing the account's own user may have set counts, the parents' code neither (0.4.0 kept it in
+        // the config the account writes): an administrator's approval only (security review H-1, second round).
+        if (!view.Legacy) return accepted;
+        return LegacyApprovalOnly.Contains(request.Operation) ? GrantKinds.WindowsAdmin : accepted & ~GrantKinds.Parent;
+    }
+
+    private static GrantKinds AcceptedByLock(ValidatedRequest request, LockView view, Rule rule)
+    {
         var windows = view.Mode == LockModes.Windows;
         var couchProof = (windows ? GrantKinds.WindowsUnlock : GrantKinds.Couch) | GrantKinds.ParentOrAdmin;
         var couchCode = view.HasParent || windows ? GrantKinds.ParentOrAdmin : GrantKinds.Couch | GrantKinds.ParentOrAdmin;
@@ -188,6 +197,16 @@ public static class OperationPolicy
             }
         };
     }
+
+    /// <summary>
+    /// What takes an administrator's approval only while the account's lock is one of 0.4.0 not confirmed yet (<see cref="LockView.Legacy"/>):
+    /// the codes, the lock mode and the lock's release.
+    /// </summary>
+    public static readonly IReadOnlySet<Operation> LegacyApprovalOnly = new HashSet<Operation>
+    {
+        Operation.EnrollPasscode, Operation.ChangePasscode, Operation.RemovePasscode, Operation.SetLockMode,
+        Operation.ReleaseLockPolicies, Operation.CleanupPolicyKeys
+    };
 
     /// <summary>The rule for a request, null when the operation has none (deny).</summary>
     public static Rule? For(ValidatedRequest request) => Table.TryGetValue(request.Operation, out var rule) ? rule : null;

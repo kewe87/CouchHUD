@@ -82,6 +82,7 @@ export default {
   'mock.saveNoLocations': 'Für dieses Spiel sind keine Speicherorte bekannt',
   'mock.sampleGame': 'Beispielspiel',
   'mock.enterName': 'Bitte einen Namen eingeben',
+  'mock.setCodeFirst': 'Bitte zuerst einen Code festlegen',
   'mock.fullOnly': 'Das gibt es nur in der vollen Integration',
   'mock.accessDenied': 'Zugriff verweigert (Registry)',
   'mock.driveGames': 'Spiele (D:)',

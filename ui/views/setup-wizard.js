@@ -27,6 +27,7 @@ import { setAudioMode, sound } from '../sound.js';
 import { showTermsIfNeeded, termsAccepted, termsPage } from './legal.js';
 import { consoleRevertPage, consoleSetupPage, hasConsoleSetup, isConsoleReady } from './console-setup.js';
 import { consoleDeps, enrollCouchCode } from './settings.js';
+import { setCaseHudApi } from './casehud.js';
 
 /** Raise when the assistant gains a question every install should see once. */
 export const WIZARD_VERSION = 1;
@@ -78,6 +79,11 @@ const AUDIO = ['off', 'ui', 'music'];
 const audioMode = (s) => (AUDIO.includes(s.audioMode) ? s.audioMode : s.sounds === false ? 'off' : 'ui');
 const soundKey = (mode) => 'wizard.sound.' + mode;
 const clientModeKey = (mode) => 'wizard.clients.' + (['standby', 'demand', 'off'].includes(mode) ? mode : 'standby');
+/** CaseHUD is installed (and new enough) but its API is not on: the assistant offers to switch it on (full integration only). */
+const caseHudWantsApi = () => {
+  const s = state.caseHud;
+  return !!s?.installed && !s.needsUpdate && (s.state === 'apiOff' || s.state === 'notRunning');
+};
 
 // ---------------------------------------------------------------------------
 // Steps
@@ -213,6 +219,22 @@ function steps(page) {
         { id: 'continue', row: env.launchers.length, line: 1, button: true, title: t('wizard.next'), run: () => 'next' }
       ]
     },
+    casehud: {
+      glyph: '▣',
+      title: () => t('wizard.casehud.title'),
+      lead: () => t('wizard.casehud.lead'),
+      // Running with the API off: the same hint the CaseHUD page shows.
+      note: () => (state.caseHud?.state === 'apiOff' ? t('casehud.api.hint') : null),
+      later: () => where('settings.cat.casehud'),
+      // CaseHUD ships with its API off and it is the user's choice: switching it on asks for the code (couch lock) and says what it does.
+      options: () => [
+        {
+          id: 'on', icon: '⇄', title: t('wizard.casehud.on'), bullets: [t('wizard.casehud.on1'), t('wizard.casehud.on2')],
+          run: async () => ((await setCaseHudApi(true)) ? 'next' : undefined)
+        },
+        { id: 'later', icon: '⏲', title: t('wizard.casehud.later'), bullets: [t('wizard.casehud.later1'), t('wizard.casehud.later2')], run: () => 'next' }
+      ]
+    },
     lock: {
       icon: 'shield',
       title: () => t('wizard.lock.title'),
@@ -284,6 +306,7 @@ function wizardPage({ firstRun = false, startAt = null } = {}) {
         'look',
         'sound',
         full && this.env.launchers.length ? 'clients' : null,
+        full && caseHudWantsApi() ? 'casehud' : null,
         // The console setup enrolls the code itself; this step is only for an install already in Full without a lock.
         full && !this.intent && !lockOn(this.env) ? 'lock' : null,
         'done'
@@ -593,7 +616,7 @@ async function checkIntent(intent) {
 // ---------------------------------------------------------------------------
 // Entry points
 
-const STEP_IDS = ['welcome', 'terms', 'mode', 'look', 'sound', 'clients', 'lock', 'done'];
+const STEP_IDS = ['welcome', 'terms', 'mode', 'look', 'sound', 'clients', 'casehud', 'lock', 'done'];
 
 /** Locked, or not known: the start-up decision fails closed (isLocked() answers "open" when the read fails, for its other callers). */
 async function lockedOrUnknown() {

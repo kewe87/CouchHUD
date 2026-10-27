@@ -145,7 +145,11 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
 
     internal Uri EventsUrl => Url("events");
 
-    private static async Task<CaseHudException> ReadError(HttpResponseMessage response, CancellationToken ct)
+    /// <summary>
+    /// The error of a refused request. 403 <c>api_disabled</c> (the API is switched off in CaseHUD; also with an old token) becomes the
+    /// hint where to switch it on; CaseHUD's own message is not shown for it. Any other 403 ("forbidden" from the Host check) stays generic.
+    /// </summary>
+    internal static async Task<CaseHudException> ReadError(HttpResponseMessage response, CancellationToken ct)
     {
         var status = (int)response.StatusCode;
         try
@@ -155,6 +159,7 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
             var error = doc.RootElement.GetProperty("error");
             var code = error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString()! : "error";
             var message = error.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString()! : code;
+            if (CaseHudState.IsApiDisabled(status, code)) return CaseHudState.ApiOff();
             return new CaseHudException(code, message, status);
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or CaseHudException)

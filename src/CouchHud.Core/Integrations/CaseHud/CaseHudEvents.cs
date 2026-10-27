@@ -24,7 +24,7 @@ public static class CaseHudClientEventsExtensions
         try
         {
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, idle.Token);
-            if (!response.IsSuccessStatusCode) throw new CaseHudException("error", Strings.Get("casehud.httpStatus", (int)response.StatusCode), (int)response.StatusCode);
+            if (!response.IsSuccessStatusCode) throw await CaseHudClient.ReadError(response, idle.Token);
             await using var stream = await response.Content.ReadAsStreamAsync(idle.Token);
             using var reader = new StreamReader(stream, Encoding.UTF8);
             string name = "message";
@@ -63,9 +63,36 @@ public static class CaseHudClientEventsExtensions
 /// (1 s, 2 s, 4 s … 30 s). Status events are delivered as typed objects; <c>connected</c> tells the UI when
 /// the stream comes and goes. When CaseHUD refuses the stream (503, more than 8 clients) the status is polled every 5 s instead.
 /// Nothing but cancellation ends the loop: an error in a handler or an odd answer only costs one round.
+/// A refusal with 403 api_disabled (the API was switched off in CaseHUD) is reported to <c>apiDisabled</c>; <see cref="Interrupt"/>
+/// ends the open stream and the pause at once (api.json deleted or rewritten with a new port and token).
 /// </summary>
-public sealed class CaseHudEventLoop(HttpClient http, Func<CaseHudClient?> client, Action<CaseHudStatus> onStatus, Action<bool> connected, Func<TimeSpan, CancellationToken, Task>? delay = null)
+public sealed class CaseHudEventLoop(HttpClient http, Func<CaseHudClient?> client, Action<CaseHudStatus> onStatus, Action<bool> connected, Func<TimeSpan, CancellationToken, Task>? delay = null, Action? apiDisabled = null)
 {
+    private readonly object _roundLock = new();
+    private CancellationTokenSource? _round;
+    private volatile bool _interrupted;
+
+    /// <summary>Ends the current stream (or pause) now; the next round asks <c>client</c> again, without the back-off.</summary>
+    public void Interrupt()
+    {
+        _interrupted = true;
+        lock (_roundLock)
+        {
+            try { _round?.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+    }
+
+    private CancellationToken NewRound(CancellationToken ct)
+    {
+        lock (_roundLock)
+        {
+            _round?.Dispose();
+            _round = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            return _round.Token;
+        }
+    }
+
     public static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(5);
 
@@ -79,6 +106,8 @@ public sealed class CaseHudEventLoop(HttpClient http, Func<CaseHudClient?> clien
         var wasConnected = false;
         while (!ct.IsCancellationRequested)
         {
+            _interrupted = false;
+            var round = NewRound(ct);
             var c = client();
             var gotEvent = false;
             var poll = false;
@@ -98,9 +127,11 @@ public sealed class CaseHudEventLoop(HttpClient http, Func<CaseHudClient?> clien
                             Safe(() => onStatus(status));
                         }
                         catch (JsonException) { }
-                    }, ct);
+                    }, round);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+                catch (OperationCanceledException) { /* interrupted: the files changed */ }
+                catch (CaseHudException ex) when (CaseHudState.IsApiDisabled(ex)) { Safe(() => apiDisabled?.Invoke()); }
                 catch (CaseHudException ex) { poll = ex.Status == 503; }
                 catch (Exception) { /* whatever it was: the next round tries again */ }
 
@@ -108,21 +139,30 @@ public sealed class CaseHudEventLoop(HttpClient http, Func<CaseHudClient?> clien
                 {
                     try
                     {
-                        var status = await c.StatusAsync(ct);
+                        var status = await c.StatusAsync(round);
                         if (!wasConnected) { wasConnected = true; Safe(() => connected(true)); }
                         Safe(() => onStatus(status));
-                        try { await _delay(PollEvery, ct); }
-                        catch (OperationCanceledException) { return; }
+                        try { await _delay(PollEvery, round); }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+                        catch (OperationCanceledException) { }
                         continue;
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+                    catch (CaseHudException ex) when (CaseHudState.IsApiDisabled(ex)) { Safe(() => apiDisabled?.Invoke()); poll = false; }
                     catch (Exception) { poll = false; }
                 }
             }
             if (wasConnected) { wasConnected = false; Safe(() => connected(false)); }
+            // Interrupted because the files changed: straight to the next round with the new port and token.
+            if (_interrupted)
+            {
+                failures = 0;
+                continue;
+            }
             failures = gotEvent ? 1 : failures + 1;
-            try { await _delay(Backoff(failures), ct); }
-            catch (OperationCanceledException) { return; }
+            try { await _delay(Backoff(failures), round); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (OperationCanceledException) { failures = 0; }
         }
     }
 

@@ -9,10 +9,17 @@ import { state } from '../core/state.js';
 import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
 import { confirmDialog } from './overlay.js';
+import { CODE_KEYS, padHelp } from '../core/input-help.js';
 
 export const PASSCODE_LENGTH = 6;
-const CODE_BUTTONS = new Set(['a', 'b', 'x', 'y', 'lb', 'rb', 'up', 'down', 'left', 'right']);
+const CODE_BUTTONS = new Set(CODE_KEYS);
 const LABEL = { up: '↑', down: '↓', left: '←', right: '→' };
+
+// The open code prompt, so a controller that comes or goes (and Bluetooth switching back on) updates its help line.
+let openPrompt = null;
+const refreshOpenPrompt = () => openPrompt?.refreshHelp();
+api.onPad?.(refreshOpenPrompt);
+api.onBluetoothRecovery?.(refreshOpenPrompt);
 
 /** Asks for a passcode; resolves with the button list, or undefined when cancelled (View or Menu). */
 export function enterPasscode({ title = t('passcode.enter'), hint = '', error = '' } = {}) {
@@ -30,18 +37,55 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
       code: [],
       // Every code button belongs to the code here, B and the shoulders too.
       captures: (action) => action !== 'guide',
+      // No mouse wheel, no side buttons, no held-arrow repeat here (see isCodeEntry).
+      codeEntry: true,
       onClose: () => finish(undefined),
+      help: { noPad: false, bluetooth: null },
       build(root) {
         this.dots = Array.from({ length: PASSCODE_LENGTH }, () => el('span', { className: 'passcode-dot' }));
         this.errorEl = el('p', { className: 'passcode-error', textContent: error });
+        // Without a controller (Bluetooth off, battery empty) the code still has to be possible: the same buttons by mouse or touch,
+        // and the keyboard keys spelled out. Same code, same check in the CouchHUD service, same lockout after wrong tries.
+        this.keys = el('div', { className: 'passcode-keys', role: 'group', ariaLabel: t('passcode.onScreen') },
+          CODE_KEYS.map((code) => el('span', { className: `passcode-key key-${code}`, dataset: { code }, textContent: LABEL[code] ?? glyph(code.toUpperCase()) })),
+          el('span', { className: 'passcode-key passcode-cancel', dataset: { code: 'cancel' }, textContent: t('passcode.hintCancel') }));
+        this.helpEl = el('div', { className: 'passcode-nopad', hidden: true });
         root.append(el('div', { className: 'passcode' },
           el('div', { className: 'passcode-lock', textContent: '🔒' }),
           el('h2', { textContent: title }),
           hint ? el('p', { className: 'meta', textContent: hint }) : null,
           el('div', { className: 'passcode-dots' }, this.dots),
           this.errorEl,
-          el('p', { className: 'passcode-help', textContent: t('passcode.help', { count: PASSCODE_LENGTH }) })));
+          el('p', { className: 'passcode-help', textContent: t('passcode.help', { count: PASSCODE_LENGTH }) }),
+          this.helpEl,
+          this.keys,
+          el('p', { className: 'passcode-legend', textContent: t('passcode.keyboard', { a: glyph('A'), b: glyph('B'), x: glyph('X'), y: glyph('Y'), lb: glyph('LB'), rb: glyph('RB') }) })));
+        this.renderHelp();
         this.update();
+      },
+      renderHelp() {
+        if (!this.helpEl) return;
+        const { noPad, bluetooth } = this.help;
+        this.helpEl.hidden = !noPad;
+        // (replaceChildren would show a null as the text "null".)
+        this.helpEl.replaceChildren(...(noPad ? [
+          el('strong', { textContent: t('passcode.noPad') }),
+          bluetooth ? el('span', { textContent: t(bluetooth) }) : null
+        ].filter(Boolean) : []));
+      },
+      /** Asks quietly (no error toasts over the code prompt): without an answer nothing is said. */
+      async refreshHelp() {
+        const quiet = (call) => (call ? call().catch(() => null) : Promise.resolve(null));
+        const [pads, bt] = await Promise.all([quiet(api.getPads), quiet(api.getBluetooth)]);
+        if (settled) return;
+        this.help = padHelp(Array.isArray(pads) ? pads.length : null, bt);
+        this.renderHelp();
+      },
+      // Mouse and touch: a click on a key is that button, the same way the controller and keyboard enter it.
+      pointer(node, index, dispatch) {
+        const code = node.dataset?.code;
+        if (code === 'cancel') return dispatch('start');
+        if (CODE_BUTTONS.has(code)) dispatch(code);
       },
       update() {
         this.dots.forEach((d, i) => {
@@ -50,6 +94,7 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
         });
       },
       close(result) {
+        if (openPrompt === this) openPrompt = null;
         removePage(this);
         render();
         finish(result);
@@ -77,9 +122,16 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
         return [['≡', t('passcode.hintCancel')]];
       }
     };
+    const onClose = page.onClose;
+    page.onClose = () => {
+      if (openPrompt === page) openPrompt = null;
+      onClose();
+    };
+    openPrompt = page;
     state.stack.push(page);
     sound.open();
     render();
+    page.refreshHelp();
   });
 }
 
@@ -157,14 +209,45 @@ export async function ensureUnlocked(reason = '') {
 
 let codeEntry = null;
 
+/**
+ * Windows lock mode, also while the couch is open: the Windows sign-in once more (and its confirmation), so the CouchHUD service sees it
+ * and gives its proof for a new couch code. True when that proof is there afterwards. A host without the service answers at once.
+ */
+export async function ensureWindowsSignIn(reason = '') {
+  const entry = { reason };
+  const signedIn = new Promise((resolve) => {
+    entry.resolve = resolve;
+    pendingWindowsUnlocks.push(entry);
+    // The host drops the request after three minutes; so does this, and its entry goes.
+    setTimeout(() => {
+      pendingWindowsUnlocks = pendingWindowsUnlocks.filter((e) => e !== entry);
+      resolve(false);
+    }, 3 * 60_000);
+  });
+  const asked = await attempt(() => api.windowsSignIn());
+  if (asked?.pending !== true) {
+    pendingWindowsUnlocks = pendingWindowsUnlocks.filter((e) => e !== entry);
+    return !!asked?.ok;
+  }
+  toast(t('passcode.signInWindows'), 4000);
+  return signedIn;
+}
+
 async function askForCode(reason) {
   let error = '';
   for (;;) {
     const code = await enterPasscode({ title: t('passcode.enter'), hint: reason, error });
     if (!code) return false;
-    const result = await attempt(() => api.unlock(code));
+    let result = await attempt(() => api.unlock(code));
+    // A lock of 0.4.0 whose stored code does not match the one entered (mistyped, or changed by a program of the account): UAC only when
+    // the person chooses it here, then an administrator confirms the code as the lock's new one (third security review).
+    if (result?.legacyMismatch && (await confirmDialog(t('passcode.legacyMismatch'), t('passcode.adminFallbackButton')))) {
+      result = await attempt(() => api.unlock(code, true));
+    }
     if (result?.ok) {
       sound.select();
+      // The lock of 0.4.0 confirmed with its old code: that code lay readable in the configuration (review 4).
+      if (result.legacyOldCode) toast(t('passcode.legacyOldCode'), 12000);
       return true;
     }
     sound.bump();
@@ -175,6 +258,11 @@ async function askForCode(reason) {
 
 // Before Windows' UAC prompt for an administrator's approval: what exactly is approved (the prompt itself only names sc.exe).
 // i18n-used: passcode.approve.autoLogon passcode.approve.lockMode passcode.approve.removeCode passcode.approve.changeCode passcode.approve.release passcode.approve.firewall passcode.approve.update
+const LEGACY_TEXT = {
+  legacyCode: () => t('passcode.approve.legacyCode'),
+  legacyWindows: () => t('passcode.approve.legacyWindows'),
+  legacyNewCode: () => t('passcode.approve.legacyNewCode')
+};
 const APPROVAL_TEXT = {
   SetAutoLogon: 'passcode.approve.autoLogon',
   SetLockMode: 'passcode.approve.lockMode',
@@ -186,9 +274,32 @@ const APPROVAL_TEXT = {
   SetRemoteFirewall: 'passcode.approve.firewall',
   InstallCouchHudUpdate: 'passcode.approve.update'
 };
+// Pages that wait for an unlock hear when an administrator's approval is coming (UAC), so they say so instead of a status of their own.
+const approvalListeners = new Set();
+
+/** Calls `listener` whenever the host announces an administrator's approval; returns the function that stops it. */
+export function onApprovalAnnounced(listener) {
+  approvalListeners.add(listener);
+  return () => approvalListeners.delete(listener);
+}
+
 api.onAdminApproval?.((payload) => {
+  for (const listener of [...approvalListeners]) {
+    try {
+      listener(payload);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  // The lock of 0.4.0 the service took over: confirmed once, and the text says what (the code just entered, or the Windows sign-in) and
+  // why (security review H-1). Long texts sit low on the screen, so the page title above stays readable.
+  const legacy = Object.hasOwn(LEGACY_TEXT, payload?.reason ?? '') ? LEGACY_TEXT[payload.reason] : null;
+  if (legacy) {
+    toast(legacy(), 20000, { long: true });
+    return;
+  }
   const what = [...new Set((payload?.what ?? []).map((op) => APPROVAL_TEXT[op]).filter(Boolean))].map((key) => t(key));
-  toast(t('passcode.approve.notice', { what: what.length ? what.join(', ') : t('passcode.approve.confirmOnly') }), 12000);
+  toast(t('passcode.approve.notice', { what: what.length ? what.join(', ') : t('passcode.approve.confirmOnly') }), 12000, { long: true });
 });
 
 // Same for the parents' code: a one-time release for one action, never the 2-minute unlock.

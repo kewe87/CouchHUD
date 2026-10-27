@@ -82,6 +82,7 @@ export default {
   'mock.saveNoLocations': 'No save locations are known for this game',
   'mock.sampleGame': 'Sample game',
   'mock.enterName': 'Please enter a name',
+  'mock.setCodeFirst': 'Set a code first',
   'mock.fullOnly': 'This is only available with full integration',
   'mock.accessDenied': 'Access denied (registry)',
   'mock.driveGames': 'Games (D:)',

@@ -136,5 +136,7 @@ export default {
   'transparency.hint.hideDetails': 'Hide details',
   'transparency.hint.showDetails': 'Show details',
   'transparency.hint.scroll': 'Scroll',
-  'transparency.hint.back': 'Back'
+  'transparency.hint.back': 'Back',
+  'transparency.casehud.apiOn': 'Installed, interface on',
+  'transparency.casehud.apiOff': 'Installed, interface off'
 };

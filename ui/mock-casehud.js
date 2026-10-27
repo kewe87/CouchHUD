@@ -1,5 +1,6 @@
 // Preview stand-in for the CaseHUD calls of the host (src/CouchHud.Shell/Services/CaseHudManager.cs), with the schema of
-// CaseHUD API v1. Scenarios via the URL: ?casehud=none | stopped | update | busy | error | down | disclaimer | legacy  (default: running).
+// CaseHUD API v1. Scenarios via the URL: ?casehud=none | stopped | update | busy | error | down | disclaimer | legacy | apioff  (default: running).
+// apioff: CaseHUD runs with its API switched off (Settings › Interfaces, CaseHUD's default): no api.json, 403 api_disabled.
 // disclaimer: CaseHUD 1.0 before its first-start notice was confirmed ("Open on the PC" confirms it here).
 // legacy: a build before 1.0 (no disclaimerAccepted, no lighting in the status, no /lighting).
 // Lighting (CaseHUD's "Merge semantics"): turning it on answers ackRequired until "Open on the PC" (or ?lightack); devices are
@@ -49,6 +50,9 @@ const community = [
 
 let installed = !['none'].includes(scenario);
 let running = ['running', 'update', 'busy', 'error', 'disclaimer', 'legacy'].includes(scenario);
+let apiOff = scenario === 'apioff';
+// The host's text for 403 api_disabled (StringsDe/En "casehud.apiOff"); the page's own key has the same words.
+const API_HINT = () => globalThis.__couchhudT?.('casehud.api.hint') ?? 'Turn on the API in CaseHUD under Settings → Interfaces';
 const legacy = scenario === 'legacy';
 let disclaimerAccepted = scenario !== 'disclaimer';
 let lightAck = query.has('lightack');
@@ -99,15 +103,23 @@ const status = () => ({
   ...(legacy ? {} : { disclaimerAccepted, lighting: { enabled: lighting.enabled, active: lighting.enabled && disclaimerAccepted } })
 });
 
+const stateName = () => (!installed ? 'notInstalled' : apiOff ? 'apiOff' : running ? 'apiOn' : 'notRunning');
 const describe = () => ({
-  installed, version: installed ? '1.0.0' : '', running, status: running ? status() : null,
+  installed, version: installed ? '1.0.0' : '', running: running && !apiOff, state: stateName(), status: running && !apiOff ? status() : null,
   update: { available: scenario === 'update', version: scenario === 'update' ? '1.2.0' : '', notes: scenario === 'update' ? '• New neon designs\n• Faster preview' : '', installable: true, problem: null, latest: '1.2.0' },
-  busy, error, options: { autostart: true, fps: false, lease: true }, unsigned: true
+  busy, error, options: { autostart: true, fps: false, lease: true, api: installApi, full: true }, unsigned: true
 });
 
+let installApi = true;
 const publish = () => listeners.forEach((cb) => cb(describe()));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 let tick = 0;
+
+/** The preview's setSetting('caseHudInstallApi') lands here (mock-api.js). */
+export function setMockInstallApi(on) {
+  installApi = !!on;
+  publish();
+}
 
 export function caseHudMock() {
   return {
@@ -138,6 +150,13 @@ export function caseHudMock() {
     caseHudPrepare: async () => ({ token: 'mock-token', version: '1.0.0', installed, isUpdate: installed, unsigned: false, notes: 'Neue Displays und Szenen', error: null }),
     caseHudUpdate: async () => describe(),
     // The preview stands in for the user confirming the notices in CaseHUD's window.
+    caseHudSetApi: async (on) => {
+      await wait(300);
+      apiOff = !on;
+      running = true;
+      publish();
+      return describe();
+    },
     caseHudOpenGui: async () => {
       disclaimerAccepted = true;
       lightAck = true;
@@ -145,6 +164,7 @@ export function caseHudMock() {
       return null;
     },
     caseHudLighting: async () => {
+      if (apiOff) throw new Error(API_HINT());
       if (legacy) throw new Error('not_found');
       return lightingState();
     },

@@ -84,6 +84,7 @@ window.couchhud = {
   onNav: on('nav'),
   onLibrary: on('library'),
   onPad: on('pad'),
+  onBluetoothRecovery: on('bluetoothRecovery'),
   onSession: on('session'),
   onParental: on('parental'),
   onParentalAuth: on('parentalAuth'),
@@ -136,7 +137,8 @@ window.couchhud = {
   scanBluetooth: () => call('scanBluetooth'),
   pairBluetooth: (id) => call('pairBluetooth', id),
   unpairBluetooth: (id) => call('unpairBluetooth', id),
-  setBluetooth: (on) => call('setBluetooth', on),
+  setBluetooth: (on, source) => call('setBluetooth', on, source ?? 'pad'),
+  answerBluetoothRecovery: (keepOff) => call('answerBluetoothRecovery', keepOff),
   getWifi: () => call('getWifi'),
   scanWifi: () => call('scanWifi'),
   connectWifi: (ssid, password) => call('connectWifi', ssid, password),
@@ -165,6 +167,8 @@ window.couchhud = {
   caseHudInstall: (token) => call('caseHudInstall', token),
   caseHudUpdate: (token) => call('caseHudUpdate', token),
   caseHudOpenGui: () => call('caseHudOpenGui'),
+  /** CaseHUD's API on or off for this user (CaseHUD.exe --set-api=on|off from the verified installation; needs the unlock). */
+  caseHudSetApi: (on) => call('caseHudSetApi', on),
   caseHudPanels: () => call('caseHudPanels'),
   caseHudPatchPanel: (id, patch) => call('caseHudPatchPanel', id, patch),
   caseHudDesigns: () => call('caseHudDesigns'),
@@ -215,7 +219,10 @@ window.couchhud = {
   parentalAcceptClock: () => call('parentalAcceptClock'),
   parentalAdoptZone: () => call('parentalAdoptZone'),
   parentalCloseGame: () => call('parentalCloseGame'),
-  unlock: (code) => call('unlock', code),
+  // asNewCode: a lock of 0.4.0 whose stored code did not match (legacyMismatch), confirmed as the new code after the person chose so.
+  unlock: (code, asNewCode = false) => call('unlock', code, asNewCode),
+  // Windows lock mode: the Windows sign-in once more, for the service's proof (a new couch code); "unlocked" follows like after unlock.
+  windowsSignIn: () => call('windowsSignIn'),
   setPasscode: (code) => call('setPasscode', code),
   setCouchLock: (mode, code = null) => call('setCouchLock', mode, code),
   setParentCode: (code) => call('setParentCode', code),

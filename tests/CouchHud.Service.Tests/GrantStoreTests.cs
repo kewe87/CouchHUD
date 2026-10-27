@@ -132,14 +132,30 @@ public class GrantStoreTests
     [InlineData(null)]
     public void Nothing_counts_while_the_session_is_locked_or_cannot_be_told(bool? locked)
     {
-        bool? state = locked;
+        bool? state = false;
         var (store, _) = New(_ => state);
         var caller = Callers.User();
         var grant = store.Issue(caller, GrantKinds.Parent, [Operation.SetAutoLogon])!.Grant;
+        state = locked;
         Assert.False(store.Use(caller, grant, Operation.SetAutoLogon, GrantKinds.ParentOrAdmin));
         // Not used up: once the session is unlocked again (and the grant still alive) it counts.
         state = false;
         Assert.True(store.Use(caller, grant, Operation.SetAutoLogon, GrantKinds.ParentOrAdmin));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(null)]
+    public void No_grant_is_issued_while_the_session_is_locked_or_cannot_be_told(bool? locked)
+    {
+        // Finding B2 of the 0.4.1 acceptance test: nobody at the couch could use it.
+        var (store, _) = New(_ => locked);
+        var caller = Callers.User();
+        Assert.Null(store.Issue(caller, GrantKinds.Couch));
+        Assert.Null(store.Issue(caller, GrantKinds.WindowsUnlock));
+        Assert.Null(store.Issue(caller, GrantKinds.Parent, [Operation.SetAutoLogon]));
+        Assert.Equal(0, store.Count);
+        Assert.True(store.IsSessionLocked(caller.TokenSessionId));
     }
 
     [Fact]

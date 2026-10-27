@@ -191,8 +191,25 @@ public static class KeyboardInput
         public IntPtr dwExtraInfo;
     }
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    [DllImport("user32.dll", EntryPoint = "SendInput", SetLastError = true)]
+    private static extern uint SendInputNative(uint count, INPUT[] inputs, int size);
+
+    private static long _lastInjected = long.MinValue / 2;
+
+    /// <summary>Environment.TickCount64 of CouchHUD's last own key or mouse input (it shows in Windows' "last input" too).</summary>
+    public static long LastInjected => Interlocked.Read(ref _lastInjected);
+
+    /// <summary>Call right before input CouchHUD makes up itself (keybd_event and the like).</summary>
+    public static void MarkInjected() => Interlocked.Exchange(ref _lastInjected, Environment.TickCount64);
+
+    /// <summary>SendInput, remembered as CouchHUD's own input.</summary>
+    public static uint SendInput(uint count, INPUT[] inputs, int size)
+    {
+        MarkInjected();
+        var sent = SendInputNative(count, inputs, size);
+        MarkInjected();
+        return sent;
+    }
 }
 
 /// <summary>Starts game clients quietly and gets their windows out of the way.</summary>

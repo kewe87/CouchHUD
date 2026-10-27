@@ -82,7 +82,10 @@ const entries = () => [
     what: t('transparency.casehud.what'),
     where: t('transparency.casehud.where'),
     undo: t('transparency.casehud.undo'),
-    state: () => (state.caseHud?.installed ? t('transparency.casehud.installed') : t('transparency.state.off'))
+    state: () => (!state.caseHud?.installed ? t('transparency.state.off')
+      : state.caseHud.state === 'apiOn' ? t('transparency.casehud.apiOn')
+        : state.caseHud.state === 'apiOff' ? t('transparency.casehud.apiOff')
+          : t('transparency.casehud.installed'))
   },
   {
     title: t('transparency.adminService.title'),

@@ -199,6 +199,18 @@ public sealed class AppConfig
     /// <summary>Settings view: false shows only everyday settings, true adds the expert sections.</summary>
     public bool ExpertMode { get; set; }
 
+    /// <summary>
+    /// Turns the Bluetooth radio back on (at start and whenever it goes off) while a Bluetooth controller is paired and no other
+    /// controller is connected: switched off by accident, the controller would be gone and the couch out of reach.
+    /// </summary>
+    public bool BluetoothAutoOn { get; set; } = true;
+
+    /// <summary>
+    /// Paired Bluetooth controllers the last time Bluetooth was on (kept by the recovery, not a setting): with the radio off Windows
+    /// may not list them, and after a restart with Bluetooth off this number still says a controller needs it.
+    /// </summary>
+    public int BluetoothPairedControllers { get; set; }
+
     /// <summary>Language of the interface: "auto" (Windows display language), "de" or "en".</summary>
     public string Language { get; set; } = "auto";
 
@@ -288,6 +300,13 @@ public sealed class AppConfig
 
     /// <summary>Install CaseHUD with the FPS task: the user joins "Performance Log Users" (setup task "fps"; takes effect after the next sign-in).</summary>
     public bool CaseHudInstallFps { get; set; }
+
+    /// <summary>
+    /// After CouchHUD installed CaseHUD for the first time (full integration only): switch CaseHUD's API on for this user
+    /// (<c>CaseHUD.exe --set-api=on</c> in the user's session). CaseHUD's own default is off; the choice is shown on the install page and
+    /// named in the confirmation, so it stays the user's decision. An existing installation is never switched without a press.
+    /// </summary>
+    public bool CaseHudInstallApi { get; set; } = true;
 
     /// <summary>Tell CaseHUD while a game runs (its displays can switch to the gaming scene).</summary>
     public bool CaseHudGamingLease { get; set; } = true;

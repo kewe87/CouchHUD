@@ -1,5 +1,6 @@
 using Windows.Devices.Enumeration;
 using Windows.Devices.Radios;
+using CouchHud.Core.Input;
 using CouchHud.Core.Localization;
 
 namespace CouchHud.Shell.Services;
@@ -12,7 +13,7 @@ public sealed record BluetoothDeviceInfo(string Id, string Name, bool Paired, bo
 /// covers headsets, Xbox and PlayStation controllers.
 /// </summary>
 /// <param name="confirm">Shows a question on the TV (PIN to type or to compare); true to go on.</param>
-public sealed class BluetoothService(Func<string, Task<bool>> confirm)
+public sealed class BluetoothService(Func<string, Task<bool>> confirm) : IBluetoothRadio, IDisposable
 {
     // Association endpoint protocol ids for Bluetooth classic and Bluetooth LE.
     private const string ClassicProtocol = "{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}";
@@ -26,11 +27,140 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm)
         "System.Devices.Aep.ProtocolId"
     ];
 
-    public async Task<object> StateAsync()
+    public async Task<(bool Available, bool On)> StateAsync()
     {
         var radio = await RadioAsync();
-        return new { available = radio is not null, on = radio?.State == RadioState.On };
+        if (radio is not null) Watch(radio);
+        return (radio is not null, radio?.State == RadioState.On);
     }
+
+    // What tells a game controller apart: category, Bluetooth classic device class, Bluetooth LE appearance.
+    private static readonly string[] KindProperties =
+    [
+        "System.Devices.Aep.IsConnected",
+        "System.Devices.Aep.Category",
+        "System.Devices.Aep.Bluetooth.Cod.Major",
+        "System.Devices.Aep.Bluetooth.Cod.Minor",
+        "System.Devices.Aep.Bluetooth.Le.Appearance"
+    ];
+
+    private readonly object _watchGate = new();
+    private Radio? _watched;
+    private volatile bool _disposed;
+
+    /// <summary>The radio changed its state (on, off, disabled); raised on a thread pool thread.</summary>
+    public event Action<RadioStatus>? RadioChanged;
+
+    /// <summary>The radio's state for the recovery: off and disabled are different things (disabled is not ours to change).</summary>
+    public async Task<RadioStatus> StatusAsync()
+    {
+        try
+        {
+            if (await Radio.RequestAccessAsync() != RadioAccessStatus.Allowed) return RadioStatus.AccessDenied;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            return RadioStatus.AccessDenied;
+        }
+        var radio = await RadioAsync();
+        if (radio is null) return RadioStatus.NoAdapter;
+        Watch(radio);
+        return Map(radio.State);
+    }
+
+    private static RadioStatus Map(RadioState state) => state switch
+    {
+        RadioState.On => RadioStatus.On,
+        RadioState.Off => RadioStatus.Off,
+        RadioState.Disabled => RadioStatus.Disabled,
+        _ => RadioStatus.Unknown
+    };
+
+    /// <summary>Follows the radio's state changes (once per radio object; a new adapter is picked up at the next read).</summary>
+    private void Watch(Radio radio)
+    {
+        lock (_watchGate)
+        {
+            if (_disposed) return;
+            if (_watched is not null && _watched.Name == radio.Name) return;
+            if (_watched is not null) _watched.StateChanged -= OnRadioStateChanged;
+            _watched = radio;
+            radio.StateChanged += OnRadioStateChanged;
+        }
+    }
+
+    private void OnRadioStateChanged(Radio sender, object args)
+    {
+        if (_disposed) return;
+        try
+        {
+            RadioChanged?.Invoke(Map(sender.State));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[bluetooth] radio state: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Paired Bluetooth game controllers (category, device class or LE appearance, the name as the last hint) and how many of them
+    /// are connected right now. Only reads what Windows already knows: no search, no pairing, no change of discoverability.
+    /// </summary>
+    public async Task<(int Paired, int Connected)> ControllersAsync()
+    {
+        var query = $"System.Devices.Aep.IsPaired:=System.StructuredQueryType.Boolean#True AND (System.Devices.Aep.ProtocolId:=\"{ClassicProtocol}\" OR System.Devices.Aep.ProtocolId:=\"{LowEnergyProtocol}\")";
+        var devices = await DeviceInformation.FindAllAsync(query, KindProperties, DeviceInformationKind.AssociationEndpoint);
+        int paired = 0, connected = 0;
+        foreach (var d in devices)
+        {
+            var props = d.Properties;
+            var categories = props.TryGetValue("System.Devices.Aep.Category", out var cat) ? cat as string[] : null;
+            if (!BluetoothDeviceKind.IsController(categories, Number(props, "System.Devices.Aep.Bluetooth.Cod.Major"), Number(props, "System.Devices.Aep.Bluetooth.Cod.Minor"),
+                    Number(props, "System.Devices.Aep.Bluetooth.Le.Appearance"), d.Name)) continue;
+            paired++;
+            if (props.TryGetValue("System.Devices.Aep.IsConnected", out var c) && c is bool on && on) connected++;
+        }
+        return (paired, connected);
+    }
+
+    public async Task<int> PairedControllersAsync() => (await ControllersAsync()).Paired;
+
+    /// <summary>Airplane mode: more than one radio and every one of them off (with Bluetooth alone it cannot be told apart).</summary>
+    public async Task<bool> AirplaneModeAsync()
+    {
+        try
+        {
+            var radios = await Radio.GetRadiosAsync();
+            return radios.Count > 1 && radios.All(r => r.State != RadioState.On);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Stops following the radio (at the end of CouchHUD).</summary>
+    public void Dispose()
+    {
+        lock (_watchGate)
+        {
+            _disposed = true;
+            if (_watched is not null) _watched.StateChanged -= OnRadioStateChanged;
+            _watched = null;
+        }
+        RadioChanged = null;
+    }
+
+    private static int? Number(IReadOnlyDictionary<string, object> props, string key) =>
+        props.TryGetValue(key, out var v) ? v switch
+        {
+            byte b => b,
+            ushort u => u,
+            short s => s,
+            uint ui => (int)Math.Min(ui, int.MaxValue),
+            int i => i,
+            _ => null
+        } : null;
 
     public async Task SetRadioAsync(bool on)
     {
@@ -175,19 +305,6 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm)
         var paired = props.TryGetValue("System.Devices.Aep.IsPaired", out var p) && p is bool b && b;
         var connected = props.TryGetValue("System.Devices.Aep.IsConnected", out var c) && c is bool bc && bc;
         var lowEnergy = props.TryGetValue("System.Devices.Aep.ProtocolId", out var proto) && proto is Guid g && g == Guid.Parse(LowEnergyProtocol);
-        return new BluetoothDeviceInfo(info.Id, info.Name ?? "", paired, connected, lowEnergy, Kind(info.Name ?? ""));
-    }
-
-    /// <summary>A rough icon category from the name: good enough for a list on the TV.</summary>
-    private static string Kind(string name)
-    {
-        var n = name.ToLowerInvariant();
-        if (n.Contains("controller") || n.Contains("gamepad") || n.Contains("dualsense") || n.Contains("dualshock") || n.Contains("wireless controller") || n.Contains("8bitdo") || n.Contains("joy-con") || n.Contains("pro controller")) return "controller";
-        if (n.Contains("headset") || n.Contains("buds") || n.Contains("airpods") || n.Contains("wh-") || n.Contains("wf-") || n.Contains("headphone") || n.Contains("kopfhörer") || n.Contains("bose") || n.Contains("jbl") || n.Contains("sennheiser")) return "headphones";
-        if (n.Contains("keyboard") || n.Contains("tastatur")) return "keyboard";
-        if (n.Contains("mouse") || n.Contains("maus")) return "mouse";
-        if (n.Contains("speaker") || n.Contains("soundbar") || n.Contains("box")) return "speaker";
-        if (n.Contains("phone") || n.Contains("iphone") || n.Contains("galaxy") || n.Contains("pixel")) return "phone";
-        return "other";
+        return new BluetoothDeviceInfo(info.Id, info.Name ?? "", paired, connected, lowEnergy, BluetoothDeviceKind.Kind(info.Name));
     }
 }

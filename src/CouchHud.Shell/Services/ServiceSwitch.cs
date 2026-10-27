@@ -43,7 +43,11 @@ public sealed class ServiceSwitch
         }
     }
 
-    /// <summary>Scheduled tasks of earlier versions in the CouchHud folder (any account's): the service's migration removes them.</summary>
+    /// <summary>
+    /// Scheduled tasks of earlier versions in the CouchHud folder that this account can see. Tasks the setup or the service restricted to
+    /// SYSTEM and the administrators (0.4.1 on) are invisible to a standard account, so this is false for them; they need nothing from the
+    /// shell: the service's own sweeps migrate them (at its start, at each logon while a lock of 0.4.0 waits, when it applies the lock policies).
+    /// </summary>
     public static bool HasTaskLeftovers()
     {
         try
@@ -56,7 +60,10 @@ public sealed class ServiceSwitch
         }
     }
 
-    /// <summary>Anything of the old setup is still there: a task in the CouchHud folder or the policy files next to the program.</summary>
+    /// <summary>
+    /// Anything of the old setup is still there: a task in the CouchHud folder this account can see (see <see cref="HasTaskLeftovers"/>) or
+    /// the policy files next to the program (readable for every account, so a lock of 0.4.0 is seen even when its tasks are not).
+    /// </summary>
     public static bool HasLeftovers() => HasTaskLeftovers() || Directory.Exists(PrivilegedServices.Policies.PolicyDirectory());
 
     /// <summary>

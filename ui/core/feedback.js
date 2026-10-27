@@ -3,9 +3,11 @@ import { t } from './i18n.js';
 
 let toastTimer;
 
-export function toast(text, ms = 2500) {
+/** `long`: a text of several lines; it sits low on the screen so it never covers the title of the page behind it. */
+export function toast(text, ms = 2500, { long = false } = {}) {
   const t = $('#toast');
   t.textContent = text;
+  t.classList.toggle('long', long);
   t.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.hidden = true), ms);

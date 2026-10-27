@@ -25,6 +25,12 @@ public static class Passcode
     /// <summary>A real hash in the stored format (not empty, not <see cref="HeldByService"/>).</summary>
     public static bool IsLocalHash(string? stored) => !string.IsNullOrEmpty(stored) && stored.StartsWith("pbkdf2-sha256$", StringComparison.Ordinal);
 
+    /// <summary>
+    /// Whether the code entered is the one stored locally: only a real hash that verifies. Nothing stored, <see cref="HeldByService"/> or
+    /// anything else is no match (the confirmation of a lock of 0.4.0 then asks first, like for a code that does not match: review 4).
+    /// </summary>
+    public static bool MatchesLocal(IReadOnlyList<string> sequence, string? stored) => IsLocalHash(stored) && Verify(sequence, stored);
+
     public static void Validate(IReadOnlyList<string> sequence)
     {
         if (sequence.Count is < MinLength or > MaxLength) throw new ArgumentException(Strings.Get("passcode.length", MinLength, MaxLength));

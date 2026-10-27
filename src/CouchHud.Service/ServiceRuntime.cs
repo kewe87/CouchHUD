@@ -79,8 +79,13 @@ public sealed class ServiceRuntime
         var handlers = BasicHandlers.Create(state, events, WallMs);
         var checks = StateChecks.BuiltIn(serviceOnList, codes);
         HandlersB.Register(handlers, checks, HandlersB.CreateDefault(_log, events, clock, codes, grants, _stop.Token, codes.View));
-        _operations = OperationsA.Register(handlers, checks, operationsParts, state);
-        var codeHandlers = _codeHandlers = CodeHandlers.Register(handlers, checks, new CodeParts(codes, grants, _sessions, approvals, blank.IsBlank, _log, events));
+        var operations = _operations = OperationsA.Register(handlers, checks, operationsParts, state);
+        // Taking over a lock of 0.4.0 forgets the account's codes and mode: its user may have planted them before (security review H-1).
+        operations.ForgetCodes = sid => codes.Replace(sid, null) == CodeSet.Saved;
+        // A lock taken over from 0.4.0 (or about to be) takes an administrator's approval until one confirmed the account's code or mode
+        // (finding B1, security review H-1).
+        var codeHandlers = _codeHandlers = CodeHandlers.Register(handlers, checks, new CodeParts(codes, grants, _sessions, approvals, blank.IsBlank, _log, events,
+            operations.IsLegacyLocked, operations.EndLegacyLock));
         var dispatcher = new Dispatcher(new DispatcherParts(
             new RequestValidator(name => ServicePolicy.IsAllowed(name, serviceOnList)),
             handlers,
@@ -98,6 +103,10 @@ public sealed class ServiceRuntime
         state.CodesLookup = sid => codes.IsAvailable
             ? (codes.Has(sid, CodeKind.Couch), codes.Has(sid, CodeKind.Parent), codes.StoredMode(sid))
             : (null, null, null);
+        state.LegacyLookup = operations.IsLegacyLocked;
+        // The old SYSTEM tasks of 0.4.0 restricted to administrators before the pipe exists (review M-1): a squatted pipe name stops the
+        // service, but not before this. Bounded so the SCM's start does not time out; what is not done by then goes on without the stop's token.
+        RestrictLegacyTasks(operations);
         var connections = new ConnectionHandler(dispatcher, new ConnectionQuota(ServiceHardening.MaxConnectionsPerAccount), denyLog, ConnectionLimits.Default);
         var factory = new PipeFactory(Protocol.PipeName, ServiceHardening.PipeSddl, ServiceHardening.MaxPipeInstances);
         var server = new PipeServer(factory, new PipeCallerIdentifier(denyLog), connections, _log, ServiceHardening.MaxConnections);
@@ -121,6 +130,64 @@ public sealed class ServiceRuntime
             }
             if (!_stop.IsCancellationRequested) Failed?.Invoke(ServiceHardening.ExitPipeFailed);
         });
+        // The old SYSTEM tasks of 0.4.0: no user may start them any more, signed-in accounts are migrated (finding B1).
+        SweepLegacy(all: true);
+    }
+
+    /// <summary>How long the start waits for the restriction of the old tasks at most.</summary>
+    private static readonly TimeSpan RestrictWait = TimeSpan.FromSeconds(15);
+
+    private void RestrictLegacyTasks(OperationsA operations)
+    {
+        var restrict = Task.Run(() =>
+        {
+            try
+            {
+                operations.RestrictLegacyTasks();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                _log.Error($"[legacy] restriction of the old tasks: {ex.GetType().Name}");
+            }
+        });
+        if (!restrict.Wait(RestrictWait)) _log.Error("[legacy] the restriction of the old tasks takes long: it goes on while the service starts");
+    }
+
+    /// <summary>The delays after a sign-in before the sweep looks again (the hive of the new session is loaded by then, usually at the first).</summary>
+    private static readonly TimeSpan[] LegacyRetries = [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
+
+    /// <summary>
+    /// The sweep of the old SYSTEM tasks (<see cref="OperationsA.SweepLegacyTasks"/>) off the SCM's thread, bounded by the service's stop:
+    /// at start once; after a sign-in while accounts wait for theirs or the start's sweep has not ended yet (review N-4), a few times, each
+    /// one after a sweep that still runs.
+    /// </summary>
+    private void SweepLegacy(bool all)
+    {
+        if (_operations is not { } operations) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (all)
+                {
+                    operations.SweepLegacyTasks(_stop.Token);
+                    return;
+                }
+                foreach (var delay in LegacyRetries)
+                {
+                    if (operations.LegacySwept && operations.LegacyPending.Count == 0) return;
+                    await Task.Delay(delay, _stop.Token).ConfigureAwait(false);
+                    operations.SweepLegacyTasks(_stop.Token, wait: true);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                _log.Error($"[legacy] sweep of the old tasks: {ex.GetType().Name}");
+            }
+        });
     }
 
     /// <summary>
@@ -139,6 +206,7 @@ public sealed class ServiceRuntime
             _log.Error($"[grant] session change {change} of session {sessionId}: {ex.GetType().Name}");
         }
         if (change == SessionChange.Logoff) SessionLoggedOff(sessionId);
+        if (change == SessionChange.Logon) SweepLegacy(all: false);
     }
 
     /// <summary>

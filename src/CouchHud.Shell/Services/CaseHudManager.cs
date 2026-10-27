@@ -17,6 +17,9 @@ namespace CouchHud.Shell.Services;
 /// and relays the bridge calls of the CaseHUD page to its local API v1. CouchHUD contains none of CaseHUD's code.
 /// The event stream and the gaming lease run only while there is something to tell; without CaseHUD this is
 /// a file check now and then.
+/// Since CaseHUD's API can be switched off (Settings › Interfaces, off by default) the manager tells four states apart
+/// (<see cref="CaseHudApiState"/>): it watches %APPDATA%\casehud (api.json, instance.pid) instead of polling, reads port and token again
+/// on every change, ends the event stream when api.json goes and names the place to switch the API on instead of a connection error.
 /// </summary>
 public sealed class CaseHudManager : IDisposable
 {
@@ -44,6 +47,15 @@ public sealed class CaseHudManager : IDisposable
     private (CaseHudInstall? Install, CaseHudCapability Capability, DateTimeOffset At)? _installState;
     private CaseHudApiInfo? _cachedInfo;
     private DateTimeOffset _cachedAt = DateTimeOffset.MinValue;
+    private readonly ICaseHudApiSwitch _apiSwitch;
+    private CaseHudFolderWatcher? _watcher;
+    private CaseHudEventLoop? _loop;
+    /// <summary>The announcement a request was refused with 403 api_disabled for; any folder change or a success clears it, rechecked every 30 s.</summary>
+    private readonly CaseHudRefusal _refusal = new();
+    private DateTimeOffset _rereadAt = DateTimeOffset.MinValue;
+    private bool _instance;
+    private DateTimeOffset _instanceAt = DateTimeOffset.MinValue;
+    private int _invalidReads;
 
     public CaseHudManager(ConfigStore config, string dataDir, Func<bool> gameRunning, Action<string, object?> emit)
     {
@@ -70,11 +82,16 @@ public sealed class CaseHudManager : IDisposable
         _discovery.Capabilities = _capabilities;
         // Only the installed CaseHUD counts as CaseHUD (not any program that writes an api.json).
         if (!overridden) _discovery.ExpectedExe = () => _discovery.FindInstall()?.Exe;
+        // Only a CaseHUD in this session that started before it wrote the file (a stale file with a reused PID does not count).
+        _discovery.ProcessFacts = ProcessFacts;
+        using (var self = Process.GetCurrentProcess()) _discovery.CurrentSession = self.SessionId;
         _releases = new CaseHudReleaseService(_github);
         _lease = new CaseHudGamingLease(CurrentClient);
+        _apiSwitch = new CaseHudApiSwitch(TrustedExe, RunCliAsync, line => Console.Error.WriteLine(line));
         _installer = new CaseHudInstaller(_releases, new CaseHudInstallGate(), _discovery.FindInstall, CurrentClientFresh, new ShellSetupRunner(() => _discovery.FindInstall() is not null),
             StartCoreAsync, _gameRunning, () => (_config.Current.CaseHudInstallAutostart, _config.Current.CaseHudInstallFps),
-            Path.Combine(_dataDir, "casehud-temp"), text => { _busy = text; Publish(); });
+            Path.Combine(_dataDir, "casehud-temp"), text => { _busy = text; Publish(); },
+            apiAfterInstall: ApiAfterInstall, enableApi: EnableApiAfterInstallAsync);
         // Once, here: the manager is created once (Lazy in Hud), so this cannot delete a setup that is running.
         CleanTemp();
     }
@@ -113,18 +130,7 @@ public sealed class CaseHudManager : IDisposable
     }
 
     /// <summary>The real path of a file through an open handle (links and short names resolved); the text itself if it cannot be opened.</summary>
-    internal static string CanonicalPath(string path)
-    {
-        try
-        {
-            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            return PathSafety.StripPrefix(SetupProbe.FinalPath(file.SafeFileHandle));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return path;
-        }
-    }
+    internal static string CanonicalPath(string path) => TrustedCliRunner.CanonicalPath(path);
 
     private static readonly object InstalledLock = new();
     private static (string? Exe, DateTimeOffset At) _installedExe = (null, DateTimeOffset.MinValue);
@@ -150,23 +156,159 @@ public sealed class CaseHudManager : IDisposable
         return image is not null && string.Equals(CanonicalPath(image), exe, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>The running CaseHUD, looked up at most once a second (the process check is not free and the lease and the page ask often).</summary>
-    private CaseHudApiInfo? CurrentInfo(bool fresh = false)
+    /// <summary>
+    /// The running CaseHUD as its api.json announces it, looked up at most once a second (the process check is not free and the lease and
+    /// the page ask often); the folder watcher makes the next look fresh on every change.
+    /// </summary>
+    private CaseHudApiInfo? AnnouncedInfo(bool fresh = false)
     {
         lock (_lock)
         {
             if (!fresh && DateTimeOffset.UtcNow - _cachedAt < TimeSpan.FromSeconds(1)) return _cachedInfo;
-            var before = _cachedInfo;
-            _cachedInfo = _discovery.ReadRunning();
-            _cachedAt = DateTimeOffset.UtcNow;
-            // A CaseHUD that is running with a valid api.json has shown that it can be controlled (the entry is rewritten at the next boot).
-            if (_cachedInfo is not null && before is null && _discovery.FindInstall() is { } found && _capabilities.Get(found) == CaseHudCapability.Unknown)
-            {
-                _capabilities.Set(found, capable: true);
-                _installState = null;
-            }
+            StoreInfo(_discovery.ReadRunning());
             return _cachedInfo;
         }
+    }
+
+    /// <summary>The announcement to talk to: none while the API refused exactly this one (switched off, api.json not gone yet).</summary>
+    private CaseHudApiInfo? CurrentInfo(bool fresh = false)
+    {
+        var info = AnnouncedInfo(fresh);
+        lock (_lock) return _refusal.Blocks(info) ? null : info;
+    }
+
+    /// <summary>Under _lock. Returns whether the announcement changed (another port, process or token, or it came or went).</summary>
+    private bool StoreInfo(CaseHudApiInfo? info)
+    {
+        var before = _cachedInfo;
+        _cachedInfo = info;
+        _cachedAt = DateTimeOffset.UtcNow;
+        // A CaseHUD that is running with a valid api.json has shown that it can be controlled (the entry is rewritten at the next boot).
+        if (info is not null && before is null && _discovery.FindInstall() is { } found && _capabilities.Get(found) == CaseHudCapability.Unknown)
+        {
+            _capabilities.Set(found, capable: true);
+            _installState = null;
+        }
+        var changed = !(before is null && info is null) && !CaseHudRefusal.Same(before, info);
+        if (changed) _refusal.Clear();
+        return changed;
+    }
+
+    /// <summary>Session and start time of a process, or null (gone, no access).</summary>
+    private static CaseHudProcessFacts? ProcessFacts(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return new CaseHudProcessFacts(process.SessionId, process.StartTime.ToUniversalTime());
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// CaseHUD said "unauthorized" (always 403): the token may have changed under us. The next look reads api.json again; at most every
+    /// 5 s, so a CaseHUD that keeps refusing does not turn into a file-reading loop.
+    /// </summary>
+    private void OnUnauthorized()
+    {
+        lock (_lock)
+        {
+            if (DateTimeOffset.UtcNow - _rereadAt < TimeSpan.FromSeconds(5)) return;
+            _rereadAt = DateTimeOffset.UtcNow;
+            _cachedAt = DateTimeOffset.MinValue;
+        }
+    }
+
+    /// <summary>CaseHUD answered: whatever refusal there was is over.</summary>
+    private void Answered()
+    {
+        lock (_lock) _refusal.Clear();
+    }
+
+    /// <summary>instance.pid names a live process whose image is the installed CaseHUD.exe; looked up at most every two seconds.</summary>
+    private bool InstanceRunning()
+    {
+        lock (_lock)
+        {
+            if (DateTimeOffset.UtcNow - _instanceAt < TimeSpan.FromSeconds(2)) return _instance;
+            _instance = _discovery.ReadInstance() is not null;
+            _instanceAt = DateTimeOffset.UtcNow;
+            return _instance;
+        }
+    }
+
+    /// <summary>Not installed, installed but not running, running with the API off, or controllable.</summary>
+    private CaseHudApiState ApiState(CaseHudInstall? install)
+    {
+        var announced = AnnouncedInfo();
+        bool refused;
+        lock (_lock) refused = _refusal.Refused(announced);
+        return CaseHudState.Detect(install is not null, InstanceRunning(), announced is not null, refused);
+    }
+
+    /// <summary>CaseHUD answered 403 api_disabled: the API was switched off. Stop talking to this announcement until a new one appears.</summary>
+    private void OnApiDisabled()
+    {
+        lock (_lock)
+        {
+            _refusal.Mark(_cachedInfo);
+            _lastStatus = null;
+            _connected = false;
+            _lighting = null;
+        }
+        Publish();
+    }
+
+    // -----------------------------------------------------------------------
+    // Watching %APPDATA%\casehud
+
+    private void StartWatching()
+    {
+        lock (_lock)
+        {
+            if (_watcher is not null) return;
+            _watcher = new CaseHudFolderWatcher(_discovery.DataFolder, OnFolderChanged);
+        }
+        _watcher.Start();
+    }
+
+    /// <summary>
+    /// api.json or instance.pid changed (debounced). Port and token are read again; a half-written api.json gets a few more tries; when the
+    /// announcement changed or went, the open event stream ends (it would talk to a closed port or with an invalid token).
+    /// </summary>
+    private void OnFolderChanged()
+    {
+        if (_stop.IsCancellationRequested) return;
+        var (read, info) = _discovery.ReadApi();
+        if (read == CaseHudFileRead.Invalid && _invalidReads++ < 5)
+        {
+            _watcher?.Poke();
+            return;
+        }
+        _invalidReads = 0;
+        bool changed;
+        lock (_lock)
+        {
+            changed = StoreInfo(info);
+            // Every change in the folder ends a refusal: CaseHUD may have switched the API on again with the very same port and token.
+            if (_refusal.Active)
+            {
+                _refusal.Clear();
+                changed = true;
+            }
+            _instanceAt = DateTimeOffset.MinValue;
+            if (changed)
+            {
+                _lastStatus = null;
+                _connected = false;
+                _lighting = null;
+            }
+        }
+        if (changed) _loop?.Interrupt();
+        Publish();
     }
 
     private CaseHudClient? CurrentClient() => CurrentInfo() is { } info ? new CaseHudClient(_http, info) : null;
@@ -174,7 +316,12 @@ public sealed class CaseHudManager : IDisposable
     /// <summary>Without the cache: for places that wait for CaseHUD to appear or go.</summary>
     private CaseHudClient? CurrentClientFresh() => CurrentInfo(fresh: true) is { } info ? new CaseHudClient(_http, info) : null;
 
-    private CaseHudClient Client() => CurrentClient() ?? throw new CaseHudException("not_running", Strings.Get("casehud.notRunning"));
+    /// <summary>A client, or the reason there is none: the API hint when CaseHUD runs with its API off, else "not running".</summary>
+    private CaseHudClient Client()
+    {
+        if (CurrentClient() is { } client) return client;
+        throw ApiState(InstallState().Install) == CaseHudApiState.ApiOff ? CaseHudState.ApiOff() : new CaseHudException("not_running", Strings.Get("casehud.notRunning"));
+    }
 
     // -----------------------------------------------------------------------
     // Game lease
@@ -206,14 +353,18 @@ public sealed class CaseHudManager : IDisposable
         }
         var loop = new CaseHudEventLoop(_http, CurrentClient, s =>
         {
+            Answered();
             _lastStatus = s;
             Publish();
         }, connected =>
         {
+            if (connected) Answered();
             _connected = connected;
             if (!connected) _lastStatus = null;
             Publish();
-        });
+        }, apiDisabled: OnApiDisabled);
+        _loop = loop;
+        StartWatching();
         _ = Task.Run(() => loop.RunAsync(_stop.Token));
     }
 
@@ -230,14 +381,20 @@ public sealed class CaseHudManager : IDisposable
         }
     }
 
-    private void Publish() => _emit("caseHud", Describe());
+    private void Publish()
+    {
+        // Nothing goes out once the manager is shut down (a watcher or loop round that was still running).
+        if (_stop.IsCancellationRequested) return;
+        _emit("caseHud", Describe());
+    }
 
     /// <summary>What the CaseHUD page shows: install state, running state, last status, update and progress.</summary>
     public object Describe()
     {
         var (install, capability) = InstallState();
         var release = _release?.Release;
-        var running = _lastStatus is not null && _connected;
+        var apiState = ApiState(install);
+        var running = apiState == CaseHudApiState.ApiOn && _lastStatus is not null && _connected;
         var apiUpdate = _lastStatus?.UpdateAvailable;
         return new
         {
@@ -246,6 +403,8 @@ public sealed class CaseHudManager : IDisposable
             // A build that was probed and does not know --background has no API: the page asks for the update instead of offering control.
             needsUpdate = install is not null && capability == CaseHudCapability.Old,
             running,
+            // notInstalled, notRunning, apiOff (running, API switched off in CaseHUD), apiOn.
+            state = CaseHudState.Name(apiState),
             status = running ? _lastStatus : null,
             update = new
             {
@@ -260,7 +419,15 @@ public sealed class CaseHudManager : IDisposable
             },
             busy = _busy,
             error = _error,
-            options = new { autostart = _config.Current.CaseHudInstallAutostart, fps = _config.Current.CaseHudInstallFps, lease = _config.Current.CaseHudGamingLease },
+            options = new
+            {
+                autostart = _config.Current.CaseHudInstallAutostart,
+                fps = _config.Current.CaseHudInstallFps,
+                lease = _config.Current.CaseHudGamingLease,
+                // Switch the API on after a first installation: offered (and done) in full integration only.
+                api = _config.Current.CaseHudInstallApi,
+                full = IsFull
+            },
             unsigned = CaseHudPolicy.NeedsUnsignedConfirmation(CaseHudInfo.ReleasePublicKeyPem)
         };
     }
@@ -277,6 +444,18 @@ public sealed class CaseHudManager : IDisposable
             var result = await DispatchAsync(method, args);
             if (method == "caseHudStatus") _error = null;
             return result;
+        }
+        catch (CaseHudException ex) when (CaseHudState.IsApiDisabled(ex))
+        {
+            // Not an error of this call: the API is off. The page shows the hint in place of the controls.
+            OnApiDisabled();
+            throw;
+        }
+        catch (CaseHudException ex) when (ex.Code == "unauthorized")
+        {
+            OnUnauthorized();
+            _error = ex.Message;
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -298,7 +477,14 @@ public sealed class CaseHudManager : IDisposable
                 StartEventLoop();
                 if (_lastStatus is null && CurrentClient() is { } c)
                 {
-                    try { _lastStatus = await c.StatusAsync(); _connected = true; }
+                    try { _lastStatus = await c.StatusAsync(); _connected = true; Answered(); }
+                    catch (CaseHudException ex) when (CaseHudState.IsApiDisabled(ex))
+                    {
+                        lock (_lock) _refusal.Mark(_cachedInfo);
+                        _lastStatus = null;
+                        _connected = false;
+                    }
+                    catch (CaseHudException ex) when (ex.Code == "unauthorized") { OnUnauthorized(); }
                     catch (CaseHudException) { }
                 }
                 return Describe();
@@ -335,11 +521,26 @@ public sealed class CaseHudManager : IDisposable
             case "caseHudOpenGui":
                 await OpenGuiAsync();
                 return null;
+            case "caseHudSetApi":
+            {
+                var on = Bool(0);
+                await _apiSwitch.SetAsync(on);
+                lock (_lock)
+                {
+                    _cachedAt = DateTimeOffset.MinValue;
+                    _instanceAt = DateTimeOffset.MinValue;
+                    _refusal.Clear();
+                }
+                _error = null;
+                StartEventLoop();
+                _loop?.Interrupt();
+                return Describe();
+            }
             case "caseHudPanels": return await Client().PanelsAsync();
             case "caseHudPatchPanel":
                 // CaseHUD's refusal reaches the page as a readable, cleaned and capped text (as for lighting).
                 try { return await Client().PatchPanelAsync(Str(0), CaseHudPanelPatch.FromJson(Arg(1))); }
-                catch (CaseHudException ex) when (ex.Status > 0) { throw new InvalidOperationException(CaseHudLighting.ErrorText(ex)); }
+                catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex)) { throw new InvalidOperationException(CaseHudLighting.ErrorText(ex)); }
             case "caseHudLighting": return await LightingAsync();
             case "caseHudPatchLighting": return await PatchLightingAsync(Arg(0));
             case "caseHudDesigns": return await Client().DesignsAsync();
@@ -388,7 +589,7 @@ public sealed class CaseHudManager : IDisposable
         }
         if (!CaseHudLighting.Supported(_lastStatus)) throw new InvalidOperationException(Strings.Get("casehud.lightingUnsupported"));
         try { return _lighting = await client.LightingAsync(); }
-        catch (CaseHudException ex) when (ex.Status > 0) { throw new InvalidOperationException(CaseHudLighting.ErrorText(ex)); }
+        catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex)) { throw new InvalidOperationException(CaseHudLighting.ErrorText(ex)); }
     }
 
     /// <summary>
@@ -410,7 +611,7 @@ public sealed class CaseHudManager : IDisposable
         {
             return new { problem };
         }
-        catch (CaseHudException ex) when (ex.Status > 0)
+        catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex))
         {
             // A 400 usually means the state moved on (a device went away, lighting was switched off): the next check uses the fresh one.
             if (ex.Status == 400)
@@ -529,6 +730,111 @@ public sealed class CaseHudManager : IDisposable
         }
     }
 
+    // -----------------------------------------------------------------------
+    // CaseHUD's API switch (CaseHUD.exe --set-api=on|off, in this user's session)
+
+    private bool IsFull => string.Equals(_config.Current.IntegrationMode, "full", StringComparison.Ordinal);
+
+    /// <summary>After a first installation: only in full integration and only when the user left the choice on.</summary>
+    private bool ApiAfterInstall() => IsFull && _config.Current.CaseHudInstallApi;
+
+    /// <summary>The installer's hook: a failure becomes the hint on the page, the installation itself stays a success.</summary>
+    private async Task EnableApiAfterInstallAsync(CancellationToken ct)
+    {
+        try { await _apiSwitch.SetAsync(true, ct); }
+        catch (InvalidOperationException ex) { _error = ex.Message; }
+        lock (_lock)
+        {
+            _cachedAt = DateTimeOffset.MinValue;
+            _instanceAt = DateTimeOffset.MinValue;
+        }
+    }
+
+    /// <summary>
+    /// The installed CaseHUD.exe as it may be run from here: from the HKLM uninstall entry (only administrators write it), its real path
+    /// (links and short names resolved), no reparse point on the way, and inside Program Files (only administrators write there).
+    /// Never a path from api.json or instance.pid, never one in a user-writable folder; null otherwise.
+    /// </summary>
+    private string? TrustedExe()
+    {
+        var install = _discovery.FindInstall();
+        if (install is null) return null;
+        try
+        {
+            var exe = CanonicalPath(Path.GetFullPath(install.Exe));
+            PathSafety.RequireNoReparsePoints(exe);
+            if (CaseHudCli.IsTrustedInstallPath(exe, TrustedCliRunner.TrustedRoots())) return exe;
+            Console.Error.WriteLine("[casehud] api switch: CaseHUD is not installed below Program Files, not run");
+            return null;
+        }
+        catch (Exception ex) when (ex is CatalogException or IOException or ArgumentException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[casehud] api switch: install path rejected ({ex.GetType().Name})");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Runs the verified exe with one argument, no window, no shell. Only stderr is redirected (for one capped log line); stdout is not, so
+    /// no pipe of ours is left for a child to hold. The wait is bounded by <see cref="CaseHudCli.RunAsync"/>: timeout or cancellation kill
+    /// the process tree, stderr gets a short grace after the exit. Null exit = timed out (ended).
+    /// </summary>
+    private static async Task<(int? Exit, string Stderr)> RunCliAsync(string exe, string arguments, CancellationToken ct)
+    {
+        var info = new ProcessStartInfo(exe)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Path.GetDirectoryName(exe)!
+        };
+        info.ArgumentList.Add(arguments);
+        Process? process;
+        try { process = Process.Start(info); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException) { return (-1, ex.GetType().Name); }
+        if (process is null) return (-1, "");
+        return await CaseHudCli.RunAsync(new CliProcess(process), ct);
+    }
+
+    private sealed class CliProcess : ICaseHudCliProcess
+    {
+        private readonly Process _process;
+
+        public CliProcess(Process process)
+        {
+            _process = process;
+            Stderr = ReadCappedAsync(process.StandardError);
+        }
+
+        public Task<string> Stderr { get; }
+        public int ExitCode => _process.ExitCode;
+        public Task WaitForExitAsync(CancellationToken ct) => _process.WaitForExitAsync(ct);
+
+        public void Kill()
+        {
+            try { _process.Kill(entireProcessTree: true); }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException or AggregateException) { }
+        }
+
+        // Closes our end of the pipe: a read still waiting (a child holds the other end) ends with an exception, caught below.
+        public void Dispose() => _process.Dispose();
+    }
+
+    /// <summary>At most 4096 characters are kept; the rest is read and dropped so the process never blocks on a full pipe.</summary>
+    private static async Task<string> ReadCappedAsync(StreamReader reader)
+    {
+        var kept = new StringBuilder();
+        var chunk = new char[1024];
+        try
+        {
+            int read;
+            while ((read = await reader.ReadAsync(chunk)) > 0)
+                if (kept.Length < 4096) kept.Append(chunk, 0, Math.Min(read, 4096 - kept.Length));
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { }
+        return kept.ToString();
+    }
+
     private void CleanTemp()
     {
         try
@@ -543,6 +849,7 @@ public sealed class CaseHudManager : IDisposable
     {
         _stop.Cancel();
         _leaseTimer?.Dispose();
+        _watcher?.Dispose();
         // End a running lease (CaseHUD would otherwise keep the gaming scene for up to two more minutes), but never wait long.
         try { Task.Run(() => _lease.EndAsync(TimeSpan.FromMilliseconds(1500))).Wait(TimeSpan.FromMilliseconds(2000)); }
         catch (AggregateException) { }

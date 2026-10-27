@@ -123,7 +123,7 @@ public static class AdminService
     /// Says clearly what an administrator is about to approve, before Windows' UAC prompt appears (the HUD shows it and waits a moment).
     /// Without a HUD (the sign-in's run entry) nothing is shown beyond the prompt itself.
     /// </summary>
-    public static Func<IReadOnlyList<Operation>, Task> AnnounceApproval { get; set; } = _ => Task.CompletedTask;
+    public static Func<IReadOnlyList<Operation>, string?, Task> AnnounceApproval { get; set; } = (_, _) => Task.CompletedTask;
 
     /// <summary>
     /// "Needs a parent or an administrator", the fallback where the parents' code did not do (no parents' code, locked out, or a planted one),
@@ -132,7 +132,8 @@ public static class AdminService
     /// prompt (consent.exe on the secure desktop), so the administrator's credential never passes through CouchHUD; the service then hands
     /// this account the grant. False when the prompt was declined or nothing came of it.
     /// </summary>
-    public static async Task<bool> ObtainAdminGrantAsync(IReadOnlyList<Operation> ops)
+    /// <param name="reason">Why, when the operations alone do not say it ("legacy": the lock of 0.4.0 is confirmed once).</param>
+    public static async Task<bool> ObtainAdminGrantAsync(IReadOnlyList<Operation> ops, string? reason = null)
     {
         if (!Ops.Expected) return false;
         var (request, control) = await Ops.RequestAdminApprovalAsync(ops).ConfigureAwait(false);
@@ -143,7 +144,7 @@ public static class AdminService
             (request, control) = await Ops.RequestAdminApprovalAsync(ops).ConfigureAwait(false);
         }
         if (!request.Ok || control is not { } code) throw new InvalidOperationException(Message(request));
-        await AnnounceApproval(ops).ConfigureAwait(false);
+        await AnnounceApproval(ops, reason).ConfigureAwait(false);
         var launch = EmergencyRepair.AdminApproval(Environment.SystemDirectory, WindowsServiceControl.DefaultServiceName, code);
         try
         {
@@ -173,7 +174,25 @@ public static class AdminService
     public static Task<OpResult> WithGrantAsync(IReadOnlyList<Operation> ops, Func<Task<OpResult>> operation) =>
         GrantFlow.WithGrantAsync(operation, () => ObtainAdminGrantAsync(ops));
 
-    /// <summary>Removes the scheduled tasks of earlier versions through the service (it deletes them as SYSTEM, after its own proof).</summary>
+    /// <summary>
+    /// The one-time confirmation of a lock of 0.4.0 (security review H-1): an administrator confirms exactly what <paramref name="reason"/>
+    /// names (<see cref="LegacyCodeReason"/>: the code just entered becomes the lock's only code; <see cref="LegacyWindowsReason"/>: the
+    /// Windows sign-in is the lock), and the HUD says that and why first.
+    /// </summary>
+    public static Task<OpResult> WithLegacyApprovalAsync(Operation op, string reason, Func<Task<OpResult>> operation) =>
+        GrantFlow.WithGrantAsync(operation, () => ObtainAdminGrantAsync([op], reason));
+
+    public const string LegacyCodeReason = "legacyCode";
+    public const string LegacyWindowsReason = "legacyWindows";
+    /// <summary>The code just entered does not match the config's code of 0.4.0, and the person chose to have it confirmed as the new one.</summary>
+    public const string LegacyNewCodeReason = "legacyNewCode";
+
+    /// <summary>
+    /// Removes the scheduled tasks of earlier versions through the service (it deletes them as SYSTEM, after its own proof). Only a fallback
+    /// for what the shell can see: tasks the setup or the service already restricted to SYSTEM and the administrators are invisible to a
+    /// standard account's <c>schtasks /query</c>, so <see cref="ServiceSwitch.HasTaskLeftovers"/> misses them; those the service's own
+    /// sweeps migrate (at its start, at each logon while a lock of 0.4.0 waits, and when it applies the lock policies).
+    /// </summary>
     public static async Task MigrateTasksIfAnyAsync()
     {
         if (!Ops.Expected || !ServiceSwitch.HasTaskLeftovers()) return;

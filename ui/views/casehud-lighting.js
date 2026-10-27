@@ -11,7 +11,7 @@ import { chooseDialog, confirmDialog } from '../components/overlay.js';
 import { sound } from '../sound.js';
 import { lang, t } from '../core/i18n.js';
 import { settler } from './casehud-settle.js';
-import { bar, cycle, disclaimerRow, listPage, needsDisclaimer, openCaseHudGui, reloadCaseHud, unlocked } from './casehud.js';
+import { apiOffRow, bar, caseHudApiOff, cycle, disclaimerRow, listPage, needsDisclaimer, openCaseHudGui, reloadCaseHud, unlocked } from './casehud.js';
 
 // i18n-used: casehud.fx.solid casehud.fx.breathing casehud.fx.rainbow casehud.fx.cycle casehud.fx.wave casehud.fx.sensor casehud.fx.meteor
 const KNOWN_EFFECTS = new Map(['solid', 'breathing', 'rainbow', 'cycle', 'wave', 'sensor', 'meteor'].map((name) => [name, 'casehud.fx.' + name]));
@@ -183,7 +183,8 @@ export function lightingPage() {
     title: t('casehud.light.title'),
     onClose: () => settle.flushAll(),
     onEnter() {
-      if (this.asked) return;
+      // API off: the rows show the hint; asked again once it is on (the page is built again then).
+      if (this.asked || caseHudApiOff()) return;
       this.asked = true;
       load(this);
     },
@@ -191,6 +192,8 @@ export function lightingPage() {
       const page = this;
       const st = state.caseHud?.status;
       const rows = [];
+      // API switched off in CaseHUD (also while this page is open): the hint where to switch it on, not a connection error.
+      if (caseHudApiOff()) return [apiOffRow()];
       if (needsDisclaimer(st)) rows.push(disclaimerRow());
       if (!light) return [...rows, { items: [{ icon: failed ? '!' : '⟳', label: failed ? t('casehud.light.unavailable') : t('casehud.loading') }] }];
 

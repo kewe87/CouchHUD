@@ -19,8 +19,9 @@ import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
 import { currentView, pop, renderHints } from '../core/nav.js';
 import { state } from '../core/state.js';
-import { chooseDialog, confirmDialog } from '../components/overlay.js';
-import { choosePasscode, ensureUnlocked, isLocked } from '../components/passcode.js';
+import { confirmDialog } from '../components/overlay.js';
+import { ensureUnlocked, isLocked, onApprovalAnnounced } from '../components/passcode.js';
+import { lockStepStatus, setupCouchLock } from '../core/lock-rules.js';
 import { sound } from '../sound.js';
 
 const MARK = { done: '✓', ok: '✓', todo: '•', unknown: '?', na: '–', running: '…', skipped: '–', failed: '✕', aborted: '–' };
@@ -70,6 +71,9 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
   let lastEnv = null;
   let actions = [];
   let loading = null;
+  // Waiting for the couch to open (code entry, Windows sign-in) and, with a lock of 0.4.0, for an administrator's approval (UAC):
+  // no step shows a status of its own until that is through.
+  let waiting = null; // null, 'unlock', 'admin'
 
   const page = {
     id,
@@ -88,9 +92,27 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
       return loading;
     },
 
+    /** ensureUnlocked, and while it waits the page says what it waits for; a cancel leaves the page as it was before. */
+    async unlock() {
+      if (!(await isLocked())) return true;
+      waiting = 'unlock';
+      this.paint();
+      const stop = onApprovalAnnounced(() => {
+        waiting = 'admin';
+        this.paint();
+      });
+      try {
+        return await ensureUnlocked(title);
+      } finally {
+        stop();
+        waiting = null;
+        this.paint();
+      }
+    },
+
     async loadNow() {
       // Before anything is read: with the couch locked the reads are refused, and an answer from the refusal would be a guess.
-      if (!(await ensureUnlocked(title))) {
+      if (!(await this.unlock())) {
         if (currentView() === this) pop();
         return;
       }
@@ -146,7 +168,7 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
           continue;
         }
         // The release of the couch lock is short; ask again whenever it ran out between two steps.
-        if (!(await ensureUnlocked(title))) {
+        if (!(await this.unlock())) {
           cancel = true;
           row.status = 'aborted';
           row.note = t('consoleSetup.notUnlocked');
@@ -211,16 +233,19 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
       if (closed || !this.root || currentView() !== this) return;
       if (phase === 'overview') actions = [{ label: startLabel, run: () => this.start().catch(console.error) }, { label: t('consoleSetup.action.cancel'), run: () => pop() }];
       if (phase === 'loading' || phase === 'running') actions = [];
-      this.stepNodes = rows.map((row) => el('li', { className: `check-row console-step status-${row.status}` },
-        el('span', { className: 'check-box', textContent: MARK[row.status] }),
+      // Before the first read (code entry, approval) nothing is known yet: no "will be done" for a step that has not been looked at.
+      const label = (row) => (phase === 'loading' ? t('consoleSetup.status.pending') : phase === 'overview' && row.status === 'todo' ? t('consoleSetup.status.open') : LABEL()[row.status]);
+      this.stepNodes = rows.map((row) => el('li', { className: `check-row console-step status-${phase === 'loading' ? 'pending' : row.status}` },
+        el('span', { className: 'check-box', textContent: phase === 'loading' ? MARK.na : MARK[row.status] }),
         el('span', { className: 'check-main' },
           el('strong', { textContent: row.step.title }),
-          el('small', { textContent: row.note || row.step.detail })),
-        el('span', { className: `pill ${row.status === 'ok' || row.status === 'done' ? 'on' : 'off'}`, textContent: phase === 'overview' && row.status === 'todo' ? t('consoleSetup.status.open') : LABEL()[row.status] })));
+          el('small', { textContent: (phase !== 'loading' && row.note) || row.step.detail })),
+        el('span', { className: `pill ${phase !== 'loading' && (row.status === 'ok' || row.status === 'done') ? 'on' : 'off'}`, textContent: label(row) })));
       this.actionNodes = actions.map((a) => el('li', { className: 'check-row highlight console-action' },
         el('span', { className: 'check-main' }, el('strong', { textContent: a.label }))));
       const heading = phase === 'done' ? t('consoleSetup.headingDone', { summary: this.summary() }) : phase === 'running' ? t('consoleSetup.headingRunning') : title;
-      const lead = phase === 'done'
+      const waitText = waiting === 'admin' ? t('consoleSetup.waitingAdmin') : waiting === 'unlock' ? t('consoleSetup.waitingUnlock') : '';
+      const lead = waitText ? waitText : phase === 'done'
         ? (rows.some((r) => r.status === 'failed') ? t('consoleSetup.leadFailed') : rows.some((r) => ['skipped', 'aborted'].includes(r.status)) ? t('consoleSetup.leadSkipped') : t('consoleSetup.leadAllDone'))
         : phase === 'running' ? t('consoleSetup.leadRunning') : intro;
       const extra = phase === 'overview' ? notes(adminPrompts, lastEnv) : [];
@@ -315,30 +340,24 @@ const ok = (note) => ({ status: 'ok', note });
 const skipped = (note) => ({ status: 'skipped', note });
 const failed = (note) => ({ status: 'failed', note });
 
-async function setupLock(env) {
-  if (env.security.couchLock === 'windows') return ok(t('consoleSetup.lock.windowsNote'));
-  if (env.security.hasPasscode) {
-    const keep = await chooseDialog(t('consoleSetup.lock.existingTitle'), [
-      { label: t('consoleSetup.lock.keepCode'), value: 'keep' },
-      { label: t('consoleSetup.lock.newCode'), value: 'new' }
-    ], 'keep');
-    if (keep === undefined) return skipped(t('consoleSetup.lock.noChoice'));
-    if (keep === 'keep') {
-      await api.setCouchLock('code');
-      return ok(env.security.accountPassword === false ? t('consoleSetup.lock.codeNoPassword') : t('consoleSetup.lock.existingActive'));
-    }
-  }
-  let code;
-  for (;;) {
-    code = await choosePasscode();
-    if (code) break;
-    if (!(await confirmDialog(t('consoleSetup.lock.codeNotSet'), t('consoleSetup.lock.codeNotSetButton')))) {
-      return skipped(t('consoleSetup.lock.noCode'));
-    }
-  }
-  await api.setPasscode(code);
-  await api.setCouchLock('code');
-  return ok(env.security.accountPassword === false ? t('consoleSetup.lock.codeNoPassword') : t('consoleSetup.lock.codeActive'));
+/**
+ * The lock step (rules in core/lock-rules.js): the code goes along with the switch in one step, never "code set, then the lock on" (the
+ * CouchHUD service drops a code set at the open couch when a lock is switched on, and the code lock would have no code; finding of the
+ * 0.4.2 acceptance test). The flows are the settings page's own (deps), with every check of the couch, the parents and the host.
+ */
+async function setupLock(env, deps) {
+  // A code from the open couch is not kept: said before the entry, so the old code can simply be entered again.
+  if (env.security.couchLock !== 'code' && env.security.couchLock !== 'windows' && env.security.hasPasscode) toast(t('consoleSetup.lock.reenterCode'), 8000);
+  const result = await setupCouchLock({
+    security: env.security,
+    enroll: () => deps.enrollCodeLock(),
+    restore: () => deps.restoreCodeLock(),
+    askAgain: () => confirmDialog(t('consoleSetup.lock.codeNotSet'), t('consoleSetup.lock.codeNotSetButton'))
+  });
+  // i18n-used: consoleSetup.lock.windowsNote consoleSetup.lock.codeNoPassword consoleSetup.lock.existingActive consoleSetup.lock.codeActive
+  // i18n-used: consoleSetup.lock.notSaved consoleSetup.lock.noCode consoleSetup.lock.legacyConfirmFirst
+  const note = `consoleSetup.lock.${result.note}`;
+  return { status: result.status, note: t(note) };
 }
 
 function setupSteps() {
@@ -425,8 +444,8 @@ function setupSteps() {
       title: t('consoleSetup.step.lock.title'),
       detail: t('consoleSetup.step.lock.detail'),
       requires: ['integration'],
-      check: (env) => (env.security.couchLock && env.security.couchLock !== 'off' && (env.security.couchLock !== 'code' || env.security.hasPasscode) ? 'done' : 'todo'),
-      run: (env) => setupLock(env)
+      check: (env) => lockStepStatus(env.security),
+      run: (env, deps) => setupLock(env, deps)
     },
     {
       id: 'shell',
@@ -635,5 +654,5 @@ export function hasConsoleSetup(settings, security, leftovers = false) {
 
 /** True when every part of the setup is in place. */
 export function isConsoleReady(settings, security) {
-  return settings?.integrationMode === 'full' && !!settings?.isShell && security?.couchLock && security.couchLock !== 'off' && (!!security?.autoLogon || security?.accountPassword === false);
+  return settings?.integrationMode === 'full' && !!settings?.isShell && lockStepStatus(security) === 'done' && (!!security?.autoLogon || security?.accountPassword === false);
 }

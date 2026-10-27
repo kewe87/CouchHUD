@@ -113,4 +113,17 @@ public interface ITaskScheduler
 
     /// <summary>Makes sure the task's access list lets <paramref name="sid"/> start it; true when it does afterwards.</summary>
     bool EnsureStartRight(string taskName, string sid);
+
+    /// <summary>
+    /// Sets the task's access list to SYSTEM and administrators only (<see cref="CouchHud.Core.Guard.PolicyGroups.AdministratorsOnlyDescriptor"/>),
+    /// so no user can start it any more; true when the Task Scheduler shows exactly that afterwards (also when it was so already).
+    /// </summary>
+    bool RestrictToAdministrators(string taskName);
+
+    /// <summary>
+    /// Sets the task's access list to exactly <see cref="CouchHud.Core.Guard.PolicyGroups.TaskSecurityDescriptor"/> of <paramref name="sid"/>:
+    /// SYSTEM and administrators fully, the user read and start only, nobody else (the Autologon-off of 0.4.0, security review M-3); true when
+    /// the Task Scheduler shows that afterwards (<see cref="CouchHud.Core.Guard.PolicyGroups.OnlyUserStart"/>, also when it was so already).
+    /// </summary>
+    bool RestrictToUserStart(string taskName, string sid);
 }

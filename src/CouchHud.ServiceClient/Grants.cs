@@ -20,7 +20,8 @@ public enum GrantKind
 }
 
 /// <summary>Which codes the service holds for the account and its lock mode (nulls: it could not tell).</summary>
-public sealed record HeldCodes(bool? Couch, bool? Parent, string? LockMode);
+/// <param name="LegacyLock">The lock was taken over from 0.4.0 and waits for an administrator's confirmation (security review H-1).</param>
+public sealed record HeldCodes(bool? Couch, bool? Parent, string? LockMode, bool LegacyLock = false);
 
 /// <summary>
 /// The grants the service gave this shell, in memory only (never written anywhere, never logged). Two lives, like in the service:
@@ -198,7 +199,9 @@ public enum MigrationResult
     /// <summary>The service holds a code of its own (or its lock wants an approval): it wins, the user is told.</summary>
     Conflict,
     /// <summary>Nothing to migrate, or the service could not be asked: try again later.</summary>
-    NotYet
+    NotYet,
+    /// <summary>The service's lock was taken over from 0.4.0: the code goes over only with an administrator's approval (asked at the next code entry).</summary>
+    NeedsApproval
 }
 
 /// <summary>
@@ -213,24 +216,30 @@ public static class CodeFlow
     /// (it needs no code); no lock: the code alone. Only a hash in the format of <c>Passcode.Hash</c> is sent. "Conflict": the service
     /// already holds a code or a lock of its own: it wins, and the shell says so instead of pretending it took the local one (review L-c).
     /// The parents' code is never migrated from the hash: it is set as "both" with the next new code, or by a parent or an administrator.
+    /// <paramref name="withApproval"/>: when the service wants an approval for the step (a lock taken over from 0.4.0, security review H-1),
+    /// the caller gets it this way (an administrator through UAC); without it the step is not taken ("conflict").
     /// </summary>
-    public static async Task<MigrationResult> MigrateAsync(IPrivilegedOps ops, string? localHash, string mode)
+    public static async Task<MigrationResult> MigrateAsync(IPrivilegedOps ops, string? localHash, string mode,
+        Func<Operation, Func<Task<OpResult>>, Task<OpResult>>? withApproval = null)
     {
         var hash = RequestValidator.IsPasscodeHash(localHash) ? localHash : null;
-        OpResult result;
+        Operation operation;
+        Func<Task<OpResult>> step;
         switch (mode)
         {
             case LockModes.Code when hash is not null:
-                result = await ops.SetLockModeAsync(LockModes.Code, hash, CodeKinds.Couch).ConfigureAwait(false);
+                (operation, step) = (Operation.SetLockMode, () => ops.SetLockModeAsync(LockModes.Code, hash, CodeKinds.Couch));
                 break;
             case LockModes.Windows:
-                result = await ops.SetLockModeAsync(LockModes.Windows).ConfigureAwait(false);
+                (operation, step) = (Operation.SetLockMode, () => ops.SetLockModeAsync(LockModes.Windows));
                 break;
             default:
                 if (hash is null) return MigrationResult.NotYet;
-                result = await ops.EnrollPasscodeAsync(hash, CodeKinds.Couch).ConfigureAwait(false);
+                (operation, step) = (Operation.EnrollPasscode, () => ops.EnrollPasscodeAsync(hash, CodeKinds.Couch));
                 break;
         }
+        var result = await step().ConfigureAwait(false);
+        if (result.Failure == FailureKind.NeedGrant && withApproval is not null) result = await withApproval(operation, step).ConfigureAwait(false);
         if (result.Ok) return MigrationResult.Done;
         return result.Code == ErrorCodes.Denied || result.Failure == FailureKind.NeedGrant ? MigrationResult.Conflict : MigrationResult.NotYet;
     }
@@ -240,6 +249,13 @@ public static class CodeFlow
     /// (review 3, item 2).
     /// </summary>
     public static bool UnknownParentCode(HeldCodes? held, bool parentalEnabled) => held?.Parent == true && !parentalEnabled;
+
+    /// <summary>
+    /// The code lock may be switched on without a new code only when the service holds a couch code that survives the switch: a lock is on
+    /// already (from no lock, every code enrolled freely at the open couch goes with the switch, review 3, item 2). Otherwise the mode would
+    /// be the code lock with no code to open it, and only an administrator could help. Not known (null) or a lock of 0.4.0: no.
+    /// </summary>
+    public static bool CodeLockKeepsCode(HeldCodes? held) => held is { Couch: true, LegacyLock: false } && LockModes.Rank(held.LockMode) > 0;
 
     /// <summary>
     /// A new code. With parental controls as couch and parents' code in one step ("both": the HUD uses one code for both, and nothing planted

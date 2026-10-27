@@ -7,6 +7,25 @@ using ServiceCodeState = CouchHud.ServiceClient.HeldCodes;
 
 namespace CouchHud.Shell.Services;
 
+/// <summary>How the confirmation of a lock of 0.4.0 with a code went (<see cref="ServiceCodes.ConfirmLegacyCodeAsync"/>).</summary>
+public enum LegacyConfirm
+{
+    /// <summary>An administrator confirmed it as a new code: the service holds the lock with the code just entered, and nothing else.</summary>
+    Confirmed,
+    /// <summary>
+    /// Confirmed like <see cref="Confirmed"/>, with the old code of 0.4.0: that code lay readable in the configuration, so the HUD asks for a
+    /// new one in the settings.
+    /// </summary>
+    ConfirmedOldCode,
+    /// <summary>Nothing changed (no lock of 0.4.0, UAC cancelled, the service refused).</summary>
+    NotConfirmed,
+    /// <summary>
+    /// The code does not match the stored code of 0.4.0, or there is none stored (missing, only the marker); nothing was asked. The HUD
+    /// offers the administrator's confirmation.
+    /// </summary>
+    Mismatch
+}
+
 /// <summary>
 /// The codes and the lock mode with the CouchHUD service (P9): the service keeps them and checks the buttons; the config keeps only
 /// <see cref="Passcode.HeldByService"/> (the UI needs to know that a code exists, nothing more). Without a service by design (an unprotected
@@ -37,6 +56,9 @@ public static class ServiceCodes
     /// program of the user changed the config before; it takes it once per account, only a hash in the format of <see cref="Passcode.Hash"/>,
     /// and never over a code or a lock it has. Taken: the config keeps only the marker. A conflict (the service has its own) is reported, not
     /// treated as success (review L-c): the local hash stays, unlocking goes by the service. Nothing to migrate counts as done.
+    /// A lock of 0.4.0 the service has not had confirmed yet (<see cref="HeldCodes.LegacyLock"/>) takes nothing of the config by itself
+    /// (security review H-1: a child could have written its own code into the config): "needs approval", no conflict shown; the next code
+    /// entry or Windows sign-in asks an administrator (<see cref="ConfirmLegacyCodeAsync"/>, <see cref="ConfirmLegacyWindowsAsync"/>).
     /// </summary>
     public static async Task<MigrationResult> MigrateAsync(ConfigStore config)
     {
@@ -45,6 +67,13 @@ public static class ServiceCodes
         var mode = config.Current.CouchLock;
         var local = Passcode.IsLocalHash(hash);
         if (!local && mode != LockModes.Windows) return MigrationResult.Done;
+        var held = await RefreshAsync().ConfigureAwait(false);
+        if (held is null) return MigrationResult.NotYet;
+        if (held.LegacyLock)
+        {
+            Console.WriteLine("[codes] local code and lock mode stay: the lock of 0.4.0 waits for an administrator's confirmation");
+            return MigrationResult.NeedsApproval;
+        }
         var result = await CodeFlow.MigrateAsync(AdminService.Ops, local ? hash : null, mode).ConfigureAwait(false);
         Console.WriteLine($"[codes] local code and lock mode to the service: {result}");
         if (result == MigrationResult.Conflict) Conflict = true;
@@ -56,6 +85,53 @@ public static class ServiceCodes
             });
         }
         return result;
+    }
+
+    /// <summary>
+    /// A lock of 0.4.0 the service has not had confirmed (<see cref="HeldCodes.LegacyLock"/>), opened with a code (security review H-1, second
+    /// round): an administrator confirms through UAC that <b>the code just entered</b> is the lock's code; the service then holds exactly that
+    /// one (the code lock), and every code the account had before (couch and parents', planted or not) is gone. A code that does not match
+    /// the config's code of 0.4.0 asks nothing by itself (<see cref="LegacyConfirm.Mismatch"/>: a mistyped one must not bring up UAC on
+    /// every try); only when the person then chooses it explicitly (<paramref name="asNewCode"/>, the HUD's dialog "confirm as an
+    /// administrator") an administrator may confirm it as the lock's new code: the config's code may have been changed by a program of
+    /// the account, and the parents must still get in with the code they know (third security review).
+    /// </summary>
+    public static async Task<LegacyConfirm> ConfirmLegacyCodeAsync(ConfigStore config, IReadOnlyList<string> sequence, bool asNewCode = false)
+    {
+        if (!Expected) return LegacyConfirm.NotConfirmed;
+        if (await RefreshAsync().ConfigureAwait(false) is not { LegacyLock: true }) return LegacyConfirm.NotConfirmed;
+        var stored = config.Current.PasscodeHash;
+        // Only a real stored hash that verifies counts as the old code; nothing stored (or the marker) asks first like a mismatch (review 4),
+        // so no entry at all brings up UAC by itself.
+        var matches = Passcode.MatchesLocal(sequence, stored);
+        if (!matches && !asNewCode) return LegacyConfirm.Mismatch;
+        var hash = Passcode.Hash(sequence);
+        var reason = matches ? AdminService.LegacyCodeReason : AdminService.LegacyNewCodeReason;
+        var result = await AdminService.WithLegacyApprovalAsync(Operation.SetLockMode, reason,
+            () => AdminService.Ops.SetLockModeAsync(LockModes.Code, hash, CodeKinds.Couch)).ConfigureAwait(false);
+        Console.WriteLine($"[codes] lock of 0.4.0 with the code just entered ({reason}), confirmed by an administrator: {result}");
+        if (!result.Ok) return LegacyConfirm.NotConfirmed;
+        config.Update(c =>
+        {
+            if (Passcode.IsLocalHash(c.PasscodeHash)) c.PasscodeHash = Passcode.HeldByService;
+        });
+        Conflict = false;
+        if (await RefreshAsync().ConfigureAwait(false) is not { LegacyLock: false }) return LegacyConfirm.NotConfirmed;
+        return matches ? LegacyConfirm.ConfirmedOldCode : LegacyConfirm.Confirmed;
+    }
+
+    /// <summary>
+    /// The same for a lock of 0.4.0 opened with the Windows sign-in: an administrator confirms that <b>the Windows sign-in</b> is the lock (the
+    /// Windows mode); every code the account had before goes. True when the lock is the service's own now.
+    /// </summary>
+    public static async Task<bool> ConfirmLegacyWindowsAsync()
+    {
+        if (!Expected) return false;
+        if (await RefreshAsync().ConfigureAwait(false) is not { LegacyLock: true }) return false;
+        var result = await AdminService.WithLegacyApprovalAsync(Operation.SetLockMode, AdminService.LegacyWindowsReason,
+            () => AdminService.Ops.SetLockModeAsync(LockModes.Windows)).ConfigureAwait(false);
+        Console.WriteLine($"[codes] lock of 0.4.0 with the Windows sign-in, confirmed by an administrator: {result}");
+        return result.Ok && await RefreshAsync().ConfigureAwait(false) is { LegacyLock: false };
     }
 
     /// <summary>

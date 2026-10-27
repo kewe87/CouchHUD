@@ -33,7 +33,7 @@ public class ReviewFixTests
     [Fact]
     public void A_setup_is_started_without_inherited_handles_and_with_exactly_the_given_environment()
     {
-        var temp = Path.Combine(AppContext.BaseDirectory, "p6-env-" + Guid.NewGuid().ToString("N"));
+        var temp = Path.Combine(Path.GetTempPath(), "p6e-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(temp);
         // An inheritable handle in this process: the child must not get it (bInheritHandles false). Not observable from the
         // child here; the start itself must work with it present, and the environment must be the built one.

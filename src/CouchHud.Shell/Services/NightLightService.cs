@@ -91,12 +91,14 @@ public static class GameBar
 
     private static void Chord(byte key)
     {
+        KeyboardInput.MarkInjected();
         keybd_event(VkLWin, 0, 0, UIntPtr.Zero);
         keybd_event(VkMenu, 0, 0, UIntPtr.Zero);
         keybd_event(key, 0, 0, UIntPtr.Zero);
         keybd_event(key, 0, KeyUp, UIntPtr.Zero);
         keybd_event(VkMenu, 0, KeyUp, UIntPtr.Zero);
         keybd_event(VkLWin, 0, KeyUp, UIntPtr.Zero);
+        KeyboardInput.MarkInjected();
     }
 
     [DllImport("user32.dll")]

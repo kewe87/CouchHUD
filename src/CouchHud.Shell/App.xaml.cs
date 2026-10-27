@@ -22,8 +22,15 @@ public partial class App : Application
     private EventWaitHandle? _activate;
     private Hud? _hud;
 
+    // Names of the WEBVIEW2_* variables removed at start, logged once the log is open (names only, never values).
+    private static IReadOnlyList<string> _scrubbed = [];
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Before anything else, before any WebView2 exists: the WebView2 loader takes WEBVIEW2_* variables (user environment, settable
+        // by any standard user with setx) over our options, e.g. --remote-debugging-port, which would hand the HUD page and its bridge to
+        // any local program. Removed from this process; every child process (guard, games, helpers) inherits the cleaned environment.
+        _scrubbed = WebViewEnvironment.ScrubProcess();
         base.OnStartup(e);
 
         // Helpers first, before any logging: the elevated one (the uninstaller's cleanup) must not write into
@@ -39,6 +46,7 @@ public partial class App : Application
         {
             // Not elevated, so it may write the log; what the guard does must be traceable.
             Log.Init(guard: true);
+            LogScrubbed();
             try
             {
                 Shutdown(Guard.Run(e.Args[1]));
@@ -116,6 +124,7 @@ public partial class App : Application
         }
         // First thing: as the shell, an unhandled error at startup means a black screen.
         Log.Init();
+        LogScrubbed();
         DispatcherUnhandledException += (_, args) =>
         {
             Console.Error.WriteLine($"[app] unhandled: {args.Exception}");
@@ -163,9 +172,13 @@ public partial class App : Application
         };
 
         // Recovery: Ctrl + Shift or LB + RB + View held at start, or a crash loop, as the shell only.
-        var dev = e.Args.Contains("--dev");
+        // --dev (window mode, DevTools, no recovery wait, relaxed checks) only in a debug build or with the administrator's switch in
+        // HKLM: a standard user can put --dev into a shortcut, a Run entry or the account's shell value.
+        var decision = DeveloperMode.Decide(e.Args);
+        var dev = decision.Dev;
         var shell = new ShellManager(new WindowsRegistry());
-        Console.WriteLine($"[app] args: {string.Join(' ', e.Args)}, dev {dev}, process {Environment.ProcessPath}");
+        Console.WriteLine($"[app] args: {string.Join(' ', e.Args)}, dev {dev} ({decision.Reason}), process {Environment.ProcessPath}");
+        if (decision.RemoteDebuggingPort is { } port) Console.WriteLine($"[dev] remote debugging on 127.0.0.1:{port} (HKLM RemoteDebuggingPort)");
         shell.LogDiagnostics("start");
         // A desktop that is just starting gets a moment to show up before we decide (nothing is on screen yet).
         if (!dev && shell.IsInstalledAsShell()) ShellManager.WaitForDesktopShell(TimeSpan.FromSeconds(3));
@@ -227,6 +240,12 @@ public partial class App : Application
         }
 
         StartHud(dev);
+    }
+
+    private static void LogScrubbed()
+    {
+        if (_scrubbed.Count > 0) Console.Error.WriteLine($"[app] removed WebView2 override variables from the environment: {string.Join(", ", _scrubbed)}");
+        if (WebViewEnvironment.AnyLeft()) Console.Error.WriteLine("[app] WebView2 override variables could not all be removed");
     }
 
     /// <summary>The first seconds after the start: the recovery combination may still come (a controller shows up late).</summary>

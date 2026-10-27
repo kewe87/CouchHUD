@@ -22,6 +22,7 @@ using CodeCheckResults = CouchHud.Service.Contracts.CodeCheckResults;
 using CodeKinds = CouchHud.Service.Contracts.CodeKinds;
 using ServiceOperation = CouchHud.Service.Contracts.Operation;
 using ErrorCodes = CouchHud.Service.Contracts.ErrorCodes;
+using BluetoothRecoveryController = CouchHud.Core.Input.BluetoothRecoveryController;
 
 namespace CouchHud.Shell;
 
@@ -127,10 +128,11 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     {
         _window = window;
         // What an administrator approves through UAC is said in the HUD first (P9 review M-c); a moment to read it before the prompt.
-        AdminService.AnnounceApproval = async ops =>
+        AdminService.AnnounceApproval = async (ops, reason) =>
         {
-            Ui(() => Emit("adminApproval", new { what = ops.Select(o => o.ToString()).Distinct().ToArray() }));
-            await Task.Delay(TimeSpan.FromSeconds(2));
+            Ui(() => Emit("adminApproval", new { what = ops.Select(o => o.ToString()).Distinct().ToArray(), reason }));
+            // The confirmation of the lock of 0.4.0 has more to say (why at all): more time to read it.
+            await Task.Delay(TimeSpan.FromSeconds(reason is null ? 2 : 8));
         };
         // Website entries from before 0.4.0 opened in the system's browser: known copy-protected streaming services stay in Edge,
         // all others now open in the couch browser. Decided once, then the entry's own setting counts.
@@ -153,6 +155,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         optional.Run("catalog checks", Catalog.StartBackgroundChecks);
         optional.Run("self update checks", SelfUpdate.StartBackgroundChecks);
         optional.Run("notifications", StartNotifications);
+        optional.Run("bluetooth recovery", StartBluetoothGuard);
         optional.Run("night mode", () => _night.Start(() => (config.Current.NightMode, config.Current.NightModeStrength)));
         optional.Run("hdr", ApplyUiHdr);
         _ = ApplyMcpAsync();
@@ -363,7 +366,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public LibraryItem? FindItem(string id) => library.Items.FirstOrDefault(i => i.Id == id);
 
-    private static void Ui(Action action) => Application.Current.Dispatcher.BeginInvoke(action);
+    private static void Ui(Action action) => Application.Current?.Dispatcher.BeginInvoke(action);
 
     // -----------------------------------------------------------------------
     // Controller
@@ -1553,11 +1556,13 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             suppressCompetitors = c.SuppressCompetitors,
             integrationMode = c.IntegrationMode,
             expertMode = c.ExpertMode,
+            bluetoothAutoOn = c.BluetoothAutoOn,
             language = c.Language,
             closeExplorerInLight = c.CloseExplorerInLight,
             selfUpdateCheck = c.SelfUpdateCheck,
             caseHudInstallAutostart = c.CaseHudInstallAutostart,
             caseHudInstallFps = c.CaseHudInstallFps,
+            caseHudInstallApi = c.CaseHudInstallApi,
             caseHudGamingLease = c.CaseHudGamingLease,
             screensaverMinutes = c.ScreensaverMinutes,
             screensaverStyle = c.ScreensaverStyle,
@@ -1652,9 +1657,17 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 var chFps = Bool();
                 config.UpdateOrThrow(c => c.CaseHudInstallFps = chFps);
                 break;
+            case "caseHudInstallApi":
+                var chApi = Bool();
+                config.UpdateOrThrow(c => c.CaseHudInstallApi = chApi);
+                break;
             case "caseHudGamingLease":
                 var chLease = Bool();
                 config.UpdateOrThrow(c => c.CaseHudGamingLease = chLease);
+                break;
+            case "bluetoothAutoOn":
+                var btAuto = Bool();
+                config.UpdateOrThrow(c => c.BluetoothAutoOn = btAuto);
                 break;
             case "selfUpdateCheck":
                 var selfCheck = Bool();
@@ -2187,7 +2200,62 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public void ClearNotifications() => _notifications.Clear();
 
-    public Task<object> GetBluetoothStateAsync() => _bluetooth.StateAsync();
+    /// <summary>
+    /// The radio, whether a Bluetooth controller is connected (switching off would cut it off), and the automatic switch-on. Open
+    /// while locked: the code prompt shows it when no controller is there.
+    /// </summary>
+    public async Task<object> GetBluetoothStateAsync()
+    {
+        var (available, on) = await _bluetooth.StateAsync();
+        int paired = 0, connected = 0;
+        if (available)
+        {
+            try
+            {
+                (paired, connected) = await _bluetooth.ControllersAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[bluetooth] paired controllers: {ex.Message}");
+            }
+        }
+        return new
+        {
+            available,
+            on,
+            // "Comes back by itself" is only said while it will: not after "leave it off" or after giving up.
+            autoOn = config.Current.BluetoothAutoOn && _bluetoothRecovery?.Paused != true,
+            controllersPaired = paired,
+            controllerConnected = connected > 0,
+            pads = pad.Pads().Count,
+            countdown = _bluetoothRecovery?.CountdownRunning == true
+        };
+    }
+
+    private BluetoothRecoveryController? _bluetoothRecovery;
+
+    /// <summary>Bluetooth back on by itself while a Bluetooth controller is paired and no other one is connected (see BluetoothRecoveryController).</summary>
+    private void StartBluetoothGuard()
+    {
+        _bluetoothRecovery = new BluetoothRecoveryController(_bluetooth, () => config.Current.BluetoothAutoOn, () => pad.Pads().Count,
+            () => RealInputWithin(TimeSpan.FromSeconds(60)),
+            (phase, seconds) => Emit("bluetoothRecovery", seconds is { } s ? new { phase, seconds = s } : new { phase }),
+            Ui, () => TimeSpan.FromMilliseconds(Environment.TickCount64), (wait, token) => Task.Delay(wait, token),
+            text => Console.WriteLine($"[bluetooth] {text}"),
+            () => config.Current.BluetoothPairedControllers, count => config.Update(c => c.BluetoothPairedControllers = count));
+        _bluetoothRecovery.Start();
+    }
+
+    /// <summary>
+    /// The countdown before the automatic switch-on: "leave it off" (until Bluetooth is on again or CouchHUD restarts) or "now".
+    /// True when it was left off; false when the countdown had already ended (the radio comes or came back on).
+    /// </summary>
+    public bool AnswerBluetoothRecovery(bool keepOff)
+    {
+        if (keepOff) return _bluetoothRecovery?.Decline() == true;
+        _bluetoothRecovery?.SkipCountdown();
+        return false;
+    }
 
     public Task<IReadOnlyList<BluetoothDeviceInfo>> ScanBluetoothAsync() => _bluetooth.ScanAsync(TimeSpan.FromSeconds(6));
 
@@ -2195,7 +2263,39 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public Task<string> UnpairBluetoothAsync(string id) => _bluetooth.UnpairAsync(id);
 
-    public Task SetBluetoothAsync(bool on) => _bluetooth.SetRadioAsync(on);
+    /// <summary>
+    /// Bluetooth on or off from CouchHUD's own page. Off with another way to work the couch (a controller that is not on Bluetooth,
+    /// or the switch-off confirmed with keyboard or mouse: <paramref name="source"/> from the UI) stays off; without one the automatic
+    /// switch-on brings it back, as the confirmation said. Only the source of this very confirmation counts, not the last input of
+    /// Windows: CouchHUD's own SendInput (controller as mouse, wake-up moves) would look like keyboard or mouse there.
+    /// </summary>
+    public async Task SetBluetoothAsync(bool on, string? source = null)
+    {
+        var leftOff = false;
+        if (!on && _bluetoothRecovery is { } recovery)
+        {
+            var bluetoothPads = 0;
+            try
+            {
+                bluetoothPads = (await _bluetooth.ControllersAsync()).Connected;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[bluetooth] connected controllers: {ex.Message}");
+            }
+            var otherInput = pad.Pads().Count > bluetoothPads || source is "keyboard" or "mouse";
+            leftOff = recovery.UserSwitchingOff(otherInput);
+        }
+        try
+        {
+            await _bluetooth.SetRadioAsync(on);
+        }
+        catch
+        {
+            if (leftOff) _bluetoothRecovery?.UserSwitchOffFailed();
+            throw;
+        }
+    }
 
     private readonly WifiService _wifi = new();
 
@@ -3704,8 +3804,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     public async void FallbackToDesktop(string reason)
     {
         Console.Error.WriteLine($"[hud] falling back to the desktop: {reason}");
-        // The couch lock still holds: Windows asks for the account first.
-        if (config.Current.CouchLock != "off" && _asShell) WindowsLock.Lock();
+        // The couch lock (or parental controls, which keep it on anyway) still holds: Windows asks for the account first. The same
+        // condition as a web view start that fails closed (RuntimeStrict), so that fallback always ends at the Windows lock.
+        if (RuntimeStrict && _asShell) WindowsLock.Lock();
         try
         {
             await EnterPcModeCoreAsync();
@@ -3843,6 +3944,22 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     }
 
     /// <summary>
+    /// Like <see cref="InputWithin"/>, but the last input must not be CouchHUD's own (SendInput of the controller mouse, the
+    /// display wake-up, phone typing, the night light keys). Windows does not say whose the last input was, so input that came
+    /// right after one of ours counts as ours: then a real key press is missed, never a fake one counted (missing it only means
+    /// Bluetooth comes back on, which is the safe side).
+    /// </summary>
+    private static bool RealInputWithin(TimeSpan span)
+    {
+        var info = new LastInputInfo { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<LastInputInfo>() };
+        if (!GetLastInputInfo(ref info)) return false;
+        var age = unchecked((uint)Environment.TickCount - info.Time);
+        if (TimeSpan.FromMilliseconds(age) >= span) return false;
+        var lastInput = Environment.TickCount64 - age;
+        return lastInput > KeyboardInput.LastInjected + 250;
+    }
+
+    /// <summary>
     /// The browser is in front and used: the 2-minute unlock is extended (so reading a page does not end in a closed
     /// browser). Idle, it says 30 seconds before the end that the browser is about to close.
     /// </summary>
@@ -3871,7 +3988,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     {
         if (_browser is not null) return _browser;
         var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CouchHud", "Browser");
-        var pane = _browser = new BrowserPane(profile, () => !LockOn || IsUnlocked);
+        var pane = _browser = new BrowserPane(profile, () => !LockOn || IsUnlocked, () => RuntimeStrict);
         pane.PageChanged += () =>
         {
             // Navigation counts as use: the unlock does not run out under a page being read.
@@ -4180,6 +4297,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     private bool LockOn => Full && config.Current.CouchLock != "off" && _asShell;
 
+    /// <summary>
+    /// A couch lock or parental controls are configured (whatever the mode or shell state): a web view whose machine-wide runtime will
+    /// not start must not fall back to another runtime then (WebViewRuntimeLocator.StartAsync).
+    /// </summary>
+    public bool RuntimeStrict => config.Current.CouchLock != "off" || config.Current.Parental.Enabled;
+
     private bool IsUnlocked => !LockOn || _pcMode || MonoNow() < _unlockedUntil || MonoNow() < _setupHoldUntil;
 
     // The console setup runs with the couch open: its lock step would otherwise lock the HUD right away and ask for the code in the
@@ -4282,11 +4405,15 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             // The CouchHUD service (state, version, whether to warn and offer the repair).
             service = AdminService.View(AdminService.Current),
             // Which codes the CouchHUD service holds for this account (null: not known / no service).
-            serviceCodes = ServiceCodes.Known is { } held ? new { couch = held.Couch, parent = held.Parent, mode = held.LockMode } : null,
+            serviceCodes = ServiceCodes.Known is { } held ? new { couch = held.Couch, parent = held.Parent, mode = held.LockMode, legacy = held.LegacyLock } : null,
+            // The codes go through the CouchHUD service (the installed copy); false: the config keeps the hash and the shell checks it.
+            codesInService = ServiceCodes.Expected && !AdminService.DevMayRelax(dev),
             // A parents' code in the service that this shell did not set (no parental controls here): someone else enrolled it.
             parentCodeUnknown = CodeFlow.UnknownParentCode(ServiceCodes.Known, config.Current.Parental.Enabled),
             // The service holds a code of its own that the local one was not taken over (review L-c).
             codeConflict = ServiceCodes.Conflict,
+            // The service's Windows-unlock grant is at hand (Windows lock mode): a new couch code may be set with it (finding H1).
+            windowsGrant = ServiceCodes.Expected && AdminService.Ops.Cache.Has(GrantKind.WindowsUnlock),
             autoLogon = logon.State is AutoLogonState.CouchHud or AutoLogonState.External,
             autoLogonUser = logon.User,
             autoLogonState = logon.State.ToString().ToLowerInvariant(),
@@ -4294,7 +4421,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             passwordlessOnly = AutoLogon.PasswordlessOnly(),
             // null while still being asked (in the background); the UI only acts on a clear false.
             accountPassword = AskAccountPassword(),
-            user = Environment.UserName
+            user = Environment.UserName,
+            // The HUD runs on a WebView2 runtime outside Program Files (per-user install, changeable by the user's programs): the lock
+            // settings warn and point to running the setup as administrator again.
+            runtimeUnprotected = WebViewRuntimeLocator.Unprotected,
+            // The runtime could not be checked at all (counts as unprotected, the warning says "cannot be checked").
+            runtimeUnchecked = WebViewRuntimeLocator.Unchecked
         };
     }
 
@@ -4302,7 +4434,11 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// Code mode: checks the button sequence. Windows mode: shows the Windows lock screen,
     /// the "unlocked" event follows once the user is back.
     /// </summary>
-    public async Task<object> UnlockAsync(string[]? sequence)
+    /// <param name="asNewLegacyCode">
+    /// A lock of 0.4.0 whose stored code did not match (answer <c>legacyMismatch</c>): the person chose in the HUD's dialog to have an
+    /// administrator confirm the code as the lock's new one (UAC only after that explicit choice).
+    /// </param>
+    public async Task<object> UnlockAsync(string[]? sequence, bool asNewLegacyCode = false)
     {
         if (IsUnlocked) return new { ok = true };
         if (config.Current.CouchLock == "windows")
@@ -4331,11 +4467,13 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         if (ServiceCodes.Expected && !AdminService.DevMayRelax(dev))
         {
             if (sequence is null) return new { ok = false };
-            var check = await CheckCodeAsync(CodeKinds.Couch, sequence);
+            var (check, legacy) = await CheckCodeAsync(CodeKinds.Couch, sequence, asNewLegacyCode);
+            if (legacy == LegacyConfirm.Mismatch) return new { ok = false, legacyMismatch = true };
             if (check is not { Granted: true }) return CodeAnswer(check);
             _unlockedUntil = MonoNow().AddMinutes(2);
             SyncLockState();
-            return new { ok = true };
+            // Confirmed with the old code of 0.4.0: it lay readable in the configuration, the UI asks for a new one (review 4).
+            return legacy == LegacyConfirm.ConfirmedOldCode ? new { ok = true, legacyOldCode = true } : new { ok = true };
         }
         if (sequence is not null && Passcode.Verify(sequence, config.Current.PasscodeHash))
         {
@@ -4348,16 +4486,49 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         return new { ok = false, waitSeconds = (int)Math.Ceiling(_lockout.Wait.TotalSeconds) };
     }
 
+    /// <summary>
+    /// Windows lock mode, also while the couch is open: the Windows sign-in once more, so the service sees the unlock itself and gives its
+    /// Windows-unlock grant. That is the proof the service wants for a new couch code while the Windows sign-in is the lock (back to the
+    /// code lock, finding H1 of the 0.4.1 acceptance test); without it only a parent's or an administrator's approval would do. The
+    /// "unlocked" event and its confirmation follow as after <see cref="UnlockAsync"/>.
+    /// </summary>
+    public object WindowsSignIn()
+    {
+        if (config.Current.CouchLock != "windows" || !ServiceCodes.Expected || AdminService.DevMayRelax(dev)) return new { ok = false, pending = false };
+        if (AdminService.Ops.Cache.Has(GrantKind.WindowsUnlock)) return new { ok = true };
+        _windowsUnlock.Ask();
+        if (!WindowsLock.Lock())
+        {
+            _windowsUnlock.Cancel();
+            return new { ok = false, pending = false };
+        }
+        return new { ok = false, pending = true };
+    }
+
     /// <summary>The service's answer to a code (P9); a service without the couch code yet first gets the local hash (one-time migration).</summary>
-    private async Task<CodeCheck> CheckCodeAsync(string kind, string[] sequence)
+    private async Task<(CodeCheck Check, LegacyConfirm? Legacy)> CheckCodeAsync(string kind, string[] sequence, bool asNewLegacyCode)
     {
         var check = await AdminService.Ops.VerifyCodeAsync(kind, sequence);
-        if (check.Result.Ok && check.Outcome == CodeCheckResults.NoCode && kind == CodeKinds.Couch && await ServiceCodes.MigrateAsync(config) == MigrationResult.Done)
+        if (check.Result.Ok && check.Outcome == CodeCheckResults.NoCode && kind == CodeKinds.Couch)
         {
-            check = await AdminService.Ops.VerifyCodeAsync(kind, sequence);
+            // No code with the service yet: the config's code goes over once; a lock of 0.4.0 instead asks an administrator to confirm the
+            // code just entered, which then is its only code (security review H-1). One that does not match the stored code asks nothing
+            // until the person chooses "confirm as an administrator" in the HUD (third security review).
+            var migrated = await ServiceCodes.MigrateAsync(config);
+            var proceed = migrated == MigrationResult.Done;
+            LegacyConfirm? legacy = null;
+            if (migrated == MigrationResult.NeedsApproval)
+            {
+                legacy = await ServiceCodes.ConfirmLegacyCodeAsync(config, sequence, asNewLegacyCode);
+                if (legacy == LegacyConfirm.Mismatch) return (check, legacy);
+                proceed = legacy is LegacyConfirm.Confirmed or LegacyConfirm.ConfirmedOldCode;
+            }
+            if (proceed) check = await AdminService.Ops.VerifyCodeAsync(kind, sequence);
+            if (!check.Result.Ok) Console.Error.WriteLine($"[lock] {kind} code: the service could not check it ({check.Result})");
+            return (check, legacy);
         }
         if (!check.Result.Ok) Console.Error.WriteLine($"[lock] {kind} code: the service could not check it ({check.Result})");
-        return check;
+        return (check, null);
     }
 
     /// <summary>What the UI hears after a code that did not open: why (the service), how long to wait, or just "wrong".</summary>
@@ -4391,6 +4562,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // in the service's eyes, whatever it is confirmed for here. Without one the couch still opens; the service keeps its policies then.
         if (ServiceCodes.Expected)
         {
+            // A lock of 0.4.0 not confirmed yet: the Windows unlock alone releases nothing of it; an administrator confirms the Windows sign-in
+            // as its lock first (security review H-1). The unlock is not used up by the refusal before, so the grant comes after.
+            if (ServiceCodes.Known?.LegacyLock != false) await ServiceCodes.ConfirmLegacyWindowsAsync();
             var grant = await AdminService.Ops.RequestUnlockGrantAsync();
             if (!grant.Ok) Console.Error.WriteLine($"[lock] no grant for the Windows unlock: {grant}");
         }
@@ -4446,6 +4620,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             // The service keeps the code (and, with parental controls, the same buttons as the parents' code); the config only the marker.
             await ServiceCodes.StoreAsync(sequence, config.Current.Parental.Enabled);
             config.Update(c => c.PasscodeHash = Passcode.HeldByService);
+            // The answer says what the service holds now (the setup assistant checks the code lock by it), like SetParentCode.
+            await ServiceCodes.RefreshAsync();
             return GetSecurity();
         }
         var hash = Passcode.Hash(sequence);
@@ -4505,11 +4681,27 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         }
         else if (service && mode != config.Current.CouchLock)
         {
+            // The code lock without a new code: only over a couch code the service holds and keeps through the switch. From no lock the
+            // service drops what was enrolled at the open couch (review 3, item 2), and the mode would be "code" with no code to open it.
+            // Refused before the mode changes; the UI then asks for the code and sends it along (finding of the 0.4.2 acceptance test).
+            if (mode == "code" && !CodeFlow.CodeLockKeepsCode(await ServiceCodes.RefreshAsync()))
+                throw new InvalidOperationException(Strings.Get("hud.setCodeFirst"));
             // The service keeps the mode (P9 review H1): lowering needs the current mode's grant (the unlock just done), the parents' or,
             // as the fallback, an administrator's. Switched off, the couch code goes from the service too (review M2); to the Windows lock
             // the service drops it in the same step (review M-a).
             await ServiceCodes.SetModeAsync(mode);
             if (mode == "off") await ServiceCodes.RemoveAsync(CodeKinds.Couch);
+            // Looked at again: a code gone in between must not leave the config at a code lock nothing opens (fail closed: the config
+            // stays at its mode). No answer is asked once more; a clear "no couch code" is said as what it is and logged.
+            if (mode == "code")
+            {
+                var after = await ServiceCodes.RefreshAsync() ?? await ServiceCodes.RefreshAsync();
+                if (after?.Couch != true)
+                {
+                    Console.WriteLine($"[codes] lock mode code set in the service, but it holds no couch code ({(after is null ? "no answer" : "couch code missing")}); the config stays at {config.Current.CouchLock}");
+                    throw new InvalidOperationException(Strings.Get(after is null ? "hud.codeLockUnconfirmed" : "hud.codeLockWithoutCode"));
+                }
+            }
         }
         config.Update(c =>
         {
@@ -4517,9 +4709,10 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             // The service no longer holds a code: switching the code lock on again asks for a new one.
             if (service && mode is "off" or "windows") c.PasscodeHash = "";
         });
-        if (service) _ = ServiceCodes.RefreshAsync();
         ApplyCouchSecurity();
         SignInLock.SyncInBackground(dataDir);
+        // Awaited, after the policies: the answer below says what the service holds now (the setup assistant checks the code lock by it).
+        if (service) await ServiceCodes.RefreshAsync();
         return GetSecurity();
     }
 
@@ -4596,6 +4789,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // Off the UI thread: StopAsync continues on captured contexts otherwise.
         // The keyboard hook first: nothing may wait on it while the rest shuts down.
         _mediaKeys?.Dispose();
+        _bluetoothRecovery?.Dispose();
+        _bluetooth.Dispose();
         // Ends a running gaming lease first (at most about 2 s), then lets go of the connections.
         if (_caseHudLazy is { IsValueCreated: true } caseHudManager) caseHudManager.Value.Dispose();
         _parentalController?.Service.Flush();

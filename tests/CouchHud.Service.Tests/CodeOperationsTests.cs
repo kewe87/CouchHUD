@@ -38,16 +38,28 @@ internal sealed class CodeRig : IDisposable
     public Dictionary<int, string> SessionUsers { get; } = new() { [1] = Callers.UserSid, [2] = Callers.OtherSid };
     public string Folder => _dir.Path;
 
+    /// <summary>Windows sessions that are locked right now (what WindowsSessions.IsLocked tells the service).</summary>
+    public HashSet<int> LockedSessions { get; } = [];
+
+    /// <summary>Sessions whose lock state Windows cannot tell (IsLocked answers null).</summary>
+    public HashSet<int> UnknownSessions { get; } = [];
+
+    /// <summary>Accounts whose lock the service took over from 0.4.0 and nobody confirmed yet (OperationsA.IsLegacyLocked).</summary>
+    public HashSet<string> Legacy { get; } = new(StringComparer.Ordinal);
+
+    public CodeHandlers Handlers { get; private set; } = null!;
+
     /// <summary>Operations the harness answers with "ok" once authorized (the P5 handlers are not part of this rig).</summary>
     public CodeRig()
     {
         Codes = CodeStore.Open(_dir.Path, Log, Clock, () => 1_000_000, Tests.Codes.FastVerify);
-        Grants = new GrantStore(Clock);
+        Grants = new GrantStore(Clock, sessionLocked: s => UnknownSessions.Contains(s) ? null : LockedSessions.Contains(s));
         Sessions = new SessionEvents(Clock, Grants, s => SessionUsers.GetValueOrDefault(s), Log);
         Approvals = new AdminApprovals(Clock);
-        CodeParts parts = new(Codes, Grants, Sessions, Approvals, BlankPasswords.Contains, Log, null);
+        CodeParts parts = new(Codes, Grants, Sessions, Approvals, BlankPasswords.Contains, Log, null, Legacy.Contains, Legacy.Remove);
         Dictionary<Operation, Handler>? table = null;
-        Harness = new Harness(grants: Grants, codeState: Codes, clock: Clock, lockViews: Codes.View,
+        // As the service: the dispatcher's lock view is the code handlers' (with a lock taken over from 0.4.0).
+        Harness = new Harness(grants: Grants, codeState: Codes, clock: Clock, lockViews: sid => Handlers.View(sid),
             extraHandlers: h =>
             {
                 table = h;
@@ -58,7 +70,7 @@ internal sealed class CodeRig : IDisposable
             extraChecks: c =>
             {
                 c.Register(StateCheck.GroupsSetByService, Harness.AllowAll);
-                CodeHandlers.Register(table!, c, parts);
+                Handlers = CodeHandlers.Register(table!, c, parts);
             });
     }
 
@@ -154,6 +166,299 @@ public class CodeOperationsTests
     private static CallerInfo User => Callers.User();
 
     private static readonly CallerInfo Other = Callers.User(Callers.OtherSid) with { PipeSessionId = 2, TokenSessionId = 2, LogonId = 99 };
+
+    // ---- a locked session (finding B2 of the 0.4.1 acceptance test) ------------------------------------------
+
+    [Fact]
+    public async Task A_right_code_gives_no_grant_while_the_session_is_locked_but_the_try_counts()
+    {
+        using var rig = new CodeRig();
+        Assert.True((await rig.EnrollAsync(User, Codes.HashA)).Ok);
+        rig.LockedSessions.Add(User.TokenSessionId);
+
+        // The right code: refused, no grant, nothing told about the code.
+        var (response, _) = await rig.CallAsync(User, ProtocolJson.SerializeRequest(Operation.VerifyCode, new VerifyCodeArgs(CodeKinds.Couch, Codes.A, null)), advanceSeconds: 13);
+        Assert.Equal(ErrorCodes.Denied, response.Code);
+        Assert.Equal(0, rig.Grants.Count);
+
+        // Every refused try counts: after the free ones the code is locked out, also for the right code once the session is unlocked.
+        for (var i = 1; i < CodeStore.FreeFailures; i++)
+        {
+            await rig.CallAsync(User, ProtocolJson.SerializeRequest(Operation.VerifyCode, new VerifyCodeArgs(CodeKinds.Couch, Codes.A, null)), advanceSeconds: 13);
+        }
+        rig.LockedSessions.Clear();
+        var after = await rig.VerifyAsync(User, Codes.A);
+        Assert.Equal(CodeCheckResults.LockedOut, after.Result);
+        Assert.Null(after.Grant);
+    }
+
+    [Fact]
+    public async Task A_session_whose_lock_state_is_unknown_gets_no_grant_and_the_try_does_not_count()
+    {
+        // Review N-1: refused (fail-closed), but not counted: Windows not answering is no wrong code.
+        using var rig = new CodeRig();
+        Assert.True((await rig.EnrollAsync(User, Codes.HashA)).Ok);
+        rig.UnknownSessions.Add(User.TokenSessionId);
+        for (var i = 0; i < CodeStore.FreeFailures + 2; i++)
+        {
+            var (response, _) = await rig.CallAsync(User, ProtocolJson.SerializeRequest(Operation.VerifyCode, new VerifyCodeArgs(CodeKinds.Couch, Codes.A, null)), advanceSeconds: 13);
+            Assert.Equal(ErrorCodes.Denied, response.Code);
+        }
+        Assert.Equal(0, rig.Grants.Count);
+        rig.UnknownSessions.Clear();
+        Assert.NotNull(await rig.GrantAsync(User, Codes.A));
+    }
+
+    [Fact]
+    public async Task A_locked_session_does_not_use_up_its_Windows_unlock_or_its_administrators_approval()
+    {
+        // Review N-2: refused before the proof is taken, so it is still there after the unlock.
+        using var rig = new CodeRig();
+        Assert.True((await rig.ModeAsync(User, LockModes.Windows)).Ok);
+        rig.Sessions.OnChange(SessionChange.Unlock, User.TokenSessionId);
+        var control = await rig.RequestApprovalAsync(User, Operation.SetAutoLogon);
+        Assert.True(rig.Approvals.Approve(control!.Value));
+
+        rig.LockedSessions.Add(User.TokenSessionId);
+        Assert.Equal(ErrorCodes.Denied, (await rig.UnlockGrantAsync(User)).Response.Code);
+        var (collect, _) = await rig.CallAsync(User, ProtocolJson.SerializeRequest(Operation.CollectAdminApproval), advanceSeconds: 7);
+        Assert.Equal(ErrorCodes.Denied, collect.Code);
+
+        rig.LockedSessions.Clear();
+        Assert.True((await rig.UnlockGrantAsync(User)).Response.Ok);
+        Assert.NotNull((await rig.CollectApprovalAsync(User)).Grant);
+    }
+
+    [Fact]
+    public async Task Once_the_session_is_unlocked_the_right_code_gives_its_grant_again()
+    {
+        using var rig = new CodeRig();
+        Assert.True((await rig.EnrollAsync(User, Codes.HashA)).Ok);
+        rig.LockedSessions.Add(User.TokenSessionId);
+        await rig.CallAsync(User, ProtocolJson.SerializeRequest(Operation.VerifyCode, new VerifyCodeArgs(CodeKinds.Couch, Codes.A, null)), advanceSeconds: 13);
+        rig.LockedSessions.Clear();
+        Assert.NotNull(await rig.GrantAsync(User, Codes.A));
+    }
+
+    // ---- a lock of 0.4.0 (security review H-1 of finding B1, both rounds) -----------------------------------
+
+    [Fact]
+    public async Task A_legacy_lock_takes_no_free_first_code_and_no_couch_grant()
+    {
+        using var rig = new CodeRig();
+        rig.Legacy.Add(Callers.UserSid);
+        // The free first code at an open couch, and the config's code taken over on trust: not while the lock of 0.4.0 is not confirmed.
+        // A code on its own is refused outright (only the lock mode confirms, third review), the code lock needs an administrator.
+        Assert.Equal(ErrorCodes.Denied, (await rig.EnrollAsync(User, Codes.HashA)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.EnrollAsync(User, Codes.HashA, CodeKinds.Parent)).Code);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.LockWithCodeAsync(User, Codes.HashA)).Code);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.LockWithCodeAsync(User, Codes.HashA, CodeKinds.Both)).Code);
+        Assert.False(rig.Codes.Has(Callers.UserSid, CodeKind.Couch));
+        Assert.False(rig.Codes.Has(Callers.UserSid, CodeKind.Parent));
+        Assert.Contains(Callers.UserSid, rig.Legacy);
+    }
+
+    [Fact]
+    public async Task A_legacy_lock_takes_no_mode_change_without_an_approval_not_even_a_raise()
+    {
+        // The Windows mode set by the child would let its own sign-in release the lock.
+        using var rig = new CodeRig();
+        rig.Legacy.Add(Callers.UserSid);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.ModeAsync(User, LockModes.Windows)).Code);
+        Assert.Contains(Callers.UserSid, rig.Legacy);
+    }
+
+    [Fact]
+    public async Task A_legacy_lock_is_never_confirmed_as_no_lock_not_even_by_an_administrator()
+    {
+        // Third review: the confirmation keeps a lock (code or Windows); dropping it is the release, not a confirmation. Refused before any
+        // grant is asked for, so nobody is sent to UAC for it.
+        using var rig = new CodeRig();
+        Assert.True((await rig.LockWithCodeAsync(User, Codes.HashA, CodeKinds.Both)).Ok);
+        rig.Legacy.Add(Callers.UserSid);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ModeAsync(User, LockModes.Off)).Code);
+        var admin = await rig.AdminGrantAsync(User, Operation.SetLockMode);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ModeAsync(User, LockModes.Off, admin)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ModeAsync(Callers.ElevatedAdmin(), LockModes.Off)).Code);
+        Assert.Contains(Callers.UserSid, rig.Legacy);
+        Assert.Equal(LockModes.Code, rig.Codes.View(Callers.UserSid).Mode);
+        // The administrator's grant was not used up: the real confirmation still works with it.
+        Assert.True((await rig.ModeAsync(User, LockModes.Windows, admin)).Ok);
+        Assert.DoesNotContain(Callers.UserSid, rig.Legacy);
+    }
+
+    [Fact]
+    public async Task The_code_lock_of_a_legacy_lock_is_confirmed_only_with_its_code()
+    {
+        // Confirming the code lock without a code would leave whatever was there: refused even for an administrator.
+        using var rig = new CodeRig();
+        rig.Legacy.Add(Callers.UserSid);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ModeAsync(User, LockModes.Code)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ModeAsync(Callers.ElevatedAdmin(), LockModes.Code)).Code);
+        Assert.Contains(Callers.UserSid, rig.Legacy);
+    }
+
+    [Fact]
+    public async Task Codes_planted_before_the_take_over_release_nothing_with_a_couch_or_a_parents_grant()
+    {
+        // Review H-1, second round: before the take-over the account was open; the child set the code lock with both codes (a raise from no lock,
+        // free) and so had a parents' code of its own. After the take-over neither code's grant counts for anything.
+        using var rig = new CodeRig();
+        Assert.True((await rig.LockWithCodeAsync(User, Codes.HashA, CodeKinds.Both)).Ok);
+        rig.Legacy.Add(Callers.UserSid);
+
+        var couch = await rig.GrantAsync(User, Codes.A);
+        var parent = await rig.GrantAsync(User, Codes.A, CodeKinds.Parent, Operation.ReleaseLockPolicies, Operation.SetLockMode, Operation.ChangePasscode, Operation.RemovePasscode);
+        Assert.NotNull(couch);
+        Assert.NotNull(parent);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.ReleaseAsync(User, couch)).Code);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.ReleaseAsync(User, parent)).Code);
+        // Nor does the parents' grant confirm the lock (with a code of the child's choice), change or remove a code.
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.LockWithCodeAsync(User, Codes.HashB, grant: parent)).Code);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.ModeAsync(User, LockModes.Windows, parent)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ChangeAsync(User, Codes.HashB, grant: couch)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.RemoveAsync(User, CodeKinds.Parent, grant: parent)).Code);
+        Assert.Contains(Callers.UserSid, rig.Legacy);
+    }
+
+    [Fact]
+    public async Task A_parents_grant_gets_nothing_else_of_a_legacy_lock_either()
+    {
+        using var rig = new CodeRig();
+        Assert.True((await rig.EnrollAsync(User, Codes.HashA, CodeKinds.Parent)).Ok);
+        rig.Legacy.Add(Callers.UserSid);
+        var parent = await rig.GrantAsync(User, Codes.A, CodeKinds.Parent, Operation.SetAutoLogon);
+        Assert.NotNull(parent);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.AutoLogonAsync(User, parent)).Code);
+    }
+
+    [Fact]
+    public async Task The_windows_unlock_does_not_release_a_legacy_lock()
+    {
+        using var rig = new CodeRig();
+        var unlock = await rig.WindowsUnlockAsync(User);   // the Windows mode, set before the lock was taken over
+        Assert.True((await rig.EnrollAsync(User, Codes.HashA, grant: unlock)).Ok);   // the release needs a grant at all
+        rig.Legacy.Add(Callers.UserSid);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.ReleaseAsync(User, unlock)).Code);
+    }
+
+    [Fact]
+    public async Task An_administrators_confirmation_sets_exactly_the_code_entered_and_every_older_code_is_void()
+    {
+        using var rig = new CodeRig();
+        Assert.True((await rig.LockWithCodeAsync(User, Codes.HashB, CodeKinds.Both)).Ok);   // planted before the take-over
+        rig.Legacy.Add(Callers.UserSid);
+        var admin = await rig.AdminGrantAsync(User, Operation.SetLockMode);
+        var response = await rig.LockWithCodeAsync(User, Codes.HashA, grant: admin);
+        Assert.True(response.Ok, response.Code);
+        Assert.DoesNotContain(Callers.UserSid, rig.Legacy);
+        Assert.Contains(rig.Log.Lines, l => l.Contains("[legacy] lock of", StringComparison.Ordinal) && l.Contains("confirmed", StringComparison.Ordinal));
+
+        // Only the confirmed code counts now: the planted couch and parents' codes are gone.
+        Assert.False(rig.Codes.Has(Callers.UserSid, CodeKind.Parent));
+        Assert.Equal(CodeCheckResults.Wrong, (await rig.VerifyAsync(User, Codes.B)).Result);
+        Assert.Equal(CodeCheckResults.NoCode, (await rig.VerifyAsync(User, Codes.B, CodeKinds.Parent)).Result);
+        Assert.Equal(LockModes.Code, rig.Codes.View(Callers.UserSid).Mode);
+        // From now on the confirmed couch code releases as always.
+        var couch = await rig.GrantAsync(User, Codes.A);
+        Assert.True((await rig.ReleaseAsync(User, couch)).Ok);
+    }
+
+    [Fact]
+    public async Task An_administrators_confirmation_of_the_windows_mode_drops_every_code()
+    {
+        using var rig = new CodeRig();
+        Assert.True((await rig.LockWithCodeAsync(User, Codes.HashB, CodeKinds.Both)).Ok);
+        rig.Legacy.Add(Callers.UserSid);
+        var admin = await rig.AdminGrantAsync(User, Operation.SetLockMode);
+        Assert.True((await rig.ModeAsync(User, LockModes.Windows, admin)).Ok);
+        Assert.DoesNotContain(Callers.UserSid, rig.Legacy);
+        Assert.False(rig.Codes.Has(Callers.UserSid, CodeKind.Couch));
+        Assert.False(rig.Codes.Has(Callers.UserSid, CodeKind.Parent));
+        Assert.Equal(LockModes.Windows, rig.Codes.View(Callers.UserSid).Mode);
+        // The Windows sign-in is the lock's proof now.
+        rig.Sessions.OnChange(SessionChange.Unlock, User.TokenSessionId);
+        var (unlock, grant) = await rig.UnlockGrantAsync(User);
+        Assert.True(unlock.Ok, unlock.Code);
+        Assert.True((await rig.ReleaseAsync(User, grant!.Grant)).Ok);
+    }
+
+    [Fact]
+    public async Task A_legacy_lock_is_confirmed_only_through_the_lock_mode_not_with_a_single_code()
+    {
+        // Third review: a code enrolled, changed or removed on its own would confirm the lock but keep its mode (and the other kind of code)
+        // as they were. Refused even with an administrator's approval; the confirmation is SetLockMode, which replaces everything.
+        using var rig = new CodeRig();
+        Assert.True((await rig.EnrollAsync(User, Codes.HashB, CodeKinds.Parent)).Ok);   // planted before
+        rig.Legacy.Add(Callers.UserSid);
+        var admin = await rig.AdminGrantAsync(User, Operation.EnrollPasscode, Operation.ChangePasscode, Operation.RemovePasscode);
+        Assert.Equal(ErrorCodes.Denied, (await rig.EnrollAsync(User, Codes.HashA, grant: admin)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ChangeAsync(User, Codes.HashA, CodeKinds.Parent, admin)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.RemoveAsync(User, CodeKinds.Parent, grant: admin)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.EnrollAsync(Callers.ElevatedAdmin(), Codes.HashA)).Code);
+        Assert.Contains(Callers.UserSid, rig.Legacy);
+        Assert.False(rig.Codes.Has(Callers.UserSid, CodeKind.Couch));
+        Assert.True(rig.Codes.Has(Callers.UserSid, CodeKind.Parent));
+    }
+
+    [Fact]
+    public async Task A_parents_grant_does_not_confirm_a_legacy_lock()
+    {
+        using var rig = new CodeRig();
+        Assert.True((await rig.EnrollAsync(User, Codes.HashA, CodeKinds.Both)).Ok);
+        rig.Legacy.Add(Callers.UserSid);
+        var parent = await rig.GrantAsync(User, Codes.A, CodeKinds.Parent, Operation.SetLockMode, Operation.ChangePasscode);
+        Assert.NotNull(parent);
+        Assert.Equal(ErrorCodes.NeedGrant, (await rig.ModeAsync(User, LockModes.Windows, parent)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ModeAsync(User, LockModes.Off, parent)).Code);
+        Assert.Equal(ErrorCodes.Denied, (await rig.ChangeAsync(User, Codes.HashB, CodeKinds.Couch, parent)).Code);
+        Assert.Contains(Callers.UserSid, rig.Legacy);
+    }
+
+    [Fact]
+    public async Task An_elevated_administrator_confirms_with_the_code_and_without_a_grant()
+    {
+        using var rig = new CodeRig();
+        rig.Legacy.Add(Callers.UserSid);
+        Assert.True((await rig.LockWithCodeAsync(Callers.ElevatedAdmin(), Codes.HashA)).Ok);
+        Assert.DoesNotContain(Callers.UserSid, rig.Legacy);
+    }
+
+    [Fact]
+    public void A_failing_legacy_lookup_counts_as_a_legacy_lock()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var log = new CapturingSink();
+        var codes = CodeStore.Open(dir.Path, log, clock, () => 1_000_000, Codes.FastVerify);
+        var grants = new GrantStore(clock);
+        var handlers = new CodeHandlers(new CodeParts(codes, grants, new SessionEvents(clock, grants, _ => null, log), new AdminApprovals(clock), _ => false, log, null,
+            _ => throw new IOException("state")));
+        var view = handlers.View(Callers.UserSid);
+        Assert.True(view.Legacy);
+        Assert.True(view.Protected);
+        Assert.Equal(GrantKinds.WindowsAdmin, OperationPolicy.AcceptedGrants(new ValidatedRequest(Operation.ReleaseLockPolicies, null, null), view));
+        Assert.Equal(GrantKinds.WindowsAdmin, OperationPolicy.AcceptedGrants(new ValidatedRequest(Operation.SetAutoLogon, null, null), view));
+    }
+
+    [Fact]
+    public void Forgetting_an_account_drops_both_codes_and_the_mode_and_replacing_sets_exactly_one()
+    {
+        using var dir = new TempDir();
+        var codes = CodeStore.Open(dir.Path, new CapturingSink(), new FakeClock(), () => 1_000_000, Codes.FastVerify);
+        Assert.Equal(CodeSet.Saved, codes.SetMode(Callers.UserSid, LockModes.Code, kinds: [CodeKind.Couch, CodeKind.Parent], hash: Codes.HashB));
+        Assert.Equal(CodeSet.Saved, codes.Replace(Callers.UserSid, null));
+        Assert.False(codes.Has(Callers.UserSid, CodeKind.Couch));
+        Assert.False(codes.Has(Callers.UserSid, CodeKind.Parent));
+        Assert.Null(codes.StoredMode(Callers.UserSid));
+        Assert.Equal(CodeSet.Saved, codes.Replace(Callers.UserSid, null));   // nothing there: done as well
+
+        Assert.Equal(CodeSet.Saved, codes.SetMode(Callers.UserSid, LockModes.Code, kinds: [CodeKind.Couch, CodeKind.Parent], hash: Codes.HashB));
+        Assert.Equal(CodeSet.Saved, codes.Replace(Callers.UserSid, LockModes.Code, [CodeKind.Couch], Codes.HashA));
+        Assert.True(codes.HasApproved(Callers.UserSid, CodeKind.Couch));
+        Assert.False(codes.Has(Callers.UserSid, CodeKind.Parent));
+        Assert.Equal(CodeSet.BadHash, codes.Replace(Callers.UserSid, LockModes.Code, [CodeKind.Couch], "nope"));
+    }
 
     // ---- enrollment, change, removal ----------------------------------------------------------------------
 

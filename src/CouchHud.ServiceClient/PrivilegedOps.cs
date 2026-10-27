@@ -401,7 +401,7 @@ public sealed class ServiceOps : IPrivilegedOps
         var reply = await _client.CallAsync(Operation.Status, cancellation: cancellation).ConfigureAwait(false);
         Learn(reply);
         if (!reply.Ok || reply.DataAs(ProtocolJsonContext.Default.StatusData) is not { } status) return null;
-        return new HeldCodes(status.CouchCode, status.ParentCode, status.LockMode);
+        return new HeldCodes(status.CouchCode, status.ParentCode, status.LockMode, status.LegacyLock == true);
     }
 
     public async Task<OpResult> RequestUnlockGrantAsync(CancellationToken cancellation = default)

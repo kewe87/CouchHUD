@@ -396,7 +396,9 @@ public static class CaseHudPolicy
     {
         "caseHudCheckUpdate", "caseHudPrepare", "caseHudStart", "caseHudInstall", "caseHudUpdate", "caseHudOpenGui", "caseHudPanels",
         "caseHudPatchPanel", "caseHudDesigns", "caseHudSets", "caseHudApplySet", "caseHudRotation", "caseHudCommunity", "caseHudImport", "caseHudAwtrix",
-        "caseHudPatchLighting"
+        "caseHudPatchLighting",
+        // Switching CaseHUD's API on or off is a setting of CaseHUD: never without the code.
+        "caseHudSetApi"
     };
 
     /// <summary>A known call that may run now: always when unlocked, only the short list while the couch is locked.</summary>
@@ -408,7 +410,11 @@ public static class CaseHudPolicy
     /// </summary>
     public static bool NeedsUnsignedConfirmation(string publicKeyPem) => string.IsNullOrWhiteSpace(publicKeyPem);
 
-    /// <summary>Silent-install options: the optional tasks the user chose in the expert settings (the sensor service is always installed).</summary>
+    /// <summary>
+    /// Silent-install options: the optional tasks the user chose in the expert settings (the sensor service is always installed).
+    /// Never <c>/API=1</c>: the setup runs elevated (the CouchHUD service as SYSTEM, or UAC, possibly another administrator), so it would
+    /// switch the API on for the wrong account; the shell does it afterwards in the user's session (<see cref="ICaseHudApiSwitch"/>).
+    /// </summary>
     public static string InstallArguments(bool autostart, bool fps)
     {
         var tasks = new List<string>();

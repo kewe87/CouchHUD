@@ -20,6 +20,8 @@ dotnet test CouchHud.slnx
 dotnet run --project src/CouchHud.Shell -- --dev   # Fenstermodus mit DevTools
 ```
 
+`--dev` wirkt nur in einem Debug-Build (wie oben mit `dotnet run`). Ein Release-Build ignoriert den Schalter, außer ein Administrator setzt `HKLM\SOFTWARE\CouchHud` `DeveloperMode=1` (DWORD; der Schlüssel darf nur für Administratoren, SYSTEM und TrustedInstaller beschreibbar sein). Sonst könnte ein Standardkonto CouchHUD mit `--dev` aus einer Verknüpfung starten und DevTools bekommen.
+
 Die Oberfläche (`ui/`) ist Vanilla JS als ES-Module ohne Build-Schritt. Plattformneutrale Logik gehört nach `CouchHud.Core` (mit Tests in `tests/`), Windows-spezifisches nach `CouchHud.Shell`.
 
 ### Vor jedem Push: `scripts/check.sh`
@@ -66,8 +68,8 @@ Get-Credential | Export-Clixml "$env:USERPROFILE\couchhud-vm.cred"
 
 | Skript | Zweck |
 |---|---|
-| `scripts\deploy-vm.ps1` | Veröffentlicht CouchHUD (self-contained), kopiert es nach `C:\Program Files\CouchHud` in der VM und startet es in der angemeldeten Sitzung. `-NoBuild` kopiert den letzten Publish erneut, `-NoStart` startet nicht, `-Arguments --dev` reicht Schalter durch. |
-| `scripts\vm-cdp.ps1` | Spricht über das Chrome DevTools Protocol mit der UI in der VM: `-Eval 'document.title'`, `-Screenshot shot.png`, `-Keys ArrowRight,Enter`, `-Console` (Fehler seit dem letzten Aufruf), `-Reload`. Braucht in der VM die Umgebungsvariable `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` für den Benutzer. |
+| `scripts\deploy-vm.ps1` | Veröffentlicht CouchHUD (self-contained), kopiert es nach `C:\Program Files\CouchHud` in der VM und startet es in der angemeldeten Sitzung. `-NoBuild` kopiert den letzten Publish erneut, `-NoStart` startet nicht, `-Arguments --dev` reicht Schalter durch (eine Release-Version beachtet `--dev` nur mit `DeveloperMode=1` in `HKLM\SOFTWARE\CouchHud`, siehe `vm-cdp.ps1 -Enable`). |
+| `scripts\vm-cdp.ps1` | Spricht über das Chrome DevTools Protocol mit der UI in der VM: `-Eval 'document.title'`, `-Screenshot shot.png`, `-Keys ArrowRight,Enter`, `-Console` (Fehler seit dem letzten Aufruf), `-Reload`. Vorher einmal `-Enable` (setzt als Administrator der VM `HKLM\SOFTWARE\CouchHud` `DeveloperMode=1` und `RemoteDebuggingPort=9222`, DWORD; danach CouchHUD neu starten), nach den Tests `-Disable`. Der Port hört nur auf 127.0.0.1, der Couch-Browser bekommt Port + 1. `WEBVIEW2_*`-Umgebungsvariablen wirken seit 0.4.2 nicht mehr (CouchHUD entfernt sie beim Start). |
 | `scripts\vm-screenshot.ps1` | Speichert den Konsolen-Bildschirm der VM als PNG (`-Path shot.png`), auch am Anmeldebildschirm, wo die UI nicht erreichbar ist. |
 | `scripts\vm-uac.ps1` | Bestätigt (oder mit `-Decline` verneint) eine UAC-Abfrage in der VM über die virtuelle Tastatur, die auch den sicheren Desktop erreicht. |
 

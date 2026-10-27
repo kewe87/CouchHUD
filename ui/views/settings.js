@@ -21,13 +21,13 @@ import { SCREENSAVER_STYLES, configureScreensaver, startScreensaver } from '../c
 import { chooseDialog, confirmDialog, openOverlay } from '../components/overlay.js';
 import { openKeyboard } from '../components/keyboard.js';
 import { skinMenu } from '../components/skin-menu.js';
-import { choosePasscode, ensureParentCode, ensureUnlocked, guarded, isLocked } from '../components/passcode.js';
+import { choosePasscode, ensureParentCode, ensureUnlocked, ensureWindowsSignIn, guarded, isLocked } from '../components/passcode.js';
 import { addEntryFlow, gameFoldersPage, hiddenItemsPage, scanFolderFlow } from '../components/library-tools.js';
 import { refreshWeather } from '../core/weather.js';
 import { preloadSmartHome, smartHomeView } from './smarthome.js';
 import { setTabs, tabViews } from '../core/nav.js';
 import { updateCount, updatesPage } from './updates.js';
-import { caseHudPage, caseHudUpdateAvailable } from './casehud.js';
+import { caseHudApiOff, caseHudPage, caseHudUpdateAvailable } from './casehud.js';
 import { cleanupStuckPoliciesDialog, launchersPage, servicesPage, startupPage } from './system-tools.js';
 import { transparencyPage } from './transparency.js';
 import { disclaimerPage, privacyPage } from './legal.js';
@@ -43,6 +43,7 @@ import { consoleRevertPage, consoleSetupPage, hasConsoleSetup, isConsoleReady, o
 import { saveSettingsItems } from '../components/savegames.js';
 import { ensureParentGrant, formatRemaining, lockedGamesPage, parental, refreshParental } from '../components/parental.js';
 import { refreshMotion } from '../core/motion.js';
+import { codeLockHeld } from '../core/lock-rules.js';
 
 const audioModes = () => [
   { label: t('settings.common.off'), detail: t('settings.audioMode.offDetail'), value: 'off' },
@@ -74,46 +75,76 @@ const lockGrant = (reason, action) => (parental.status?.enabled ? ensureParentGr
 
 async function chooseLock(preset) {
   const mode = preset ?? await chooseDialog(t('settings.lock.title'), lockModes(), security?.couchLock ?? 'off');
-  if (mode === undefined || mode === security?.couchLock) return;
+  if (mode === undefined) return 'cancelled';
+  if (mode === security?.couchLock) return 'unchanged';
   // The Windows sign-in as the lock is no lock on an account without a password; the host refuses it too.
-  if (mode === 'windows' && security?.accountPassword === false) return void toast(t('settings.lock.noPassword'), 8000);
+  if (mode === 'windows' && security?.accountPassword === false) {
+    toast(t('settings.lock.noPassword'), 8000);
+    return 'failed';
+  }
+  // With the CouchHUD service the switch to the Windows sign-in deletes the couch code (the service keeps one lock's key, not two). Said
+  // before, with the way back: a new code then needs this Windows sign-in once more (finding H1 of the 0.4.1 acceptance test).
+  if (mode === 'windows' && security?.couchLock === 'code' && security?.serviceCodes
+    && !(await confirmDialog(t('settings.lock.windowsDropsCodeTitle'), t('settings.common.continue'), { message: t('settings.lock.windowsDropsCode') }))) return 'cancelled';
   // The code lock needs a code the CouchHUD service holds: a new one goes along with the switch, in one step (a code set on its own at an
   // open couch would not survive the lock being switched on). Entered before the approval, which then names it ("lockModeCode").
   let code = null;
   if (mode === 'code' && (!security?.hasPasscode || security?.couchLock === 'off' || security?.serviceCodes?.couch === false)) {
     code = await choosePasscode();
-    if (!code) return;
+    if (!code) return 'cancelled';
   }
-  if (!(await lockGrant(t('settings.lock.changeReason'), code ? 'lockModeCode' : 'lockMode'))) return;
+  if (!(await lockGrant(t('settings.lock.changeReason'), code ? 'lockModeCode' : 'lockMode'))) return 'cancelled';
+  // From the Windows sign-in back to a code: the service takes the new code with that lock's own proof, the Windows sign-in seen by it
+  // (the open couch alone does not prove who is in front of it). Asked right here, so nobody needs an administrator for it (finding H1).
+  // With parental controls the parents' code above is the proof. Whether a Windows grant is there is asked after that step (it may have
+  // just given one), not taken from the page's older state.
+  if (code && security?.couchLock === 'windows' && security?.serviceCodes && !parental.status?.enabled) {
+    const now = await attempt(() => api.getSecurity());
+    if (!now?.windowsGrant && !(await ensureWindowsSignIn(t('settings.lock.codeAfterWindowsReason')))) return 'cancelled';
+  }
   const updated = await attempt(() => api.setCouchLock(mode, code), code ? t('settings.lock.codeNotSaved') : t('settings.common.notSaved'));
-  if (!updated) return;
+  if (!updated) return 'failed';
   security = updated;
   toast(mode === 'off' ? t('settings.lock.off') : t('settings.lock.on'));
   if (mode === 'code' && security?.accountPassword === false) toast(t('settings.lock.codeNoPasswordWarn'), 9000);
   render();
+  return 'done';
 }
 
 /**
  * The setup assistant's "set a code now": the same flow as Settings › Console › Couch lock with "code" picked, so every check
- * (couch or parents' code, password rules, the host's own refusal) stays in one place. True when the lock is on afterwards.
+ * (couch or parents' code, password rules, the host's own refusal) stays in one place. True when the code lock has its code afterwards.
  */
 export async function enrollCouchCode() {
   security = (await attempt(() => api.getSecurity())) ?? security;
   await chooseLock('code');
   security = (await attempt(() => api.getSecurity())) ?? security;
-  return !!security && security.couchLock !== 'off';
+  return codeLockHeld(security);
 }
 
 async function changePasscode() {
-  if (security?.hasPasscode && !(await lockGrant(t('settings.passcode.changeReason'), 'passcode'))) return;
+  if (security?.hasPasscode && !(await lockGrant(t('settings.passcode.changeReason'), 'passcode'))) return 'cancelled';
   const code = await choosePasscode();
-  if (!code) return;
-  if (parental.status?.enabled && !(await lockGrant(t('settings.passcode.saveReason'), 'passcode'))) return;
+  if (!code) return 'cancelled';
+  if (parental.status?.enabled && !(await lockGrant(t('settings.passcode.saveReason'), 'passcode'))) return 'cancelled';
   const updated = await attempt(() => api.setPasscode(code), t('settings.lock.codeNotSaved'));
-  if (!updated) return;
+  if (!updated) return 'failed';
   security = updated;
   toast(t('settings.passcode.saved'));
   render();
+  return 'done';
+}
+
+/**
+ * The console setup's lock step (see setupCouchLock in core/lock-rules.js): a flow of this page, then the host asked again. 'on' only
+ * when the code lock really has its code afterwards; a refusal of the host is 'failed', never taken for done.
+ */
+async function codeLockOutcome(flow) {
+  security = (await attempt(() => api.getSecurity())) ?? security;
+  const outcome = await flow();
+  security = (await attempt(() => api.getSecurity())) ?? security;
+  if (outcome === 'done' || outcome === 'unchanged') return codeLockHeld(security) ? 'on' : 'failed';
+  return outcome === 'failed' ? 'failed' : 'cancelled';
 }
 
 const autoLogonInfo = () => t('settings.autoLogon.info');
@@ -352,10 +383,12 @@ function parentalItems() {
       })[p.advisory] ?? t('settings.parental.advisory');
   const status = info(t('settings.parental.status'), mode);
   const reliability = info(t('settings.parental.reliabilityTitle'), t('settings.parental.reliability'));
+  const runtime = runtimeWarningItems();
   if (!p.hasParentCode) {
     return [
       status,
       reliability,
+      ...runtime,
       ...(p.codeProblem === 'noPassword' ? [info(t('settings.parental.noPasswordTitle'), t('settings.parental.noPassword'))] : []),
       action(t('settings.parental.setupLock'), t('settings.parental.setupLockDetail'), chooseLock, '🔑')
     ];
@@ -440,6 +473,7 @@ function parentalItems() {
     action(t('settings.parental.locked'), t('settings.parental.lockedDesc', { entries: entriesLabel(p.lockedItems.length) }), () => openPage(lockedGamesPage(), t('settings.parental.title'))),
     ...(security?.couchLock === 'code' ? [action(t('settings.parental.changeCode'), t('settings.parental.changeCodeDesc'), changePasscode)] : []),
     reliability,
+    ...runtime,
     info(t('settings.parental.timeUp'), t('settings.parental.timeUpDesc', { seconds: p.graceSeconds ?? 60 }))
   ];
 }
@@ -590,6 +624,10 @@ function holdLabel(ms) {
 /** Also used by the setup assistant: it hands off to the same console setup and way back as the Console category. */
 export const consoleDeps = {
   setupAutoLogon: () => setupAutoLogon(),
+  // The code lock with its code in one step, as in Settings › Console › Couch lock.
+  enrollCodeLock: () => codeLockOutcome(() => chooseLock('code')),
+  // The code lock is on but no code opens it: a new code for the lock that is on.
+  restoreCodeLock: () => codeLockOutcome(changePasscode),
   autoLogonError: () => lastAutoLogonError,
   async refresh() {
     await loadSettings();
@@ -633,6 +671,8 @@ function consoleItems(s) {
     action(t('settings.console.changes'), t('settings.console.changesDesc'), () => openPage(transparencyPage(), t('settings.cat.console'))),
     info(t('settings.console.start'), s.isShell ? t('settings.console.startShell') : t('settings.console.startDesktop')),
     info(t('settings.console.lock'), ({ off: t('settings.common.off'), code: t('settings.lockMode.code'), windows: t('settings.lockMode.windows') })[security?.couchLock ?? 'off']),
+    // The HUD runs on a WebView2 runtime the account's programs can change: the lock is weaker than it looks.
+    ...runtimeWarningItems(),
     // Honest about the Windows policies of the locked couch: without the CouchHUD service they are not active.
     info(t('settings.console.policies'), security ? ({ service: t('settings.console.policiesService'), direct: t('settings.console.policiesDirect'), none: t('settings.console.policiesNone') })[security.policies ?? 'none'] : '–'),
     // The service itself: its state for the experts, a clear warning and the repair for everyone when something is wrong.
@@ -649,6 +689,17 @@ function consoleItems(s) {
     }))] : []),
     info(t('settings.autoLogon.title'), security ? autoLogonLabel() : '–')
   ];
+}
+
+/**
+ * A couch lock or parental controls are on and the WebView2 runtime of the HUD or the couch browser lies outside Program Files
+ * (per-user install) or could not be checked at all.
+ */
+function runtimeWarningItems() {
+  if (!security || security.runtimeUnprotected !== true) return [];
+  if (security.couchLock === 'off' && !parental.status?.enabled) return [];
+  const text = security.runtimeUnchecked ? t('settings.lock.runtimeUnchecked') : t('settings.lock.runtimeUnprotected');
+  return [info(t('settings.windows.warning'), text)];
 }
 
 /** "Repair the service": shown in both modes whenever the CouchHUD service should be there and is not healthy. */
@@ -852,6 +903,7 @@ function windowsItems(s) {
     toggle('killExplorerOnReturn', t('settings.windows.killExplorer'), t('settings.windows.killExplorerDesc')),
     ...(security?.autoLogon && security.autoLogonOtherUser ? [info(t('settings.windows.warning'), t('settings.windows.otherUser', { other: security.autoLogonUser, user: security.user }))] : []),
     ...(security?.autoLogonState === 'lost' ? [info(t('settings.windows.warning'), t('settings.windows.lost'))] : []),
+    ...runtimeWarningItems(),
     info(t('settings.windows.emergency'), t('settings.windows.emergencyDesc')),
     info(t('settings.windows.note'), t('settings.windows.noteDesc'))
   ];
@@ -951,6 +1003,7 @@ function categories() {
             }
           },
           toggle('pauseGameInMenu', t('settings.controller.pause'), t('settings.controller.pauseDesc')),
+          toggle('bluetoothAutoOn', t('settings.controller.btAuto'), t('settings.controller.btAutoDesc')),
           info(t('settings.controller.input'), state.info.nativeInput ? t('settings.controller.inputNative') : t('settings.controller.inputBrowser'))
         ),
         info(t('settings.controller.keyboard'), t('settings.controller.keyboardDesc'))
@@ -1066,12 +1119,13 @@ function categories() {
       id: 'casehud',
       icon: 'display',
       name: t('settings.cat.casehud'),
-      badge: caseHudUpdateAvailable() ? 1 : 0,
+      badge: caseHudUpdateAvailable() || caseHudApiOff() ? 1 : 0,
       items: [
-        action(t('settings.casehud.open'), caseHudUpdateAvailable() ? t('settings.casehud.update', { version: state.caseHud.update.version }) : t('settings.casehud.openDesc'), () => openPage(caseHudPage(), t('settings.cat.casehud'))),
+        action(t('settings.casehud.open'), caseHudUpdateAvailable() ? t('settings.casehud.update', { version: state.caseHud.update.version }) : caseHudApiOff() ? t('casehud.api.hint') : t('settings.casehud.openDesc'), () => openPage(caseHudPage(), t('settings.cat.casehud'))),
         ...expert(
           toggle('caseHudInstallAutostart', t('settings.casehud.autostart'), t('settings.casehud.autostartDesc')),
           toggle('caseHudInstallFps', t('settings.casehud.fps'), t('settings.casehud.fpsDesc')),
+          toggle('caseHudInstallApi', t('settings.casehud.api'), t('settings.casehud.apiDesc')),
           toggle('caseHudGamingLease', t('settings.casehud.lease'), t('settings.casehud.leaseDesc'))
         )
       ]

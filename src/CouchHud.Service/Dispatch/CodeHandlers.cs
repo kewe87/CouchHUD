@@ -8,8 +8,13 @@ namespace CouchHud.Service.Dispatch;
 
 /// <summary>What the code and grant operations of package P9 work with.</summary>
 /// <param name="IsBlankPassword">Whether an account has no password (its unlock proves nothing, review H1); see <see cref="BlankPasswordCheck"/>.</param>
+/// <param name="LegacyLock">
+/// Whether the account's lock was taken over from 0.4.0 and not confirmed yet (<see cref="LockView.Legacy"/>); null: never (tests). A failure
+/// counts as yes (fail-closed).
+/// </param>
+/// <param name="EndLegacyLock">Ends that once an administrator confirmed the account's code or mode; true when the lock is no lock of 0.4.0 any more.</param>
 public sealed record CodeParts(CodeStore Codes, GrantStore Grants, SessionEvents Sessions, AdminApprovals Approvals, Func<string, bool> IsBlankPassword,
-    IEventSink Log, RecentEvents? Events);
+    IEventSink Log, RecentEvents? Events, Func<string, bool>? LegacyLock = null, Func<string, bool>? EndLegacyLock = null);
 
 /// <summary>
 /// Package P9 ("Grants mit Code"): EnrollPasscode, ChangePasscode, RemovePasscode, SetLockMode, VerifyCode, RequestWindowsGrant ("unlock"),
@@ -38,8 +43,42 @@ public sealed class CodeHandlers(CodeParts parts)
         return codes;
     }
 
-    /// <summary>The account's lock, for the dispatcher and the update's session (which grants count).</summary>
-    public LockView View(string sid) => parts.Codes.View(sid);
+    /// <summary>The account's lock, for the dispatcher and the update's session (which grants count), with a lock taken over from 0.4.0.</summary>
+    public LockView View(string sid) => parts.Codes.View(sid) with { Legacy = IsLegacy(sid) };
+
+    private bool IsLegacy(string sid)
+    {
+        try
+        {
+            return parts.LegacyLock?.Invoke(sid) ?? false;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// An administrator confirmed the account's code or mode (an administrator's approval through UAC, or an elevated administrator; never a
+    /// parents' code, 0.4.0 kept that in the config the account writes): the step that confirmed it set exactly the confirmed code (or the
+    /// Windows mode) and dropped every other one, and from now on a lock taken over from 0.4.0 is the service's own: its code (or the Windows
+    /// sign-in) opens it like any other (security review H-1, second round).
+    /// </summary>
+    private void ConfirmLegacy(RequestContext context)
+    {
+        if (!AdminApproved(context)) return;
+        if (parts.EndLegacyLock?.Invoke(context.Caller.Sid) == true)
+        {
+            parts.Log.Info($"[legacy] lock of {context.Caller.Sid} taken over from 0.4.0 confirmed{Approval(context)}");
+            parts.Events?.Add(context.Caller.Sid, "lock", "lock of 0.4.0 confirmed");
+        }
+        else parts.Log.Error($"[legacy] lock of {context.Caller.Sid} of 0.4.0: the confirmation could not be noted or its take-over still waits (asked again)");
+    }
+
+    private static bool Approved(RequestContext context) => context.Grant is GrantKinds.Parent or GrantKinds.WindowsAdmin || context.Caller.IsElevatedAdmin;
+
+    /// <summary>An administrator's approval: the only one that confirms a lock of 0.4.0.</summary>
+    private static bool AdminApproved(RequestContext context) => context.Grant == GrantKinds.WindowsAdmin || context.Caller.IsElevatedAdmin;
 
     /// <summary>An administrator approved through UAC (SERVICE_USER_DEFINED_CONTROL, from the SCM's thread): quick, in memory.</summary>
     public void OnControl(int control)
@@ -69,14 +108,17 @@ public sealed class CodeHandlers(CodeParts parts)
     /// A first code for the caller's own account, never over an existing one (that is ChangePasscode). Free only while the account's couch is
     /// not locked at all (mode off or never set, no code: trust on first use, also the shell's one-time migration of its local hash). Once the
     /// account is protected (a code, or the Windows or code mode, review N1) it needs proof: the Windows unlock for a couch code in the Windows
-    /// mode, otherwise a parent's or an administrator's approval (the kinds come from the policy), or an elevated administrator.
+    /// mode, otherwise a parent's or an administrator's approval (the kinds come from the policy), or an elevated administrator. A lock taken
+    /// over from 0.4.0 counts as protected too, also for the code of the shell's config (its user could have written it there): a parent's or
+    /// an administrator's approval only (security review H-1).
     /// </summary>
     internal AuthorizationDecision EnrollAllowed(CallerInfo caller, ValidatedRequest request)
     {
         if (request.Args is not PasscodeHashArgs args || KindsOf(args.Kind) is not { } kinds) return AuthorizationDecision.Denied("no code kind");
         if (!parts.Codes.IsAvailable) return AuthorizationDecision.Denied("codes not available");
+        if (IsLegacy(caller.Sid)) return LegacyOnlyThroughTheMode;
         if (kinds.Any(k => parts.Codes.Has(caller.Sid, k))) return AuthorizationDecision.Denied("a code of that kind exists already");
-        if (parts.Codes.View(caller.Sid).Protected && !caller.IsElevatedAdmin) return AuthorizationDecision.GrantNeeded;
+        if (View(caller.Sid).Protected && !caller.IsElevatedAdmin) return AuthorizationDecision.GrantNeeded;
         return AuthorizationDecision.Allowed;
     }
 
@@ -84,17 +126,37 @@ public sealed class CodeHandlers(CodeParts parts)
     {
         if (KindsOf(request) is not { } kinds) return AuthorizationDecision.Denied("no code kind");
         if (!parts.Codes.IsAvailable) return AuthorizationDecision.Denied("codes not available");
+        if (IsLegacy(caller.Sid)) return LegacyOnlyThroughTheMode;
         return kinds.Any(k => parts.Codes.Has(caller.Sid, k)) ? AuthorizationDecision.Allowed : AuthorizationDecision.Denied("no code of that kind");
     }
 
     /// <summary>
+    /// A lock of 0.4.0 not confirmed yet: no code is enrolled, changed or removed on its own (security review H-1, third round). The one way
+    /// is the administrator's confirmation through the lock mode (<see cref="ConfirmMode"/>), which sets the mode and the code together and
+    /// drops everything else. Refused before any grant is asked for, so nobody is sent to UAC for nothing.
+    /// </summary>
+    private static readonly AuthorizationDecision LegacyOnlyThroughTheMode = AuthorizationDecision.Denied("the lock of 0.4.0 is confirmed through the lock mode first");
+
+    /// <summary>
     /// Raising the lock mode is free; lowering it needs proof (the kinds come from the policy by the current mode). A code may come along only
-    /// when the code lock is switched on from no lock at all, and never over a code somebody approved.
+    /// when the code lock is switched on from no lock at all, and never over a code somebody approved. A lock taken over from 0.4.0 takes a
+    /// parent's or an administrator's approval for raising too (the Windows mode would let the user's own sign-in release it, review H-1).
     /// </summary>
     internal AuthorizationDecision LockModeChange(CallerInfo caller, ValidatedRequest request)
     {
         if (request.Args is not LockModeArgs { Mode: var mode } args || LockModes.Rank(mode) < 0) return AuthorizationDecision.Denied("no mode");
         if (!parts.Codes.IsAvailable) return AuthorizationDecision.Denied("codes not available");
+        if (IsLegacy(caller.Sid))
+        {
+            // The confirmation of a lock of 0.4.0 (security review H-1, second round): it starts the account's codes over, so a code may come
+            // along whatever was there, and the code lock needs its code in the same step. An administrator only (the policy's kinds).
+            if (args.Hash is not null && KindsOf(args.Kind) is null) return AuthorizationDecision.Denied("no code kind");
+            // The lock stays a lock: confirmed as the code lock or the Windows lock, never as "no lock" (a release is ReleaseLockPolicies).
+            if (LockModes.Rank(mode) <= 0) return AuthorizationDecision.Denied("the lock of 0.4.0 is confirmed as the code or the Windows lock");
+            if (mode == LockModes.Code && (args.Hash is null || KindsOf(args.Kind)?.Contains(CodeKind.Couch) != true))
+                return AuthorizationDecision.Denied("the code lock of 0.4.0 is confirmed with its code");
+            return caller.IsElevatedAdmin ? AuthorizationDecision.Allowed : AuthorizationDecision.GrantNeeded;
+        }
         if (args.Hash is not null)
         {
             if (LockModes.Rank(parts.Codes.StoredMode(caller.Sid)) > 0) return AuthorizationDecision.Denied("a code comes along only from no lock");
@@ -102,8 +164,9 @@ public sealed class CodeHandlers(CodeParts parts)
             if (KindsOf(args.Kind) is null || parts.Codes.HasApproved(caller.Sid, CodeKind.Couch) || parts.Codes.HasApproved(caller.Sid, CodeKind.Parent))
                 return AuthorizationDecision.Denied("an approved code exists");
         }
+        if (caller.IsElevatedAdmin) return AuthorizationDecision.Allowed;
         var current = parts.Codes.View(caller.Sid).Mode;
-        if (LockModes.Rank(mode) >= LockModes.Rank(current) || caller.IsElevatedAdmin) return AuthorizationDecision.Allowed;
+        if (LockModes.Rank(mode) >= LockModes.Rank(current)) return AuthorizationDecision.Allowed;
         return AuthorizationDecision.GrantNeeded;
     }
 
@@ -115,6 +178,7 @@ public sealed class CodeHandlers(CodeParts parts)
     {
         var args = context.Request.GetArgs<LockModeArgs>();
         var mode = args.Mode;
+        if (IsLegacy(context.Caller.Sid)) return ConfirmMode(context, args);
         var before = parts.Codes.View(context.Caller.Sid);
         var dropCouch = mode == LockModes.Windows && before.HasCouch;
         // A lock switched on from no lock: what was enrolled freely at the open couch goes, unless it comes along now (review 3, item 2).
@@ -137,12 +201,39 @@ public sealed class CodeHandlers(CodeParts parts)
         return ProtocolJson.Serialize(Response.Success());
     }
 
+    /// <summary>
+    /// The administrator's confirmation of a lock of 0.4.0 through the lock mode (security review H-1, second round): the account's codes start
+    /// over with exactly what comes along (the code lock: the code just entered; the Windows lock: no couch code), whatever the account held
+    /// before (planted or not) goes in the same write, and the lock is the service's own from then on.
+    /// </summary>
+    private byte[] ConfirmMode(RequestContext context, LockModeArgs args)
+    {
+        if (!AdminApproved(context)) return Dispatcher.Fail(ErrorCodes.NeedGrant);
+        if (LockModes.Rank(args.Mode) <= 0) return Dispatcher.Fail(ErrorCodes.Denied);
+        var kinds = args.Hash is null ? null : KindsOf(args.Kind)?.Where(k => args.Mode != LockModes.Windows || k != CodeKind.Couch).ToList();
+        var code = kinds is { Count: > 0 };
+        switch (parts.Codes.Replace(context.Caller.Sid, args.Mode, code ? kinds : null, code ? args.Hash : null))
+        {
+            case CodeSet.Saved:
+                break;
+            case CodeSet.BadHash:
+                return Dispatcher.Fail(ErrorCodes.BadArgument);
+            default:
+                return Dispatcher.Fail(ErrorCodes.Unavailable);
+        }
+        parts.Log.Info($"[codes] lock mode {args.Mode}{(code ? $", {args.Kind} code set" : "")}, every other code dropped, for {context.Caller.Describe()}{Approval(context)}");
+        parts.Events?.Add(context.Caller.Sid, "lock", $"mode {args.Mode}");
+        ConfirmLegacy(context);
+        return ProtocolJson.Serialize(Response.Success());
+    }
+
     /// <summary>Removes one of the caller's codes (the table and the state check made sure it exists and the right approval came along).</summary>
     private byte[] Remove(RequestContext context)
     {
         var sid = context.Caller.Sid;
         var args = context.Request.GetArgs<CodeKindArgs>();
         if (CodeStore.KindOf(args.Kind) is not { } kind) return Dispatcher.Fail(ErrorCodes.BadArgument);
+        if (IsLegacy(sid)) return Dispatcher.Fail(ErrorCodes.Denied);
         switch (parts.Codes.Remove(sid, kind))
         {
             case CodeSet.Saved:
@@ -165,7 +256,9 @@ public sealed class CodeHandlers(CodeParts parts)
         var sid = context.Caller.Sid;
         var args = context.Request.GetArgs<PasscodeHashArgs>();
         if (KindsOf(args.Kind) is not { } kinds) return Dispatcher.Fail(ErrorCodes.BadArgument);
-        var approved = context.Grant is GrantKinds.Parent or GrantKinds.WindowsAdmin || context.Caller.IsElevatedAdmin;
+        var approved = Approved(context);
+        // A lock of 0.4.0 changed in between (the state check refused it already): only through the lock mode (security review H-1).
+        if (IsLegacy(sid)) return Dispatcher.Fail(ErrorCodes.Denied);
         // Enrolled without any grant: the free first code at an open couch (it does not survive a lock being switched on, review 3).
         var open = enroll && context.Grant == GrantKinds.None && !context.Caller.IsElevatedAdmin;
         var result = parts.Codes.Set(sid, kinds, args.Hash, enroll, clearOther: approved && kinds.Count == 1, open: open);
@@ -196,6 +289,20 @@ public sealed class CodeHandlers(CodeParts parts)
         var caller = context.Caller;
         var args = context.Request.GetArgs<VerifyCodeArgs>();
         if (CodeStore.KindOf(args.Kind) is not { } kind) return Dispatcher.Fail(ErrorCodes.BadArgument);
+        if (parts.Grants.SessionLockState(caller.TokenSessionId) is var locked && locked != false)
+        {
+            // Nobody at the couch can use what a right code gives while the session is locked (finding B2): no grant, and the buttons are
+            // not even checked (no answer about the code). A session Windows reports as locked counts the try towards the lockout like a
+            // wrong one; one whose state cannot be told is refused without counting (security review N-1).
+            if (locked == true)
+            {
+                var refused = parts.Codes.CountRefused(caller.Sid, kind);
+                parts.Log.Info($"[codes] {args.Kind} code refused for {caller.Describe()}: the session is locked ({refused.Result})");
+            }
+            else parts.Log.Error($"[codes] {args.Kind} code refused for {caller.Describe()}: whether the session is locked cannot be told");
+            parts.Events?.Add(caller.Sid, "code", $"{args.Kind} code refused: session locked");
+            return Dispatcher.Fail(ErrorCodes.Denied);
+        }
         var verdict = parts.Codes.Verify(caller.Sid, kind, args.Sequence);
         switch (verdict.Result)
         {
@@ -233,6 +340,8 @@ public sealed class CodeHandlers(CodeParts parts)
             parts.Log.Error($"[grant] no Windows-unlock grant for {caller.Describe()}: the account has no password");
             return Dispatcher.Fail(ErrorCodes.Denied);
         }
+        // A locked session gets no grant: refused before the unlock is taken, so it is not used up (security review N-2).
+        if (parts.Grants.IsSessionLocked(caller.TokenSessionId)) return Dispatcher.Fail(ErrorCodes.Denied);
         if (!parts.Sessions.TryTake(caller)) return Dispatcher.Fail(ErrorCodes.NotFound);
         if (parts.Grants.Issue(caller, GrantKinds.WindowsUnlock) is not { } issued) return Dispatcher.Fail(ErrorCodes.Denied);
         parts.Log.Info($"[grant] {GrantKindNames.WindowsUnlock} for {caller.Describe()}");
@@ -255,6 +364,8 @@ public sealed class CodeHandlers(CodeParts parts)
     private byte[] CollectApproval(RequestContext context)
     {
         var caller = context.Caller;
+        // A locked session gets no grant: refused before the approval is collected, so it stays for after the unlock (security review N-2).
+        if (parts.Grants.IsSessionLocked(caller.TokenSessionId)) return Dispatcher.Fail(ErrorCodes.Denied);
         var (state, ops) = parts.Approvals.Collect(caller);
         switch (state)
         {

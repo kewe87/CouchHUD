@@ -58,21 +58,43 @@ public class MigrationStateTests
         Assert.Equal(0, again.Data!.Removed);
     }
 
-    [Fact]
-    public async Task Migration_is_refused_while_lock_values_the_service_did_not_set_are_present()
+    private static void SetLock(OpsHarness ops, string sid)
     {
-        using var ops = new OpsHarness();
-        OldSetup(ops, Callers.UserSid);
-        // The old task set the lock.
-        var mine = ops.Hives.For(Callers.UserSid);
+        var mine = ops.Hives.For(sid);
         foreach (var c in PolicyGroups.Lock.Changes)
         {
             if (c.Kind == Core.Guard.GuardKind.RegistryDword) mine.WriteDword(c.Location, c.Name, int.Parse(c.Value));
             else mine.WriteString(c.Location, c.Name, c.Value);
         }
+    }
+
+    [Fact]
+    public async Task Migration_takes_over_the_lock_the_old_tasks_of_the_account_set()
+    {
+        using var ops = new OpsHarness();
+        OldSetup(ops, Callers.UserSid);
+        // The old task set the lock: it stays on and becomes the service's before the tasks go (finding B1 of the 0.4.1 acceptance test).
+        SetLock(ops, Callers.UserSid);
+        var response = await ops.Call<MigrateTasksData>(Callers.User(), Operation.MigrateTasks);
+        Assert.True(response.Ok, response.Code);
+        Assert.Equal(7, response.Data!.Removed);
+        Assert.True(PolicyGroups.Applied(ops.Hives.Loaded[Callers.UserSid], PolicyGroups.Lock));
+        Assert.Equal(["lock"], ops.State.Accounts[Callers.UserSid].Groups);
+        Assert.True(ops.State.Accounts[Callers.UserSid].LegacyLock);
+    }
+
+    [Fact]
+    public async Task Migration_is_refused_while_lock_values_nothing_of_the_old_setup_explains_are_present()
+    {
+        using var ops = new OpsHarness();
+        // Only service tasks and no lock files: the lock values were set by someone else.
+        ops.Tasks.Tasks.Add($@"{Folder(Callers.UserSid)}\Couch-WSearch");
+        Directory.CreateDirectory(Path.Combine(ops.AppDir, "policy", Callers.UserSid));
+        SetLock(ops, Callers.UserSid);
         Assert.Equal(ErrorCodes.Failed, (await ops.Call(Callers.User(), Operation.MigrateTasks)).Code);
         Assert.Empty(ops.Tasks.Deleted);
         Assert.True(Directory.Exists(Path.Combine(ops.AppDir, "policy", Callers.UserSid)));
+        Assert.False(ops.State.Accounts.TryGetValue(Callers.UserSid, out var account) && account.Groups.Count > 0);
     }
 
     [Theory]

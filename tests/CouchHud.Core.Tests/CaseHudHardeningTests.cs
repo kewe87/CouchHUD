@@ -35,7 +35,7 @@ public class CaseHudHardeningTests : IDisposable
     private static HttpResponseMessage Json(string json, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
-    private static CaseHudApiInfo Info() => new() { ApiVersion = 1, Version = "1.0.5", Port = 51234, Token = "s3cr3t-token-value", Pid = 1, Exe = Exe };
+    private static CaseHudApiInfo Info() => new() { ApiVersion = 1, Version = "1.0.5", Port = 51234, Token = "s3cr3tTokenValue42", Pid = 1, Exe = Exe };
 
     private const string StatusJson = """{"version":"1.0.5","apiVersion":1,"sensors":{"ok":true},"power":true,"gaming":{"active":false},"rotation":{"enabled":false},"awtrix":{"enabled":false},"panels":[]}""";
 
@@ -134,7 +134,7 @@ public class CaseHudHardeningTests : IDisposable
     private string ApiJson()
     {
         var path = Path.Combine(_dir, "api.json");
-        File.WriteAllText(path, $$"""{"apiVersion":1,"version":"1.0.5","port":51234,"token":"s3cr3t-token-value","pid":1,"exe":"{{Exe.Replace("\\", "\\\\")}}"}""");
+        File.WriteAllText(path, $$"""{"apiVersion":1,"version":"1.0.5","port":51234,"token":"s3cr3tTokenValue42","pid":1,"exe":"{{Exe.Replace("\\", "\\\\")}}"}""");
         return path;
     }
 
@@ -195,6 +195,10 @@ public class CaseHudHardeningTests : IDisposable
         public string TempDir = "";
         public AsyncHandler Github = null!;
         public AsyncHandler Local = null!;
+        public bool ApiChoice;
+        public int ApiCalls;
+        public int StartsAtApiCall = -1;
+        public Exception? ApiThrows;
     }
 
     private Fixture Make(Func<DateTimeOffset>? clock = null, bool gameRunning = false)
@@ -218,7 +222,14 @@ public class CaseHudHardeningTests : IDisposable
         f.Installer = new CaseHudInstaller(new CaseHudReleaseService(new HttpClient(f.Github), ""), f.Gate,
             () => f.InstalledVersion is null ? null : new CaseHudInstall(Exe, @"C:\Program Files\CaseHUD", f.InstalledVersion),
             () => f.Running ? local : null, runner, () => { f.Starts++; f.Running = true; return Task.CompletedTask; },
-            () => gameRunning, () => (true, false), f.TempDir, text => f.Busy.Add(text), (_, _) => Task.CompletedTask);
+            () => gameRunning, () => (true, false), f.TempDir, text => f.Busy.Add(text), (_, _) => Task.CompletedTask,
+            apiAfterInstall: () => f.ApiChoice,
+            enableApi: _ =>
+            {
+                f.ApiCalls++;
+                f.StartsAtApiCall = f.Starts;
+                return f.ApiThrows is null ? Task.CompletedTask : Task.FromException(f.ApiThrows);
+            });
         return f;
     }
 
@@ -261,6 +272,69 @@ public class CaseHudHardeningTests : IDisposable
         Assert.Equal(1, f.Starts);
         Assert.False(Directory.Exists(f.TempDir));   // the setup file is gone again
         Assert.Null(f.Busy.Last());
+    }
+
+    // ---- the API switch after installing (CaseHUD's API is off by default; never /API=1 from the elevated setup)
+
+    [Fact]
+    public async Task First_installation_switches_the_api_on_in_the_user_session_when_chosen_before_starting()
+    {
+        var f = Make();
+        f.ApiChoice = true;
+        await f.Installer.InstallAsync((await f.Installer.PrepareAsync()).Token);
+        Assert.Equal(1, f.ApiCalls);
+        Assert.Equal(0, f.StartsAtApiCall);                 // set first (config), then started: api.json appears at once
+        Assert.Equal(1, f.Starts);
+        Assert.DoesNotContain("/API", f.RunnerArgs!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Without_the_choice_the_api_stays_as_CaseHUD_ships_it()
+    {
+        var f = Make();
+        f.ApiChoice = false;
+        await f.Installer.InstallAsync((await f.Installer.PrepareAsync()).Token);
+        Assert.Equal(0, f.ApiCalls);
+        Assert.Equal(1, f.Starts);
+    }
+
+    [Fact]
+    public async Task An_update_never_overrules_the_api_setting_made_in_CaseHUD()
+    {
+        var f = Make();
+        f.ApiChoice = true;
+        f.InstalledVersion = "1.0.1";
+        await f.Installer.InstallAsync((await f.Installer.PrepareAsync()).Token);
+        Assert.Equal(1, f.RunnerCalls);
+        Assert.Equal(0, f.ApiCalls);
+    }
+
+    [Fact]
+    public async Task A_failing_api_switch_does_not_fail_the_installation()
+    {
+        var f = Make();
+        f.ApiChoice = true;
+        f.ApiThrows = new InvalidOperationException("exit 3");
+        await f.Installer.InstallAsync((await f.Installer.PrepareAsync()).Token);
+        Assert.Equal(1, f.ApiCalls);
+        Assert.Equal(1, f.Starts);
+        Assert.Null(f.Busy.Last());
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    public void Setup_arguments_never_switch_the_api(bool autostart, bool fps) =>
+        Assert.DoesNotContain("/API", CaseHudPolicy.InstallArguments(autostart, fps), StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public void Switching_the_api_needs_the_unlock()
+    {
+        Assert.Contains("caseHudSetApi", CaseHudPolicy.All);
+        Assert.False(CaseHudPolicy.Allowed("caseHudSetApi", locked: true));
+        Assert.True(CaseHudPolicy.Allowed("caseHudSetApi", locked: false));
+        Assert.DoesNotContain("caseHudInstallApi", CouchHud.Core.Guard.LockPolicy.HarmlessSettings);
     }
 
     [Fact]

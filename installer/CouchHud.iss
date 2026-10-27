@@ -44,6 +44,9 @@
 #define RepairScript "repair-service.cmd"
 ; Exit code of the setup when the files are installed but the service could not be set up or does not run (GetCustomSetupExitCode).
 #define ExitServiceFailed 20
+; The service's own exit code when its pipe name was taken before it started (ServiceHardening.ExitPipeSquatted, 0xC0D1): the setup
+; names that case to the administrator. Exit code, installed files and the restricted tasks stay as for every other failure (fail-closed).
+#define ServiceExitPipeSquatted 49361
 
 [Setup]
 ; Never change the AppId: updates and uninstall find the installation through it.
@@ -116,6 +119,8 @@ de.ServiceStuck=Der CouchHUD-Dienst lässt sich nicht beenden. Bitte den PC neu 
 en.ServiceStuck=The CouchHUD service cannot be stopped. Please restart the PC and run the setup again.
 de.ServiceFailed=Der CouchHUD-Dienst konnte nicht eingerichtet oder gestartet werden. Bis er läuft, gehen Sperre, Updates und automatische Anmeldung nicht. Bitte das Setup erneut ausführen oder in CouchHUD „Dienst reparieren“ wählen.
 en.ServiceFailed=The CouchHUD service could not be set up or started. Until it runs, the lock, updates and automatic sign-in do not work. Please run the setup again or choose "Repair service" in CouchHUD.
+de.ServicePipeSquatted=Der CouchHUD-Dienst wurde nicht gestartet: Ein anderes Programm belegt bereits seinen Anschluss (die Named Pipe des Dienstes). Aus Sicherheit läuft der Dienst dann nicht; bis er läuft, gehen Sperre, Updates und automatische Anmeldung nicht. Bitte den PC neu starten und das Setup danach erneut ausführen. Tritt es wieder auf, das Programm suchen, das sich als CouchHUD-Dienst ausgibt (Ereignisanzeige, Anwendung, Quelle CouchHud.Service).
+en.ServicePipeSquatted=The CouchHUD service was not started: another program already holds its connection (the service's named pipe). For safety the service does not run then; until it runs, the lock, updates and automatic sign-in do not work. Please restart the PC and then run the setup again. If it happens again, look for the program that poses as the CouchHUD service (Event Viewer, Application, source CouchHud.Service).
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; Flags: unchecked
@@ -157,6 +162,38 @@ Type: filesandordirs; Name: "{app}\policy"
 Type: files; Name: "{app}\{#RepairScript}"
 ; The service's data (written by the service, not by the setup). Inside the admin-only service folder: no user can put a link there.
 Type: filesandordirs; Name: "{app}\{#ServiceFolder}\{#ServiceDataFolder}"
+; Folders of the program that an update over an older version did not note as its own (the 0.4.1 acceptance test left ui\i18n\de and
+; en behind): removed when empty, deepest first (processed in this order after the files). Nothing that is not empty goes.
+Type: dirifempty; Name: "{app}\ui\i18n\de"
+Type: dirifempty; Name: "{app}\ui\i18n\en"
+Type: dirifempty; Name: "{app}\ui\i18n"
+Type: dirifempty; Name: "{app}\ui\assets"
+Type: dirifempty; Name: "{app}\ui\components"
+Type: dirifempty; Name: "{app}\ui\core"
+Type: dirifempty; Name: "{app}\ui\remote"
+Type: dirifempty; Name: "{app}\ui\skins"
+Type: dirifempty; Name: "{app}\ui\views"
+Type: dirifempty; Name: "{app}\ui"
+Type: dirifempty; Name: "{app}\plugins\CouchHud.Plugin.Wand"
+Type: dirifempty; Name: "{app}\plugins"
+Type: dirifempty; Name: "{app}\runtimes\win-x64\native"
+Type: dirifempty; Name: "{app}\runtimes\win-x64"
+Type: dirifempty; Name: "{app}\runtimes"
+Type: dirifempty; Name: "{app}\cs"
+Type: dirifempty; Name: "{app}\de"
+Type: dirifempty; Name: "{app}\es"
+Type: dirifempty; Name: "{app}\fr"
+Type: dirifempty; Name: "{app}\it"
+Type: dirifempty; Name: "{app}\ja"
+Type: dirifempty; Name: "{app}\ko"
+Type: dirifempty; Name: "{app}\pl"
+Type: dirifempty; Name: "{app}\pt-BR"
+Type: dirifempty; Name: "{app}\ru"
+Type: dirifempty; Name: "{app}\tr"
+Type: dirifempty; Name: "{app}\zh-Hans"
+Type: dirifempty; Name: "{app}\zh-Hant"
+Type: dirifempty; Name: "{app}\{#ServiceFolder}"
+Type: dirifempty; Name: "{app}"
 
 [UninstallRun]
 ; Before the files go: shell entry, Task Manager policy, the service (stopped, deleted, its ProgramData state), scheduled tasks,
@@ -172,13 +209,15 @@ begin
   if not RegQueryStringValue(Root, Key, 'pv', Result) then Result := '';
 end;
 
-{ The Evergreen runtime registers either machine-wide (32-bit view) or per user. }
+{ Only a machine-wide runtime counts (32- or 64-bit view of HKLM): a per-user runtime (HKCU, files in %LOCALAPPDATA%) can be changed
+  by every program of the user, and CouchHUD passes the machine-wide folder to WebView2 explicitly. So the machine-wide runtime is
+  installed even when the user already has one of their own. }
 function NeedsWebView2: Boolean;
 var
   Version: String;
 begin
   Version := WebView2Version(HKLM32, WebView2Key);
-  if (Version = '') or (Version = '0.0.0.0') then Version := WebView2Version(HKCU, WebView2Key);
+  if ((Version = '') or (Version = '0.0.0.0')) and IsWin64 then Version := WebView2Version(HKLM64, WebView2Key);
   Result := (Version = '') or (Version = '0.0.0.0');
 end;
 
@@ -284,12 +323,15 @@ const
   SERVICE_STOPPED = 1;
   SERVICE_RUNNING = 4;
   ERROR_SERVICE_ALREADY_RUNNING = 1056;
+  ERROR_SERVICE_SPECIFIC_ERROR = 1066;
 
 var
   ServiceTouched: Boolean;  { PrepareToInstall disabled and stopped an installed service }
   ServiceReady: Boolean;    { ssPostInstall set the service up and it runs }
   ServiceAttempted: Boolean; { ssPostInstall reached: from here on ConfigureService decides, no RestoreService }
   ServiceFailed: Boolean;   { ssPostInstall could not set it up: exit code ExitServiceFailed }
+  WatchServiceExit: Boolean; { after the start in ssPostInstall: ServiceState notes how the new service stopped }
+  ServicePipeSquatted: Boolean; { the new service stopped with ServiceExitPipeSquatted: another program holds its pipe name }
 
 { 0 when the service is not installed (or the SCM cannot be asked), else SERVICE_STOPPED .. SERVICE_PAUSED. Locale-independent,
   unlike the text sc.exe prints. }
@@ -305,7 +347,13 @@ begin
     Service := ScOpenService(Manager, '{#ServiceName}', SERVICE_QUERY_STATUS);
     if Service <> 0 then
     try
-      if ScQueryStatus(Service, Status) then Result := Status.CurrentState;
+      if ScQueryStatus(Service, Status) then
+      begin
+        Result := Status.CurrentState;
+        { Only for the message to the administrator: the outcome (exit code, fail-closed) is the same for every failure. }
+        if WatchServiceExit and (Status.Win32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR) and (Status.ServiceSpecificExitCode = {#ServiceExitPipeSquatted}) then
+          ServicePipeSquatted := True;
+      end;
     finally
       ScCloseHandle(Service);
     end;
@@ -345,6 +393,20 @@ end;
 function ServiceFolderPath: String;
 begin
   Result := ExpandConstant('{app}\{#ServiceFolder}');
+end;
+
+{ The old SYSTEM tasks of 0.4.0 (\CouchHud\<SID>\Policy-*, Couch-*, PC-*) to SYSTEM and administrators only, before the new service runs
+  (security review M-1 of finding B1): no moment after the update in which a user may still start one, and also when the service
+  cannot start (a squatted pipe name). The new service program does it (Task Scheduler COM), from the folder just hardened; it only
+  takes rights away. A failure is logged, the service does it again at its start. }
+procedure RestrictLegacyTasks;
+var
+  ResultCode: Integer;
+begin
+  if Exec(ServiceFolderPath + '\{#ServiceExe}', '--restrict-legacy-tasks', ExpandConstant('{sys}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('service: old tasks restricted -> ' + IntToStr(ResultCode))
+  else
+    Log('service: old tasks not restricted (not started)');
 end;
 
 { The parameters of "sc create" and "sc config": own process, LocalSystem, automatic (not delayed: the service must answer before
@@ -474,6 +536,7 @@ begin
     FailClosed(False);
     Exit;
   end;
+  RestrictLegacyTasks;
   if Created then Code := RunSc('create {#ServiceName} ' + ServiceParams)
   else Code := RunSc('config {#ServiceName} ' + ServiceParams);
   if Code <> 0 then
@@ -489,11 +552,23 @@ begin
       Exit;
     end;
   Code := RunSc('start {#ServiceName}');
-  if (Code <> 0) and (Code <> ERROR_SERVICE_ALREADY_RUNNING) then Exit;
-  if not WaitForServiceState(SERVICE_RUNNING, 30000) then Exit;
-  Sleep(2000);
-  Result := ServiceState = SERVICE_RUNNING;
-  if not Result then Log('service: stopped again right after its start (see the Application event log, source {#EventSource})');
+  WatchServiceExit := True;
+  try
+    if (Code <> 0) and (Code <> ERROR_SERVICE_ALREADY_RUNNING) then
+    begin
+      Code := ServiceState;  { notes a squatted pipe, see ServiceState }
+      Exit;
+    end;
+    if WaitForServiceState(SERVICE_RUNNING, 30000) then
+    begin
+      Sleep(2000);
+      Result := ServiceState = SERVICE_RUNNING;
+    end;
+    if not Result then Log('service: stopped again right after its start (see the Application event log, source {#EventSource})');
+    if ServicePipeSquatted then Log('service: pipe squatting suspected, exit code {#ServiceExitPipeSquatted} of the service');
+  finally
+    WatchServiceExit := False;
+  end;
 end;
 
 { After an abort or a rollback: the service that PrepareToInstall stopped runs again (with the files that are there now). }
@@ -634,7 +709,11 @@ begin
     begin
       ServiceFailed := True;
       Log('service: setup failed, exit code {#ExitServiceFailed}');
-      if not WizardSilent then MsgBox(CustomMessage('ServiceFailed'), mbError, MB_OK);
+      if not WizardSilent then
+      begin
+        if ServicePipeSquatted then MsgBox(CustomMessage('ServicePipeSquatted'), mbError, MB_OK)
+        else MsgBox(CustomMessage('ServiceFailed'), mbError, MB_OK);
+      end;
     end;
     DeleteFile(ExpandConstant('{app}\updating'));
   end;

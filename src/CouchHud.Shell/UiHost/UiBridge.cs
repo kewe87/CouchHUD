@@ -334,7 +334,9 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                 hud.ParentalCloseGame();
                 return null;
             case "unlock":
-                return await hud.UnlockAsync(Buttons(0));
+                return await hud.UnlockAsync(Buttons(0), Arg(1).ValueKind == JsonValueKind.True);
+            case "windowsSignIn":
+                return hud.WindowsSignIn();
             case "setPasscode":
                 return await hud.SetPasscodeAsync(Buttons(0) ?? throw new ArgumentException(Strings.Get("bridge.sequenceMissing")));
             case "setCouchLock":
@@ -431,8 +433,11 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                 return await hud.ConnectWifiAsync(StringArg(0), Arg(1).ValueKind == JsonValueKind.String ? Arg(1).GetString() : null);
             case "disconnectWifi":
                 return await hud.DisconnectWifiAsync();
+            case "answerBluetoothRecovery":
+                return hud.AnswerBluetoothRecovery(Arg(0).ValueKind == JsonValueKind.True);
             case "setBluetooth":
-                await hud.SetBluetoothAsync(Arg(0).ValueKind == JsonValueKind.True);
+                await hud.SetBluetoothAsync(Arg(0).ValueKind == JsonValueKind.True,
+                    Arg(1).ValueKind == JsonValueKind.String ? Arg(1).GetString() : null);
                 return await hud.GetBluetoothStateAsync();
             case "getRemote":
                 return hud.GetRemote(Arg(0).ValueKind == JsonValueKind.True);

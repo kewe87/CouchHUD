@@ -33,6 +33,8 @@ export class Input {
     this.onAction = onAction;
     this.timers = new Map();
     this.held = new Set();
+    // False: held arrows give one step only (the code prompt: one press, one code step).
+    this.repeatAllowed = () => true;
   }
 
   /** source: 'pad' or 'keyboard', so hints can show the right buttons. */
@@ -40,7 +42,7 @@ export class Input {
     if (this.held.has(button)) return;
     this.held.add(button);
     this.onAction(button, source);
-    if (REPEATING.has(button)) {
+    if (REPEATING.has(button) && this.repeatAllowed()) {
       const timer = setTimeout(() => {
         const interval = setInterval(() => this.onAction(button, source), REPEAT_RATE);
         this.timers.set(button, interval);

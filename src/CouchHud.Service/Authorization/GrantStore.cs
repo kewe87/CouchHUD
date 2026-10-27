@@ -53,8 +53,17 @@ public sealed class GrantStore(IMonotonicClock clock, Func<int, byte[]>? random 
     public static bool IsBound(GrantKinds kind) => kind is GrantKinds.Parent or GrantKinds.WindowsAdmin;
 
     /// <summary>
-    /// A new grant of exactly one kind for this caller, or null when the caller has no logon session to bind it to, or a parent's or an
-    /// administrator's grant comes without operations (or a couch or unlock grant with some).
+    /// Whether the Windows session is locked right now, or that cannot be told (fail-closed). False when no check is wired (tests).
+    /// </summary>
+    public bool IsSessionLocked(int session) => SessionLockState(session) != false;
+
+    /// <summary>Whether the session is locked: true, false, or null when Windows cannot tell (without a check configured: false).</summary>
+    public bool? SessionLockState(int session) => sessionLocked is null ? false : sessionLocked(session);
+
+    /// <summary>
+    /// A new grant of exactly one kind for this caller, or null when the caller has no logon session to bind it to, its session is locked
+    /// right now (nobody at the couch could use it; finding B2 of the 0.4.1 acceptance test), or a parent's or an administrator's grant
+    /// comes without operations (or a couch or unlock grant with some).
     /// </summary>
     public IssuedGrant? Issue(CallerInfo caller, GrantKinds kind, IReadOnlyList<Operation>? ops = null)
     {
@@ -62,6 +71,7 @@ public sealed class GrantStore(IMonotonicClock clock, Func<int, byte[]>? random 
         if (caller.LogonId == 0 || caller.TokenSessionId <= 0 || caller.TokenSessionId != caller.PipeSessionId) return null;
         if (kind is not (GrantKinds.Couch or GrantKinds.WindowsUnlock or GrantKinds.Parent or GrantKinds.WindowsAdmin)) return null;
         if (IsBound(kind) != ops is { Count: > 0 } || ops is { Count: > RequestValidator.MaxGrantOps }) return null;
+        if (IsSessionLocked(caller.TokenSessionId)) return null;
         var bytes = _random(GrantBytes);
         if (bytes.Length != GrantBytes) throw new InvalidOperationException("random source gave the wrong length");
         try
@@ -120,7 +130,7 @@ public sealed class GrantStore(IMonotonicClock clock, Func<int, byte[]>? random 
             if (entry.Ops is { } ops && !ops.Contains(operation)) return false;
         }
         // Outside the lock (it asks Windows): a session that is locked right now has nobody at the couch who earned the grant.
-        if (sessionLocked is not null && sessionLocked(entry.Session) != false) return false;
+        if (IsSessionLocked(entry.Session)) return false;
         lock (_lock)
         {
             if (!_entries.TryGetValue(key, out var still) || !ReferenceEquals(still, entry)) return false;

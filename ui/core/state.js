@@ -17,6 +17,8 @@ export const state = {
   session: null,
   /** Last input device ('pad' or 'keyboard'); hints show matching buttons. */
   inputSource: 'pad',
+  // Where the last action came from: 'pad', 'keyboard' or 'mouse' (mouse and touch). Switching Bluetooth off tells the host.
+  actionSource: 'pad',
   skins: BUILTIN_SKINS,
   skin: BUILTIN_SKINS[0]
 };

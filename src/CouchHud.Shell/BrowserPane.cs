@@ -15,9 +15,13 @@ namespace CouchHud.Shell;
 /// </summary>
 public sealed class BrowserPane : Grid
 {
-    private readonly WebView2 _web;
+    // Replaced (not reused) when a start attempt fails, see WebViewRuntimeLocator.StartAsync.
+    private WebView2 _web;
     private readonly string _profileDir;
     private readonly Func<bool> _allowDownloads;
+    private readonly Func<bool> _strictRuntime;
+    private bool _webTried;
+    private bool _disposed;
     private Task? _ready;
     private bool _fullScreen;
     private bool _manualFullScreen;
@@ -27,16 +31,20 @@ public sealed class BrowserPane : Grid
     private readonly System.Windows.Threading.DispatcherTimer _edgeTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private int _edgeTicks;
 
-    public BrowserPane(string profileDir, Func<bool> allowDownloads)
+    /// <param name="strictRuntime">A couch lock or parental controls are on: never fall back to another runtime than the machine-wide one.</param>
+    public BrowserPane(string profileDir, Func<bool> allowDownloads, Func<bool> strictRuntime)
     {
         _profileDir = profileDir;
         _allowDownloads = allowDownloads;
+        _strictRuntime = strictRuntime;
         Background = Brushes.Black;
-        _web = new WebView2 { DefaultBackgroundColor = System.Drawing.Color.White, AllowExternalDrop = false };
+        _web = NewWebView();
         Children.Add(_web);
         // Manual full screen has a way out for the mouse: the pointer at the top edge for a moment.
         _edgeTimer.Tick += (_, _) => WatchTopEdge();
     }
+
+    private static WebView2 NewWebView() => new() { DefaultBackgroundColor = System.Drawing.Color.White, AllowExternalDrop = false };
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetCursorPos(out CursorPoint point);
@@ -150,8 +158,35 @@ public sealed class BrowserPane : Grid
 
     private async Task InitAsync()
     {
-        var env = await CoreWebView2Environment.CreateAsync(null, _profileDir);
-        await _web.EnsureCoreWebView2Async(env);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        // Defence in depth: App.OnStartup already removed every WEBVIEW2_* override; nothing may have put one back since.
+        if (CouchHud.Core.Security.WebViewEnvironment.ScrubProcess() is { Count: > 0 } late)
+            Console.Error.WriteLine($"[browser] removed WebView2 override variables: {string.Join(", ", late)}");
+        // Remote debugging (loopback, the HUD's port + 1) only with the administrator's switch; see DeveloperMode.
+        var arguments = Services.DeveloperMode.BrowserArgumentsFor(CouchHud.Core.Security.BrowserSurface.BrowserPane);
+        // The machine-wide runtime below Program Files, like the HUD (see WebViewRuntimeLocator).
+        // A failed attempt leaves a web view that is not used again: each attempt after the first gets a new one in the same place.
+        // (also across InitAsync calls: a start that failed earlier left _web unusable as well)
+        WebView2 Fresh()
+        {
+            // Closed while a start was running: no new web view (and no browser process) for a pane that is gone.
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_webTried)
+            {
+                _webTried = true;
+                return _web;
+            }
+            var index = Children.IndexOf(_web);
+            Children.Remove(_web);
+            _web.Dispose();
+            _web = NewWebView();
+            Children.Insert(index < 0 ? 0 : index, _web);
+            return _web;
+        }
+        // Fail closed with a lock or parental controls on: the exception goes to the caller (the pane shows its error, no other runtime).
+        await Services.WebViewRuntimeLocator.StartAsync(Fresh, _profileDir, () => new CoreWebView2EnvironmentOptions(arguments), _strictRuntime(), "browser");
+        // Dispose() during the start already disposed _web (the one that started): nothing to configure.
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var core = _web.CoreWebView2;
         _normalAgent = core.Settings.UserAgent;
         core.Settings.AreDevToolsEnabled = false;
@@ -364,6 +399,8 @@ public sealed class BrowserPane : Grid
     /// <summary>Ends the page: the web view disposed (its process goes with it).</summary>
     public void Dispose()
     {
+        // From here on no start creates a web view again (Fresh, InitAsync, a start still running).
+        _disposed = true;
         try
         {
             _web.Dispose();

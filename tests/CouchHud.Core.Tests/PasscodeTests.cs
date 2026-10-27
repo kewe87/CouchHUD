@@ -14,6 +14,26 @@ public class PasscodeTests
         Assert.DoesNotContain("a,x", stored);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(Passcode.HeldByService)]
+    [InlineData("pbkdf2-sha256$broken")]
+    [InlineData("a,x,up,lb,b,down")]
+    public void Nothing_stored_or_only_the_marker_is_no_match_for_the_old_code(string? stored)
+    {
+        // Review 4: the confirmation of a lock of 0.4.0 without a real stored hash asks first, like a code that does not match.
+        Assert.False(Passcode.MatchesLocal(Code, stored));
+    }
+
+    [Fact]
+    public void Only_the_stored_hash_of_the_code_entered_is_a_match()
+    {
+        var stored = Passcode.Hash(Code);
+        Assert.True(Passcode.MatchesLocal(Code, stored));
+        Assert.False(Passcode.MatchesLocal(["b", "b", "b", "b", "b", "b"], stored));
+    }
+
     [Fact]
     public void The_service_marker_is_no_hash_and_never_verifies()
     {

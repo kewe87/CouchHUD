@@ -64,6 +64,9 @@ public sealed class SetupDeclinedException() : Exception(Strings.Get("casehud.in
 /// The install and update flow of CaseHUD, with everything that touches Windows behind delegates (so it can be tested):
 /// token → fresh look at the release (same release? really newer?) → download and verification → quit CaseHUD → setup with UAC →
 /// start CaseHUD again. CaseHUD is started again when the setup is declined or fails, if it ran before.
+/// After a first installation (not an update: that would overrule a choice made in CaseHUD since) and only when the user chose it,
+/// <paramref name="enableApi"/> switches CaseHUD's API on in the user's session (<see cref="ICaseHudApiSwitch"/>); the setup itself
+/// never gets <c>/API=1</c>, it runs elevated and would set it for the wrong account. A failure there does not fail the installation.
 /// </summary>
 public sealed class CaseHudInstaller(
     CaseHudReleaseService releases,
@@ -76,7 +79,9 @@ public sealed class CaseHudInstaller(
     Func<(bool Autostart, bool Fps)> options,
     string tempDir,
     Action<string?> busy,
-    Func<TimeSpan, CancellationToken, Task>? delay = null)
+    Func<TimeSpan, CancellationToken, Task>? delay = null,
+    Func<bool>? apiAfterInstall = null,
+    Func<CancellationToken, Task>? enableApi = null)
 {
     private readonly SemaphoreSlim _running = new(1, 1);
     private readonly Func<TimeSpan, CancellationToken, Task> _delay = delay ?? Task.Delay;
@@ -159,6 +164,13 @@ public sealed class CaseHudInstaller(
                     throw new InvalidOperationException(Strings.Get("casehud.installDeclined"));
                 }
                 if (exit != 0) throw new InvalidOperationException(Strings.Get("casehud.installFailed", exit));
+            }
+
+            if (install is null && enableApi is not null && apiAfterInstall?.Invoke() == true)
+            {
+                busy(Strings.Get("casehud.apiEnabling"));
+                try { await enableApi(ct); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { Console.Error.WriteLine($"[casehud] api switch after install: {ex.GetType().Name}"); }
             }
 
             busy(null);

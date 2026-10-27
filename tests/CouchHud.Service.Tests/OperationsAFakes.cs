@@ -96,8 +96,12 @@ internal sealed class FakeHives : IUserHives
         return registry;
     }
 
+    /// <summary>Accounts whose hive throws when opened (a failure the sweep must get past, review N-3).</summary>
+    public HashSet<string> ThrowOpen { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public IUserHive? OpenLoaded(string sid)
     {
+        if (ThrowOpen.Contains(sid)) throw new IOException("hive failed");
         Opened.Add(sid);
         return Loaded.TryGetValue(sid, out var registry) ? new Hive(registry) : null;
     }
@@ -295,9 +299,36 @@ internal sealed class FakeTasks : ITaskScheduler
         return 0;
     }
 
-    public IReadOnlyList<string> List() => Tasks.ToList();
+    /// <summary>The Task Scheduler cannot be asked (List throws).</summary>
+    public bool ThrowList { get; set; }
+
+    public IReadOnlyList<string> List() => ThrowList ? throw new InvalidOperationException("no task scheduler") : Tasks.ToList();
 
     public bool EnsureStartRight(string taskName, string sid) => true;
+
+    /// <summary>Tasks restricted to SYSTEM and administrators (what <see cref="RestrictToAdministrators"/> did).</summary>
+    public HashSet<string> Restricted { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> FailRestrict { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> ThrowRestrict { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool RestrictToAdministrators(string taskName)
+    {
+        if (ThrowRestrict.Contains(taskName)) throw new InvalidOperationException("COM failed");
+        if (FailRestrict.Contains(taskName) || !Tasks.Contains(taskName)) return false;
+        Restricted.Add(taskName);
+        return true;
+    }
+
+    /// <summary>Tasks set to SYSTEM and administrators plus their user's start right (what <see cref="RestrictToUserStart"/> did), with that user.</summary>
+    public Dictionary<string, string> UserStartOnly { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool RestrictToUserStart(string taskName, string sid)
+    {
+        if (ThrowRestrict.Contains(taskName)) throw new InvalidOperationException("COM failed");
+        if (FailRestrict.Contains(taskName) || !Tasks.Contains(taskName)) return false;
+        UserStartOnly[taskName] = sid;
+        return true;
+    }
 }
 
 /// <summary>A temporary folder that goes away with the test.</summary>
@@ -368,13 +399,16 @@ internal sealed class OpsHarness : IDisposable
         Operations = new OperationsA(new OperationsAParts(Store, Hives, Scm, Firewall, AutoLogon, Accounts, Logon, tasks,
             new PolicyInstaller(tasks, OpsLog, AppDir), AppDir, OpsLog, null, OnServiceList, () => Now, TimeSpan.FromSeconds(1), Sessions));
         Operations.Start();
+        // As the service: the account's lock view knows a lock taken over from 0.4.0 (CodeHandlers.View).
         Harness = new Harness(grants: grants?.Create(), codeEnrolled: codeEnrolled, onServiceList: OnServiceList,
-            extraHandlers: Operations.AddHandlers, extraChecks: Operations.AddChecks);
+            extraHandlers: Operations.AddHandlers, extraChecks: Operations.AddChecks,
+            lockViews: sid => LockView.Closed with { Legacy = Operations.IsLegacyLocked(sid) });
         Harness.State.MigrationLookup = Operations.MigrationOf;
         Harness.State.ReleaseLookup = () => Operations.ReleaseStatus;
     }
 
     public FakeSessions Sessions { get; } = new();
+
 
     public Task<Response> Call(CallerInfo caller, Operation op, object? args = null, string? grant = null)
     {

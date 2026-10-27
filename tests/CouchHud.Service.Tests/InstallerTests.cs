@@ -87,6 +87,19 @@ public class InstallerTests
     }
 
     [Fact]
+    public void A_squatted_pipe_is_named_to_the_administrator_and_stays_fail_closed()
+    {
+        Assert.Equal(ServiceHardening.ExitPipeSquatted.ToString(System.Globalization.CultureInfo.InvariantCulture), Defines["ServiceExitPipeSquatted"]);
+        Assert.Equal("1066", ServiceHardening.ServiceSpecificError.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Contains("ERROR_SERVICE_SPECIFIC_ERROR = 1066;", Code);
+        Assert.Contains("de.ServicePipeSquatted=", Iss);
+        Assert.Contains("en.ServicePipeSquatted=", Iss);
+        // Only the message differs: the exit code stays ExitServiceFailed whenever the service does not run.
+        Assert.Contains("if ServiceFailed then Result := {#ExitServiceFailed};", Code);
+        Assert.Contains("if ServicePipeSquatted then MsgBox(CustomMessage('ServicePipeSquatted')", Code);
+    }
+
+    [Fact]
     public void Only_programs_of_the_system_folder_are_run_by_absolute_path()
     {
         var code = Code;
@@ -240,6 +253,45 @@ public class InstallerTests
         Assert.Single(Regex.Matches(code, "powershell.exe"));
         // The app path must not carry anything cmd.exe would interpret.
         Assert.Contains("'&|^%!<>\"'", code);
+    }
+
+    [Fact]
+    public void Every_folder_of_the_ui_goes_with_the_uninstall_when_empty_deepest_first()
+    {
+        // Finding B3 of the 0.4.1 acceptance test: ui\i18n\de and en stayed behind.
+        var entries = Regex.Matches(Iss, @"^Type: dirifempty; Name: ""\{app\}\\?([^""]*)""", RegexOptions.Multiline).Select(m => m.Groups[1].Value).ToList();
+        var ui = Path.Combine(Root, "ui");
+        var folders = Directory.GetDirectories(ui, "*", SearchOption.AllDirectories)
+            .Select(d => "ui\\" + Path.GetRelativePath(ui, d).Replace('/', '\\'))
+            .Append("ui")
+            .ToList();
+        foreach (var folder in folders)
+        {
+            var at = entries.IndexOf(folder);
+            Assert.True(at >= 0, $"no dirifempty entry for {folder}");
+            // A child before its parent: dirifempty only removes empty folders.
+            foreach (var child in folders.Where(f => f.StartsWith(folder + "\\", StringComparison.Ordinal))) Assert.True(entries.IndexOf(child) < at, $"{child} after {folder}");
+        }
+        Assert.Equal("", entries[^1]);
+        Assert.DoesNotMatch(new Regex(@"^Type: (filesandordirs|files); Name: ""\{app\}\\ui", RegexOptions.Multiline), Iss);
+    }
+
+    [Fact]
+    public void The_setup_restricts_the_old_tasks_before_the_new_service_is_registered()
+    {
+        // Security review M-1: no moment after the update in which a user may still start an old task, also with a squatted pipe name.
+        var configure = Code[Code.IndexOf("function ConfigureService", StringComparison.Ordinal)..];
+        configure = configure[..configure.IndexOf("\nend;", StringComparison.Ordinal)];
+        var harden = configure.IndexOf("HardenServiceFolder", StringComparison.Ordinal);
+        var restrict = configure.IndexOf("RestrictLegacyTasks;", StringComparison.Ordinal);
+        var create = configure.IndexOf("RunSc('create", StringComparison.Ordinal);
+        Assert.True(harden >= 0 && harden < restrict && restrict < create);
+        var procedure = Code[Code.IndexOf("procedure RestrictLegacyTasks;", StringComparison.Ordinal)..];
+        procedure = procedure[..procedure.IndexOf("\nend;", StringComparison.Ordinal)];
+        Assert.Contains("ServiceFolderPath + '\\{#ServiceExe}'", procedure);
+        Assert.Contains("'--restrict-legacy-tasks'", procedure);
+        Assert.Equal("--restrict-legacy-tasks", typeof(CouchHud.Service.ServiceRuntime).Assembly.GetType("CouchHud.Service.Program")!
+            .GetField("RestrictLegacyTasksSwitch", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetRawConstantValue());
     }
 
     [Fact]

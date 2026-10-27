@@ -252,6 +252,33 @@ public sealed class CodeStore : ICodeState
         }
     }
 
+    /// <summary>
+    /// Everything the account had (both codes, their lockouts and the mode) goes, in one write; with <paramref name="mode"/> the account starts
+    /// over with that mode and, with <paramref name="kinds"/> and <paramref name="hash"/>, exactly that code (approved, not open). For a lock
+    /// taken over from 0.4.0 (security review H-1, second round): what the account held before is forgotten when the lock is taken over, and
+    /// the administrator's confirmation sets the one code (or the Windows mode) it confirms, nothing planted before survives it.
+    /// </summary>
+    public CodeSet Replace(string sid, string? mode, IReadOnlyCollection<CodeKind>? kinds = null, string? hash = null)
+    {
+        if (!ServiceStateStore.IsUserSid(sid) || (mode is not null && LockModes.Rank(mode) < 0)) return CodeSet.Unavailable;
+        if (hash is not null && !RequestValidator.IsPasscodeHash(hash)) return CodeSet.BadHash;
+        lock (_lock)
+        {
+            if (_current is null || _file is null) return CodeSet.Unavailable;
+            if (mode is null && !_current.Accounts.ContainsKey(sid)) return CodeSet.Saved;
+            if (mode is not null && !_current.Accounts.ContainsKey(sid) && _current.Accounts.Count >= MaxAccounts) return CodeSet.Unavailable;
+            var next = Clone(_current);
+            next.Accounts.Remove(sid);
+            if (mode is not null)
+            {
+                var account = next.Accounts[sid] = new AccountCodes { Mode = mode };
+                if (kinds is not null && hash is not null)
+                    foreach (var kind in kinds) account.Set(kind, new CodeEntry { Hash = hash });
+            }
+            return Save(next) ? CodeSet.Saved : CodeSet.Unavailable;
+        }
+    }
+
     /// <summary>Whether the account has a code of this kind; true when the store is unavailable (fail-closed: "exists" closes more).</summary>
     public bool Has(string sid, CodeKind kind)
     {
@@ -268,25 +295,7 @@ public sealed class CodeStore : ICodeState
     /// </summary>
     public CodeVerdict Verify(string sid, CodeKind kind, IReadOnlyList<string> sequence)
     {
-        string hash;
-        lock (_lock)
-        {
-            if (_current is null || _file is null) return new CodeVerdict(CodeCheck.Unavailable);
-            if (!_current.Accounts.TryGetValue(sid, out var account) || account.Get(kind) is not { } entry) return new CodeVerdict(CodeCheck.NoCode);
-            var now = NowMs();
-            if (entry.LockedUntilMs > now) return new CodeVerdict(CodeCheck.LockedOut, TimeSpan.FromMilliseconds(entry.LockedUntilMs - now));
-            var next = Clone(_current);
-            var counted = next.Accounts[sid].Get(kind)!;
-            counted.Failures = Math.Min(counted.Failures + 1, MaxFailures);
-            if (counted.Failures >= FreeFailures)
-            {
-                var lockFor = LockFor(counted.Failures);
-                counted.LockMs = (long)lockFor.TotalMilliseconds;
-                counted.LockedUntilMs = now + counted.LockMs;
-            }
-            if (!Save(next)) return new CodeVerdict(CodeCheck.Unavailable);
-            hash = entry.Hash;
-        }
+        if (CountTry(sid, kind, out var hash) is { } early) return early;
 
         var right = false;
         try
@@ -318,6 +327,49 @@ public sealed class CodeStore : ICodeState
                 Save(next);
             }
             return new CodeVerdict(CodeCheck.Granted);
+        }
+    }
+
+    /// <summary>
+    /// A try that is refused without looking at the buttons (the caller's session is locked, finding B2 of the 0.4.1 acceptance test): it
+    /// counts towards the lockout like a wrong code, so a locked session gives no free tries, and nothing about the code is told.
+    /// <see cref="CodeCheck.Wrong"/> (with the wait the count caused), <see cref="CodeCheck.LockedOut"/>, <see cref="CodeCheck.NoCode"/> or
+    /// <see cref="CodeCheck.Unavailable"/>.
+    /// </summary>
+    public CodeVerdict CountRefused(string sid, CodeKind kind)
+    {
+        if (CountTry(sid, kind, out _) is { } early) return early;
+        lock (_lock)
+        {
+            var wait = _current is not null && _current.Accounts.TryGetValue(sid, out var account) && account.Get(kind) is { } entry && entry.LockedUntilMs > NowMs()
+                ? TimeSpan.FromMilliseconds(entry.LockedUntilMs - NowMs())
+                : TimeSpan.Zero;
+            return new CodeVerdict(CodeCheck.Wrong, wait);
+        }
+    }
+
+    /// <summary>Counts one try of the code and writes it; a verdict when the try ends here (no code, locked out, unavailable), else null and the hash to check.</summary>
+    private CodeVerdict? CountTry(string sid, CodeKind kind, out string hash)
+    {
+        hash = "";
+        lock (_lock)
+        {
+            if (_current is null || _file is null) return new CodeVerdict(CodeCheck.Unavailable);
+            if (!_current.Accounts.TryGetValue(sid, out var account) || account.Get(kind) is not { } entry) return new CodeVerdict(CodeCheck.NoCode);
+            var now = NowMs();
+            if (entry.LockedUntilMs > now) return new CodeVerdict(CodeCheck.LockedOut, TimeSpan.FromMilliseconds(entry.LockedUntilMs - now));
+            var next = Clone(_current);
+            var counted = next.Accounts[sid].Get(kind)!;
+            counted.Failures = Math.Min(counted.Failures + 1, MaxFailures);
+            if (counted.Failures >= FreeFailures)
+            {
+                var lockFor = LockFor(counted.Failures);
+                counted.LockMs = (long)lockFor.TotalMilliseconds;
+                counted.LockedUntilMs = now + counted.LockMs;
+            }
+            if (!Save(next)) return new CodeVerdict(CodeCheck.Unavailable);
+            hash = entry.Hash;
+            return null;
         }
     }
 

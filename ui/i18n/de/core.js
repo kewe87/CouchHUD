@@ -12,6 +12,7 @@ export default {
   'app.ended': '{name} beendet',
   'app.padConnected': 'Controller verbunden',
   'app.padDisconnected': 'Controller getrennt',
+  'app.padNone': 'Kein Controller mehr verbunden – Tastatur und Maus gehen auch (Enter = A, Esc = B)',
 
   'index.pad': 'Controller',
   'index.guideMenu': 'Guide-Menü',

@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Interop;
+using CouchHud.Core.Security;
 using CouchHud.Shell.Native;
+using CouchHud.Shell.Services;
 using CouchHud.Shell.UiHost;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -67,20 +69,33 @@ public partial class MainWindow : Window
     {
         try
         {
-            var web = new WebView2
+            // A fresh control for every attempt (a web view whose start failed is not used again), always at the bottom of the window.
+            WebView2 Fresh()
             {
-                DefaultBackgroundColor = System.Drawing.Color.FromArgb(7, 9, 15),
-                // Dropping a file or link would navigate away from the HUD.
-                AllowExternalDrop = false
-            };
-            _root.Children.Insert(0, web);
-            _web = web;
+                if (_web is { } failed)
+                {
+                    _root.Children.Remove(failed);
+                    failed.Dispose();
+                }
+                var created = new WebView2
+                {
+                    DefaultBackgroundColor = System.Drawing.Color.FromArgb(7, 9, 15),
+                    // Dropping a file or link would navigate away from the HUD.
+                    AllowExternalDrop = false
+                };
+                _root.Children.Insert(0, created);
+                _web = created;
+                return created;
+            }
 
             var userData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CouchHud", "WebView2");
             // UI sounds (boot jingle, navigation) must play without a click first: it's a console, not a web page.
-            var options = new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required");
-            var env = await CoreWebView2Environment.CreateAsync(null, userData, options);
-            await web.EnsureCoreWebView2Async(env);
+            // Remote debugging (loopback) only with the administrator's switch in HKLM (DeveloperMode); WEBVIEW2_* variables were
+            // removed from the environment at start (App.OnStartup), so these are the only extra arguments.
+            CoreWebView2EnvironmentOptions Options() => new(DeveloperMode.BrowserArgumentsFor(BrowserSurface.Hud, BrowserArguments.HudBase));
+            // On the machine-wide runtime below Program Files, never on a per-user one the loader might prefer; with a lock on, a
+            // machine-wide runtime that will not start ends in the desktop fallback below (Windows lock), not on another runtime.
+            var web = await WebViewRuntimeLocator.StartAsync(Fresh, userData, Options, _hud.RuntimeStrict, "web");
             Configure(web.CoreWebView2);
         }
         catch (Exception ex)

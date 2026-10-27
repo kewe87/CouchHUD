@@ -155,6 +155,9 @@ public static class PolicyGroups
     /// <summary>The account the helper tasks run as: SYSTEM.</summary>
     public const string SystemSid = "S-1-5-18";
 
+    /// <summary>The local Administrators group.</summary>
+    public const string AdministratorsSid = "S-1-5-32-544";
+
     /// <summary>
     /// Who may see and start a helper task: SYSTEM and administrators fully, the one user may read and execute. Without the last
     /// entry only administrators could start a task of SYSTEM, which a standard user is not.
@@ -184,6 +187,65 @@ public static class PolicyGroups
                 if (ace.AceType == System.Security.AccessControl.AceType.AccessAllowed && (unchecked((uint)ace.AccessMask) & execute) != 0) granted = true;
             }
             return granted;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The access list every task of CouchHUD that is left gets (finding B1 of the 0.4.1 acceptance test): SYSTEM and administrators only,
+    /// no user may start a task that runs as SYSTEM any more. Whether a descriptor is that already: <see cref="OnlyAdministrators"/>.
+    /// </summary>
+    public const string AdministratorsOnlyDescriptor = "D:P(A;;FA;;;SY)(A;;FA;;;BA)";
+
+    /// <summary>
+    /// True when the descriptor (SDDL) grants nothing to anybody but SYSTEM and the administrators (deny entries take nothing away from
+    /// that). Unreadable, empty or without a DACL counts as false (fail-closed: the caller sets it again).
+    /// </summary>
+    public static bool OnlyAdministrators(string? sddl)
+    {
+        if (string.IsNullOrWhiteSpace(sddl)) return false;
+        try
+        {
+            var acl = new System.Security.AccessControl.RawSecurityDescriptor(sddl).DiscretionaryAcl;
+            if (acl is null) return false;
+            foreach (var entry in acl)
+            {
+                if (entry is not System.Security.AccessControl.KnownAce ace) return false;
+                if (ace.AceType is System.Security.AccessControl.AceType.AccessDenied or System.Security.AccessControl.AceType.AccessDeniedObject) continue;
+                if (ace.SecurityIdentifier.Value is not (SystemSid or AdministratorsSid)) return false;
+            }
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// True when the descriptor (SDDL) grants SYSTEM and the administrators whatever, <paramref name="sid"/> at most read and start (generic
+    /// or as the file rights they are stored as) and nobody anything else (security review M-3). Unreadable or without a DACL: false.
+    /// </summary>
+    public static bool OnlyUserStart(string? sddl, string sid)
+    {
+        if (string.IsNullOrWhiteSpace(sddl) || !IsUserSid(sid)) return false;
+        // GENERIC_READ | GENERIC_EXECUTE, and FILE_GENERIC_READ | FILE_GENERIC_EXECUTE as the Task Scheduler may store them.
+        const uint readStart = 0x80000000 | 0x20000000 | 0x001200A9;
+        try
+        {
+            var acl = new System.Security.AccessControl.RawSecurityDescriptor(sddl).DiscretionaryAcl;
+            if (acl is null) return false;
+            foreach (var entry in acl)
+            {
+                if (entry is not System.Security.AccessControl.KnownAce ace) return false;
+                if (ace.AceType is System.Security.AccessControl.AceType.AccessDenied or System.Security.AccessControl.AceType.AccessDeniedObject) continue;
+                if (ace.SecurityIdentifier.Value is SystemSid or AdministratorsSid) continue;
+                if (!string.Equals(ace.SecurityIdentifier.Value, sid, StringComparison.OrdinalIgnoreCase) || (unchecked((uint)ace.AccessMask) & ~readStart) != 0) return false;
+            }
+            return true;
         }
         catch (ArgumentException)
         {

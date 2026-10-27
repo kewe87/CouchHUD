@@ -160,15 +160,62 @@ public sealed class OperationsA(OperationsAParts parts)
         if (parts.State.Current is not { } state) return AuthorizationDecision.Denied("state unavailable");
         if (request.Args is not ReleaseLockPoliciesArgs { Groups: { Length: > 0 } groups }) return AuthorizationDecision.Denied("no groups");
         var owned = state.Accounts.TryGetValue(caller.Sid, out var account) ? account.Groups : [];
-        return groups.All(g => owned.Contains(g, StringComparer.Ordinal)) ? AuthorizationDecision.Allowed : AuthorizationDecision.Denied("group not set by the service");
+        if (!groups.All(g => owned.Contains(g, StringComparer.Ordinal))) return AuthorizationDecision.Denied("group not set by the service");
+        return LegacyProof(caller);
     }
+
+    /// <summary>
+    /// A lock of 0.4.0 that no administrator confirmed yet (<see cref="IsLegacyLocked"/>): whatever code the account holds may be one its own
+    /// user planted (the shell's config was the user's to write, and enrolling at an open couch is free), so the table's "no code enrolled" or
+    /// "the couch code" is not enough. A grant then, and only an administrator's counts (<see cref="LockView.Legacy"/>); or an elevated
+    /// administrator. Once an administrator confirmed the account's code or mode, the table decides as always (security review H-1).
+    /// </summary>
+    private AuthorizationDecision LegacyProof(CallerInfo caller) =>
+        caller.IsElevatedAdmin || !IsLegacyLocked(caller.Sid) ? AuthorizationDecision.Allowed : AuthorizationDecision.GrantNeeded;
+
+    /// <summary>
+    /// Whether the account's lock is one of 0.4.0 that no administrator confirmed yet (security review H-1, second round): taken over
+    /// (<see cref="AccountState.LegacyLock"/>), or about to be, before the take-over even ran: the account waits for its migration
+    /// (<see cref="LegacyPending"/>), or the old setup's .reg files of the account are still in the protected program folder (the migration
+    /// removes them only after the take-over). Without a state the files decide. A failure counts as yes (fail-closed, see CodeHandlers).
+    /// So nothing the account's user sets in the seconds between the service's start and the take-over is trusted afterwards.
+    /// </summary>
+    public bool IsLegacyLocked(string sid)
+    {
+        if (parts.State.Current is { } state && state.Accounts.TryGetValue(sid, out var account) && account.LegacyLock) return true;
+        if (!ServiceStateStore.IsUserSid(sid)) return false;
+        if (_legacyPending.ContainsKey(sid)) return true;
+        var directory = parts.Policies.UserPolicyDirectory(sid);
+        return PolicyGroups.All.SelectMany(LegacyAdoption.EvidenceFiles).Any(name => File.Exists(Path.Combine(directory, name)));
+    }
+
+    /// <summary>
+    /// An administrator confirmed the account's code or mode: its lock taken over from 0.4.0 is the service's own now. True when the account's
+    /// lock is no lock of 0.4.0 any more; false while the take-over itself still waits (the migration then asks for the confirmation again).
+    /// </summary>
+    public bool EndLegacyLock(string sid)
+    {
+        parts.State.Update(s =>
+        {
+            if (!s.Accounts.TryGetValue(sid, out var account) || !account.LegacyLock) return false;
+            account.LegacyLock = false;
+            return true;
+        });
+        return !IsLegacyLocked(sid);
+    }
+
+    /// <summary>
+    /// Forgets everything the account held in the code store (both codes and the mode), when its lock of 0.4.0 is taken over (security review
+    /// H-1, second round): the codes may have been planted by the account's user before. Set by the service; null: nothing to forget (tests).
+    /// </summary>
+    public Func<string, bool>? ForgetCodes { get; set; }
 
     /// <summary>CleanupPolicyKeys: the service noted keys it created for this SID.</summary>
     internal AuthorizationDecision KeysOwnedByService(CallerInfo caller, ValidatedRequest request)
     {
         if (parts.State.Current is not { } state) return AuthorizationDecision.Denied("state unavailable");
         return state.Accounts.TryGetValue(caller.Sid, out var account) && account.CreatedKeys.Count > 0
-            ? AuthorizationDecision.Allowed
+            ? LegacyProof(caller)
             : AuthorizationDecision.Denied("no keys of the service");
     }
 
@@ -212,6 +259,13 @@ public sealed class OperationsA(OperationsAParts parts)
         using var hive = parts.Hives.OpenLoaded(sid);
         if (hive is null) return Fail(ErrorCodes.Unavailable);
         var registry = hive.Registry;
+        if (_legacyPending.ContainsKey(sid))
+        {
+            // Old tasks waited for this sign-in: take over their lock first, so it is held instead of "set by someone else".
+            Migrate(sid, registry, cancellation);
+            if (parts.State.Snapshot() is not { } migrated) return Fail(ErrorCodes.Unavailable);
+            state = migrated;
+        }
         var held = new List<string>();
         foreach (var group in groups)
         {
@@ -659,8 +713,9 @@ public sealed class OperationsA(OperationsAParts parts)
 
     /// <summary>
     /// Removes the caller's own old SYSTEM tasks (<c>CouchHud\&lt;SID&gt;\Policy-*</c>, <c>Couch-*</c>, <c>PC-*</c>) and its policy files.
-    /// <c>Autologon-off</c> stays as the recovery's reserve. Refused while the account has lock values the service does not hold: the
-    /// old tasks may be the only way to release those. The keys the old setup noted as created by the lock are taken over.
+    /// <c>Autologon-off</c> stays as the recovery's reserve (its user may still start it: it only switches the automatic sign-in off, see <see cref="LegacyAdoption.IsAutoLogonOff"/>). Lock values
+    /// the old setup of this account set are taken over first (<see cref="Adopt"/>); refused while the account has lock values nothing of the
+    /// old setup explains. The keys the old setup noted as created by the lock are taken over.
     /// </summary>
     private byte[] MigrateTasks(RequestContext context, CancellationToken cancellation)
     {
@@ -675,19 +730,16 @@ public sealed class OperationsA(OperationsAParts parts)
         return Ok(new MigrateTasksData(removed));
     }
 
+    /// <summary>
+    /// The migration of one account; the caller holds the account's gate and has its hive open. First the lock values of the old setup become
+    /// the service's (noted before anything is deleted, so no lock goes away unnoticed), then the old tasks go, then their files.
+    /// </summary>
     private (bool Ok, int Removed) Migrate(string sid, IRegistry registry, CancellationToken cancellation)
     {
-        var state = parts.State.Snapshot();
-        if (state is null) return (false, 0);
-        var owned = state.Accounts.TryGetValue(sid, out var account) ? account.Groups : [];
-        var foreign = PolicyGroups.All.Where(g => !owned.Contains(g.Id, StringComparer.Ordinal) && PolicyRelease.OursPresent(registry, g).Count > 0).Select(g => g.Id).ToList();
-        if (foreign.Count > 0)
-        {
-            parts.Log.Error($"[migrate] tasks of {sid} stay: lock values that the service did not set are present ({string.Join(", ", foreign)})");
-            return (false, 0);
-        }
+        if (!Adopt(sid, registry)) return (false, 0);
+        var all = parts.Tasks.List();
         var noted = PolicyGroups.ValidCleanupKeys(PolicyInstaller.ReadNotedKeys(parts.Policies.UserPolicyDirectory(sid)));
-        var tasks = parts.Tasks.List().Where(t => IsMigratableTask(t, sid)).ToList();
+        var tasks = all.Where(t => IsMigratableTask(t, sid)).ToList();
         var removed = 0;
         foreach (var task in tasks)
         {
@@ -709,8 +761,131 @@ public sealed class OperationsA(OperationsAParts parts)
             return true;
         });
         if (saved != StateUpdate.Saved) return (false, removed);
+        _legacyPending.TryRemove(sid, out _);
         parts.Log.Info($"[migrate] {removed} old tasks of {sid} removed");
         return (true, removed);
+    }
+
+    /// <summary>
+    /// Takes over the lock values that the old setup of this account set (<see cref="LegacyAdoption.Plan"/>: evidence only from what an
+    /// administrator wrote, the account's .reg files in the protected program folder): the groups, the keys the old setup
+    /// noted and <see cref="AccountState.LegacyLock"/> go into the state in one write. False when values are there that nothing explains
+    /// (they and the old tasks stay) or the state could not be written. The caller holds the account's gate.
+    /// </summary>
+    private bool Adopt(string sid, IRegistry registry)
+    {
+        if (parts.State.Snapshot() is not { } state) return false;
+        var owned = state.Accounts.TryGetValue(sid, out var account) ? account.Groups : [];
+        var directory = parts.Policies.UserPolicyDirectory(sid);
+        var plan = LegacyAdoption.Plan(owned, name => File.Exists(Path.Combine(directory, name)), registry);
+        if (plan.Foreign.Count > 0)
+        {
+            parts.Log.Error($"[migrate] tasks of {sid} stay: lock values that neither the service nor the old setup of this account set are present ({string.Join(", ", plan.Foreign)})");
+            return false;
+        }
+        if (plan.Adopt.Count == 0) return true;
+        var noted = PolicyGroups.ValidCleanupKeys(PolicyInstaller.ReadNotedKeys(directory));
+        var saved = parts.State.Update(s =>
+        {
+            var a = s.Account(sid);
+            foreach (var group in plan.Adopt.Where(g => !a.Groups.Contains(g, StringComparer.Ordinal))) a.Groups.Add(group);
+            a.CreatedKeys = PolicyGroups.MergeCleanupKeys(noted, a.CreatedKeys).ToList();
+            a.LegacyLock = true;
+            return true;
+        });
+        if (saved != StateUpdate.Saved)
+        {
+            parts.Log.Error($"[legacy] lock of {sid} not taken over: the state could not be written");
+            return false;
+        }
+        parts.Log.Info($"[legacy] lock of {sid} set by an earlier version taken over: {string.Join(", ", plan.Adopt)}");
+        // What the account held before (codes, mode) may be its user's own: forgotten, only an administrator's confirmation sets the code again.
+        if (ForgetCodes is { } forget && !forget(sid)) parts.Log.Error($"[legacy] the codes of {sid} could not be forgotten: they count for nothing until an administrator confirms the lock");
+        parts.Events?.Add(sid, "migration", $"lock taken over: {string.Join(", ", plan.Adopt)}");
+        return true;
+    }
+
+    // ---- the old SYSTEM tasks of 0.4.0 (finding B1 of the 0.4.1 acceptance test) ------------------------
+
+    private readonly ConcurrentDictionary<string, byte> _legacyPending = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _sweepGate = new(1, 1);
+
+    private volatile bool _sweptOnce;
+
+    /// <summary>Accounts with old tasks whose hive was not loaded at the last sweep (they wait for their sign-in).</summary>
+    public IReadOnlyCollection<string> LegacyPending => _legacyPending.Keys.Order(StringComparer.Ordinal).ToList();
+
+    /// <summary>Whether a sweep ran to its end at least once (until then a sign-in sweeps anyway, review N-4).</summary>
+    public bool LegacySwept => _sweptOnce;
+
+    /// <summary>
+    /// Only the restriction of <see cref="SweepLegacyTasks"/> (<see cref="LegacyAdoption.RestrictAll"/>): no state, no hive, nothing removed.
+    /// The service runs it before its pipe exists, so that no squatted pipe name or early stop leaves an old task startable (review M-1).
+    /// </summary>
+    public int RestrictLegacyTasks() => LegacyAdoption.RestrictAll(parts.Tasks, parts.Log);
+
+    /// <summary>
+    /// At start and after a sign-in, in the background: every task in the CouchHud folder but an account's Autologon-off is set to SYSTEM and administrators only, so no
+    /// user can start an old release task any more (the first step, for every account, signed in or not). Then each account with old tasks
+    /// whose hive is loaded is migrated (<see cref="Migrate"/>: lock taken over first, then tasks and files removed); an account that is not
+    /// signed in keeps its restricted tasks as the evidence for later and waits (its hive is never loaded here: that could block its sign-in).
+    /// Its sign-in, its next ApplyLockPolicies or MigrateTasks finish it. Repeating it changes nothing more. False when a sweep runs already
+    /// (<paramref name="wait"/>: waits for it to end and sweeps again, bounded by the token).
+    /// </summary>
+    public bool SweepLegacyTasks(CancellationToken cancellation, bool wait = false)
+    {
+        if (wait) _sweepGate.Wait(cancellation);
+        else if (!_sweepGate.Wait(0, CancellationToken.None)) return false;
+        try
+        {
+            // The restriction first and also without a state: it only ever takes a right away. Each task and each account on its own: one
+            // that fails leaves the others to do (review N-3).
+            IReadOnlyList<string> tasks;
+            try
+            {
+                tasks = parts.Tasks.List();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                parts.Log.Error($"[legacy] the old tasks could not be listed: {ex.GetType().Name}");
+                return true;
+            }
+            LegacyAdoption.RestrictAll(parts.Tasks, parts.Log, tasks);
+            if (!parts.State.IsAvailable) return true;
+            foreach (var sid in LegacyAdoption.Accounts(tasks).Where(sid => tasks.Any(t => IsMigratableTask(t, sid))))
+            {
+                cancellation.ThrowIfCancellationRequested();
+                try
+                {
+                    SweepAccount(sid, cancellation);
+                }
+                catch (Exception ex) when (ex is not (OutOfMemoryException or OperationCanceledException))
+                {
+                    _legacyPending.TryAdd(sid, 0);
+                    parts.Log.Error($"[legacy] old tasks of {sid}: {ex.GetType().Name}");
+                }
+            }
+            _sweptOnce = true;
+            return true;
+        }
+        finally
+        {
+            _sweepGate.Release();
+        }
+    }
+
+    private void SweepAccount(string sid, CancellationToken cancellation)
+    {
+        using var gate = Enter(AccountGate(sid), cancellation);
+        using var hive = parts.Hives.OpenLoaded(sid);
+        if (hive is null)
+        {
+            if (_legacyPending.TryAdd(sid, 0)) parts.Log.Info($"[legacy] {sid} is not signed in: its old tasks stay restricted until its sign-in");
+            return;
+        }
+        var (ok, removed) = Migrate(sid, hive.Registry, cancellation);
+        if (ok) parts.Events?.Add(sid, "migration", $"old tasks removed: {removed}");
+        else _legacyPending.TryAdd(sid, 0);
     }
 
     /// <summary>A task of exactly this account's folder that the service replaces (not Autologon-off, nothing of another account, no legacy task).</summary>
@@ -907,6 +1082,8 @@ public sealed class OperationsA(OperationsAParts parts)
             return false;
         }
         var registry = hive.Registry;
+        // A lock of the old setup is released like one of the service's (taken over first), never left behind as "done".
+        if (!Adopt(sid, registry)) return false;
         var owned = parts.State.Current?.Accounts.GetValueOrDefault(sid)?.Groups ?? [];
         var groups = Groups([.. owned]);
         if (groups.Count > 0)

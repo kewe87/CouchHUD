@@ -35,6 +35,9 @@ public static class LockPolicy
         "getNews", "getFeeds", "assistantInfo", "askAssistant", "confirmAssistant", "resetAssistant",
         "getBrowser", "browserLayout", "browserFocus", "browserCommand", "displayOff", "displayOn", "getLaunchers", "getProfile", "capture", "getDownloads", "getDisplay", "getPerformance", "getCaptures",
         "getPlugins", "getPluginPage", "getQuickActions", "getNotifications", "markNotificationsRead", "clearNotifications",
+        // The answer to the automatic Bluetooth switch-on's countdown: "now" or "leave it off" (the guest could switch the radio off with
+        // the keyboard's airplane key anyway; switching it off in CouchHUD, "setBluetooth", needs the code).
+        "answerBluetoothRecovery",
         "getBluetooth", "getRemote", "keyboardState", "getUpdates", "getCatalogUpdates", "getSelfUpdate", "getWeather", "getHomeEntities", "activateHomeEntity",
         "listSkins", "setSkin", "getGameFolders", "getCollections", "getParental", "parentalCheck", "parentalCloseGame", "parentalAuth", "setParental", "setParentalItemLock", "parentalExtend", "parentalReset", "parentalAcceptClock", "parentalAdoptZone"
     };

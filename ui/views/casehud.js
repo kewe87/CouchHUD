@@ -34,6 +34,8 @@ const sourceText = (source) => ({ fps: t('casehud.source.fps'), external: t('cas
 
 export const caseHudInstalled = () => !!state.caseHud?.installed;
 export const caseHudRunning = () => !!state.caseHud?.running;
+/** Running, but its API is switched off in CaseHUD (Settings › Interfaces; CaseHUD ships with it off). */
+export const caseHudApiOff = (s = state.caseHud) => s?.state === 'apiOff';
 export const caseHudUpdateAvailable = () => !!state.caseHud?.update?.available;
 
 /** Called once at the start: keeps `state.caseHud` current for the page, the settings badge and the guide menu. */
@@ -47,9 +49,17 @@ export async function startCaseHud() {
   await reload();
 }
 
-// Guide menu: switch the displays off or on, next scene (only while CaseHUD runs).
+// Guide menu: switch the displays off or on, next scene (only while CaseHUD runs); with its API off the hint instead.
 addQuickRows(() => {
   const s = state.caseHud;
+  if (caseHudApiOff(s)) {
+    return [{
+      icon: '!',
+      label: t('casehud.api.quick'),
+      detail: t('casehud.api.hint'),
+      run: () => setCaseHudApi(true)
+    }];
+  }
   if (!s?.running || !s.status) return [];
   const on = s.status.power;
   return [
@@ -326,6 +336,8 @@ function installRows(s) {
         run: installNow
       }]
     });
+    // Full integration: the user decides here whether CouchHUD switches CaseHUD's API on after installing (CaseHUD's own default is off).
+    if (s?.options?.full) rows.push({ items: [installApiChoice(s)] });
     rows.push({ items: [{ icon: '!', label: t('casehud.installNoteTitle'), detail: t('casehud.installNote') }] });
     rows.push(...unavailableRows(s));
   }
@@ -346,7 +358,10 @@ async function setup(kind) {
   if (!prep) return;
   if (!prep.token) return toast(prep.error ?? t('casehud.upToDate'), 4500);
   const o = state.caseHud?.options ?? {};
-  const effects = [t('casehud.effect.service'), t('casehud.effect.driver'), o.autostart ? t('casehud.effect.autostart') : null, o.fps ? t('casehud.effect.group') : null]
+  // The API switch only follows a first installation in full integration, and only when chosen (CaseHudInstaller).
+  const withApi = kind === 'install' && !prep.installed && o.full && o.api;
+  const effects = [t('casehud.effect.service'), t('casehud.effect.driver'), o.autostart ? t('casehud.effect.autostart') : null, o.fps ? t('casehud.effect.group') : null,
+    withApi ? t('casehud.effect.api') : null]
     .filter(Boolean).join(', ');
   const text = (kind === 'update' ? t('casehud.confirmUpdate', { version: prep.version, effects }) : t('casehud.confirmInstall', { version: prep.version, effects }))
     + (prep.notes ? ` ${t('casehud.changes', { notes: prep.notes.split('\n')[0] })}` : '')
@@ -381,6 +396,73 @@ const guiRow = () => ({
   detail: t('casehud.openGuiDetail'),
   hint: t('casehud.openGui'),
   run: openCaseHudGui
+});
+
+// ---------------------------------------------------------------------------
+// CaseHUD's API switch (Settings › Interfaces in CaseHUD, off by default)
+
+/**
+ * Switches CaseHUD's API on or off for this user: the host runs CaseHUD.exe --set-api=on|off from the verified installation. It is a
+ * setting of CaseHUD, so it asks for the couch-lock code and says what it does first.
+ */
+export async function setCaseHudApi(on) {
+  if (!(await unlocked())) return false;
+  if (!(await confirmDialog(on ? t('casehud.api.confirmOn') : t('casehud.api.confirmOff'), on ? t('casehud.api.turnOn') : t('casehud.api.turnOff'), { danger: !on }))) return false;
+  const r = await attempt(() => api.caseHudSetApi(on), t('casehud.api.failed'));
+  if (r === undefined) return false;
+  if (r) state.caseHud = r;
+  toast(on ? t('casehud.api.turnedOn') : t('casehud.api.turnedOff'));
+  await reload();
+  return true;
+}
+
+/** The hint row of a CaseHUD whose API is off: where to switch it on, and A does it from here. Also used by the lighting page. */
+export const apiOffRow = () => ({
+  items: [{
+    icon: '!',
+    label: t('casehud.api.offTitle'),
+    detail: t('casehud.api.hint'),
+    card: true,
+    highlight: true,
+    hint: t('casehud.api.turnOn'),
+    run: () => setCaseHudApi(true)
+  }]
+});
+
+/** Running with the API off: nothing to control yet. The hint, the switch, and CaseHUD's own window (where the switch also is). */
+function apiOffRows(s) {
+  const rows = [{ section: t('casehud.title') }, apiOffRow()];
+  rows.push({ items: [{ icon: 'ℹ', label: t('casehud.api.offWhy'), detail: t('casehud.api.offDetail') }] });
+  rows.push({ items: [{ ...guiRow(), detail: t('casehud.api.openGuiDetail') }] });
+  for (const item of updateRow(s)) rows.push({ items: [item] });
+  if (s.error) rows.push({ items: [{ icon: '!', label: t('casehud.error'), detail: s.error }] });
+  return rows;
+}
+
+/** Install page, full integration: switch the API on after installing? A setting (needs the code), named in the confirmation. */
+function installApiChoice(s) {
+  const on = !!s.options?.api;
+  return {
+    icon: '⇄',
+    label: t('casehud.api.installChoice'),
+    detail: t('casehud.api.installChoiceDetail'),
+    pill: on ? t('casehud.on') : t('casehud.off'),
+    hint: on ? t('casehud.off') : t('casehud.on'),
+    run: async () => {
+      if (!(await unlocked())) return;
+      if ((await attempt(() => api.setSetting('caseHudInstallApi', !on), t('casehud.failed'))) !== undefined) await reload();
+    }
+  };
+}
+
+/** Running page: the API is on; switching it off again is offered here (CouchHUD then loses control until it is on again). */
+const apiOnRow = () => ({
+  icon: '⇄',
+  label: t('casehud.api.row'),
+  detail: t('casehud.api.rowOn'),
+  pill: t('casehud.on'),
+  hint: t('casehud.api.turnOff'),
+  run: () => setCaseHudApi(false)
 });
 
 /**
@@ -579,6 +661,7 @@ function runningRows(s) {
     }]
   });
   rows.push({ items: [guiRow()] });
+  rows.push({ items: [apiOnRow()] });
 
   rows.push({ section: t('casehud.statusSection') });
   rows.push({
@@ -661,6 +744,7 @@ export function caseHudPage() {
       if (s.busy) return [{ section: t('casehud.title') }, { items: [{ icon: '⟳', label: s.busy, detail: t('casehud.installWait') }] }];
       if (!s.installed) return installRows(s);
       if (s.needsUpdate) return needsUpdateRows(s);
+      if (caseHudApiOff(s)) return apiOffRows(s);
       if (!s.running || !s.status) return stoppedRows(s);
       return runningRows(s);
     },

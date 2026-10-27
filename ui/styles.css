@@ -885,6 +885,16 @@ body.overlay-open #hints {
   animation: pop 0.2s var(--ease);
 }
 
+/* A text of several lines (what an administrator approves): low on the screen, above the hints, so the page title stays visible. */
+#toast.long {
+  top: auto;
+  bottom: 6rem;
+  width: max-content;
+  max-width: min(60rem, calc(100vw - 4rem));
+  border-radius: 1.2rem;
+  line-height: 1.4;
+}
+
 #toast[hidden] {
   display: none;
 }
@@ -2873,6 +2883,61 @@ body.quick-open #top {
   color: var(--muted);
 }
 
+.passcode-nopad {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-width: 46rem;
+  padding: 0.7rem 1.4rem;
+  border-radius: 0.6rem;
+  border: 0.1rem solid var(--accent);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.passcode-nopad[hidden] {
+  display: none;
+}
+
+.passcode-nopad span {
+  color: var(--muted);
+}
+
+/* The same code buttons for mouse and touch; no focus cursor and no pressed state (only the dot shows the button for a moment). */
+.passcode-keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+  max-width: 56rem;
+}
+
+.passcode-key {
+  display: grid;
+  place-items: center;
+  min-width: 4rem;
+  height: 4rem;
+  padding: 0 0.9rem;
+  border-radius: 0.6rem;
+  border: 0.1rem solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 1.35rem;
+  font-weight: 600;
+  user-select: none;
+}
+
+.passcode-cancel {
+  margin-left: 1rem;
+  font-size: 1.05rem;
+  color: var(--muted);
+}
+
+.passcode-legend {
+  max-width: 56rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
 @keyframes passcode-shake {
   25% { transform: translateX(-0.6rem); }
   75% { transform: translateX(0.6rem); }
@@ -3204,6 +3269,7 @@ body.quick-open #top {
 
 .console-step.status-skipped,
 .console-step.status-aborted,
+.console-step.status-pending,
 .console-step.status-na {
   opacity: 0.75;
 }

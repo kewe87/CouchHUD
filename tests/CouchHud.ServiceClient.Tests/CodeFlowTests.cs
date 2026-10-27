@@ -14,6 +14,9 @@ public class CodeFlowTests
         public string Mode { get; set; } = LockModes.Off;
         public List<string> Calls { get; } = [];
 
+        /// <summary>A lock taken over from 0.4.0 that no administrator confirmed: codes and modes only with an approval (security review H-1).</summary>
+        public bool Legacy { get; set; }
+
         public byte[] Answer(byte[] request)
         {
             var op = FakePipeServer.OpOf(request);
@@ -23,6 +26,7 @@ public class CodeFlowTests
             {
                 case LockModeArgs mode:
                     lock (Calls) Calls.Add($"{op}:{mode.Mode}{(mode.Hash is null ? "" : "+" + mode.Kind)}:{grant}");
+                    if (Legacy) return FakePipeServer.Fail(ErrorCodes.NeedGrant);
                     if (LockModes.Rank(mode.Mode) < LockModes.Rank(Mode) && parsed.Grant is null) return FakePipeServer.Fail(ErrorCodes.NeedGrant);
                     if (mode.Hash is not null && (LockModes.Rank(Mode) > 0 || Has.Count > 0)) return FakePipeServer.Fail(ErrorCodes.Denied);
                     Mode = mode.Mode;
@@ -31,6 +35,7 @@ public class CodeFlowTests
                 case PasscodeHashArgs args:
                     lock (Calls) Calls.Add($"{op}:{args.Kind}:{grant}");
                     var kinds = args.Kind == CodeKinds.Both ? new[] { CodeKinds.Couch, CodeKinds.Parent } : [args.Kind];
+                    if (Legacy) return FakePipeServer.Fail(ErrorCodes.NeedGrant);
                     if (op == nameof(Operation.EnrollPasscode))
                     {
                         if (kinds.Any(Has.Contains)) return FakePipeServer.Fail(ErrorCodes.Denied);
@@ -83,6 +88,46 @@ public class CodeFlowTests
         Assert.Equal(MigrationResult.Conflict, await CodeFlow.MigrateAsync(Ops(server), Hash, LockModes.Code));
     }
 
+    [Theory]
+    [InlineData(LockModes.Code)]
+    [InlineData(LockModes.Off)]
+    [InlineData(LockModes.Windows)]
+    public async Task A_legacy_lock_takes_nothing_of_the_config_without_an_approval(string mode)
+    {
+        var codes = new FakeCodes { Legacy = true };
+        await using var server = new FakePipeServer(codes.Answer);
+        Assert.Equal(MigrationResult.Conflict, await CodeFlow.MigrateAsync(Ops(server), Hash, mode));
+        Assert.Empty(codes.Has);
+        Assert.Equal(LockModes.Off, codes.Mode);
+    }
+
+    [Fact]
+    public async Task A_legacy_lock_takes_the_code_of_the_config_once_an_administrator_approved_it()
+    {
+        var codes = new FakeCodes { Legacy = true };
+        var asked = new List<Operation>();
+        await using var server = new FakePipeServer(codes.Answer);
+        var result = await CodeFlow.MigrateAsync(Ops(server), Hash, LockModes.Code, async (op, step) =>
+        {
+            asked.Add(op);
+            codes.Legacy = false;   // what the administrator's approval does in the service
+            return await step();
+        });
+        Assert.Equal(MigrationResult.Done, result);
+        Assert.Equal([Operation.SetLockMode], asked);
+        Assert.Contains(CodeKinds.Couch, codes.Has);
+    }
+
+    [Fact]
+    public async Task A_declined_approval_migrates_nothing()
+    {
+        var codes = new FakeCodes { Legacy = true };
+        await using var server = new FakePipeServer(codes.Answer);
+        var result = await CodeFlow.MigrateAsync(Ops(server), Hash, LockModes.Off, (_, step) => step());
+        Assert.Equal(MigrationResult.Conflict, result);
+        Assert.Empty(codes.Has);
+    }
+
     [Fact]
     public void A_parents_code_the_shell_did_not_set_is_flagged()
     {
@@ -90,6 +135,22 @@ public class CodeFlowTests
         Assert.False(CodeFlow.UnknownParentCode(new HeldCodes(true, true, LockModes.Code), parentalEnabled: true));
         Assert.False(CodeFlow.UnknownParentCode(new HeldCodes(true, false, LockModes.Code), parentalEnabled: false));
         Assert.False(CodeFlow.UnknownParentCode(null, parentalEnabled: false));
+    }
+
+    [Fact]
+    public void The_code_lock_without_a_new_code_needs_a_couch_code_that_survives_the_switch()
+    {
+        // From no lock the service drops the code enrolled at the open couch (review 3, item 2): "keep the code" would lock everybody out.
+        Assert.False(CodeFlow.CodeLockKeepsCode(new HeldCodes(true, false, LockModes.Off)));
+        Assert.False(CodeFlow.CodeLockKeepsCode(new HeldCodes(true, false, null)));
+        // A lock is on and the service holds the couch code: it stays.
+        Assert.True(CodeFlow.CodeLockKeepsCode(new HeldCodes(true, false, LockModes.Windows)));
+        Assert.True(CodeFlow.CodeLockKeepsCode(new HeldCodes(true, false, LockModes.Code)));
+        // The Windows lock dropped the couch code, nothing known, or a lock of 0.4.0 not confirmed yet: no.
+        Assert.False(CodeFlow.CodeLockKeepsCode(new HeldCodes(false, false, LockModes.Windows)));
+        Assert.False(CodeFlow.CodeLockKeepsCode(new HeldCodes(null, null, LockModes.Windows)));
+        Assert.False(CodeFlow.CodeLockKeepsCode(null));
+        Assert.False(CodeFlow.CodeLockKeepsCode(new HeldCodes(true, false, LockModes.Code, LegacyLock: true)));
     }
 
     [Fact]

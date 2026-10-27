@@ -62,7 +62,15 @@ public sealed record LockView(string Mode, bool HasCouch, bool HasParent)
     /// Whether the account's couch can be locked: any lock mode but "off", or any code. The code mode without a code is protected too
     /// (fail-closed, review N1): only a parent or an administrator opens it then.
     /// </summary>
-    public bool Protected => Mode != LockModes.Off || HasCouch || HasParent;
+    public bool Protected => Mode != LockModes.Off || HasCouch || HasParent || Legacy;
+
+    /// <summary>
+    /// A lock of 0.4.0 that the service takes over or took over (<see cref="State.AccountState.LegacyLock"/>, and before that while the
+    /// account's old files or tasks wait for the migration) and that no administrator has confirmed yet: whatever code or mode the account
+    /// holds may have been planted by its own user, and so may its parents' code (0.4.0 kept it in the config the account writes). The codes,
+    /// the mode and the lock's release take an administrator's approval only, no grant of a parents' code counts at all (security review H-1).
+    /// </summary>
+    public bool Legacy { get; init; }
 }
 
 /// <summary>Whether a code (couch or parent) is enrolled for an account. Decides the parity rule of <see cref="Requirement.GrantOrAdminOnceCodeEnrolled"/>.</summary>
