@@ -362,8 +362,11 @@ public partial class MainWindow : Window
         if (NativeMethods.GetForegroundWindow() != hwnd)
         {
             Console.WriteLine("[window] foreground not granted, trying the Alt tap");
+            // CouchHUD's own key: never counted as someone at the PC (the couch browser's unlock, Bluetooth).
+            KeyboardInput.MarkInjected();
             NativeMethods.keybd_event(NativeMethods.VkMenu, 0, 0, UIntPtr.Zero);
             NativeMethods.keybd_event(NativeMethods.VkMenu, 0, NativeMethods.KeyEventFKeyUp, UIntPtr.Zero);
+            KeyboardInput.MarkInjected();
             NativeMethods.SetForegroundWindow(hwnd);
         }
         if (NativeMethods.GetForegroundWindow() != hwnd)

@@ -205,8 +205,11 @@ public sealed class Win32ProcessProbe : IProcessProbe
         }
         if (NativeMethods.GetForegroundWindow() != hwnd)
         {
+            // CouchHUD's own key: never counted as someone at the PC (the couch browser's unlock, Bluetooth).
+            KeyboardInput.MarkInjected();
             NativeMethods.keybd_event(NativeMethods.VkMenu, 0, 0, UIntPtr.Zero);
             NativeMethods.keybd_event(NativeMethods.VkMenu, 0, NativeMethods.KeyEventFKeyUp, UIntPtr.Zero);
+            KeyboardInput.MarkInjected();
             NativeMethods.SetForegroundWindow(hwnd);
         }
         return NativeMethods.GetForegroundWindow() == hwnd;

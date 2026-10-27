@@ -31,6 +31,11 @@ public sealed class ControllerMouse : IDisposable
         _timer.Change(0, 16);
     }
 
+    private long _lastSteer = long.MinValue / 2;
+
+    /// <summary>The stick moved the cursor or scrolled within <paramref name="span"/>: someone is reading the page with the controller.</summary>
+    public bool SteeredWithin(TimeSpan span) => Environment.TickCount64 - Interlocked.Read(ref _lastSteer) < span.TotalMilliseconds;
+
     public void Stop()
     {
         Active = false;
@@ -63,6 +68,7 @@ public sealed class ControllerMouse : IDisposable
         if (Paused) return;
         var (x, y, scroll) = _sticks();
         var (dx, dy) = (Curve(x), Curve(-y));
+        if (dx != 0 || dy != 0 || Curve(scroll) != 0) Interlocked.Exchange(ref _lastSteer, Environment.TickCount64);
         // Fast across the screen with the stick pushed, precise near the centre.
         _carryX += dx * 28;
         _carryY += dy * 28;

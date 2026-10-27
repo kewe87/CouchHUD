@@ -101,7 +101,7 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                              && opts.TryGetProperty("rescan", out var r) && r.ValueKind == JsonValueKind.True;
                 return ToDto(await hud.GetLibraryAsync(rescan));
             case "launch":
-                return ToDto(hud.Launch(StringArg(0)));
+                return ToDto(hud.Launch(StringArg(0), byPerson: true));
             case "toggleFavorite":
                 return hud.ToggleFavorite(StringArg(0));
             case "getStoreInfo":
@@ -258,7 +258,7 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                 hud.RemoveFeed(StringArg(0));
                 return hud.GetFeeds();
             case "openUrl":
-                await hud.OpenUrlAsync(StringArg(0), Arg(1).ValueKind == JsonValueKind.String ? Arg(1).GetString()! : "ui");
+                await hud.OpenUrlFromHudAsync(StringArg(0), Arg(1).ValueKind == JsonValueKind.String ? Arg(1).GetString()! : "ui");
                 return null;
             case "setEntryEdge":
                 return ToDto(await hud.SetEntryEdgeAsync(StringArg(0), Arg(1).ValueKind == JsonValueKind.True));
@@ -277,7 +277,7 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             case "getBrowser":
                 return hud.BrowserState();
             case "openBrowser":
-                await hud.OpenBrowserAsync(Arg(0).ValueKind == JsonValueKind.String ? Arg(0).GetString() : null);
+                await hud.OpenBrowserFromHudAsync(Arg(0).ValueKind == JsonValueKind.String ? Arg(0).GetString() : null);
                 return null;
             case "browserLayout":
                 hud.BrowserLayout(Arg(0).GetDouble(), Arg(1).GetDouble(), Arg(2).GetDouble(), Arg(3).GetDouble(), Arg(4).ValueKind == JsonValueKind.True);

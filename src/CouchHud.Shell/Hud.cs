@@ -375,7 +375,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     private void OnPadDown(string button)
     {
-        if (_browsing) _browserActivity = DateTimeOffset.UtcNow;
+        // A person at the controller (on the page, in the bar, or the A that confirms an MCP request): counts as use of the browser
+        // for the next 30 s, while it is on screen (WatchBrowserUnlock).
+        _browserInput = MonoNow();
         if (_browsing && _browser is not null && _mouse?.Active == true && OnBrowserButton(button)) return;
         // Windows doesn't count controller input as activity: without this the
         // display would go dark while someone browses the library with the pad.
@@ -1355,7 +1357,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public Task<IReadOnlyList<LibraryItem>> GetLibraryAsync(bool rescan) => library.GetAsync(rescan);
 
-    public LibraryItem Launch(string id)
+    /// <param name="byPerson">Started from the HUD (library, menu): a website entry counts as use of the couch browser. MCP and
+    /// the assistant pass false (their confirmation is an A on the pad, which counts by itself).</param>
+    public LibraryItem Launch(string id, bool byPerson = false)
     {
         var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
         // A locked couch starts games; apps and websites need the unlock.
@@ -1368,7 +1372,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // A website entry opens in the couch browser (it needs the unlock as the browser tile does, which the app check above gave).
         if (item.Launch.Embedded)
         {
-            _ = OpenEmbeddedEntryAsync(item);
+            _ = OpenEmbeddedEntryAsync(item, byPerson);
             return library.MarkLaunched(id);
         }
         // An app or a website can only be started unlocked: it stays released until the HUD is in front again (ShowHud).
@@ -1392,11 +1396,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         return library.MarkLaunched(id);
     }
 
-    private async Task OpenEmbeddedEntryAsync(LibraryItem item)
+    private async Task OpenEmbeddedEntryAsync(LibraryItem item, bool byPerson)
     {
         try
         {
             await OpenUrlAsync(item.Launch.Target, "entry");
+            if (byPerson) BrowserOpenedByPerson();
         }
         catch (Exception ex)
         {
@@ -3922,8 +3927,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     // The page is in the HUD's Browser tab and on screen / the controller steers the page (not the HUD bar).
     private bool _browserShown;
     private bool _browsing;
-    // The unlock that opened the browser is extended while it is in use, and warned about before it runs out.
-    private DateTimeOffset _browserActivity = DateTimeOffset.MinValue;
+    // The unlock that opened the browser is extended while it is in use, and warned about before it runs out. Set by a person's
+    // input only (controller, HUD bar, opening the browser; MonoNow), never by an event of the page.
+    private DateTimeOffset _browserInput = DateTimeOffset.MinValue;
     private bool _browserWarned;
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
@@ -3936,15 +3942,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetLastInputInfo(ref LastInputInfo info);
 
-    /// <summary>Keyboard or mouse input within the last <paramref name="span"/> (the pad is counted by its own events).</summary>
-    private static bool InputWithin(TimeSpan span)
-    {
-        var info = new LastInputInfo { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<LastInputInfo>() };
-        return GetLastInputInfo(ref info) && TimeSpan.FromMilliseconds(unchecked((uint)Environment.TickCount - info.Time)) < span;
-    }
-
     /// <summary>
-    /// Like <see cref="InputWithin"/>, but the last input must not be CouchHUD's own (SendInput of the controller mouse, the
+    /// Keyboard or mouse input within the last <paramref name="span"/> (the pad is counted by its own events), and the last input
+    /// must not be CouchHUD's own (SendInput of the controller mouse, the
     /// display wake-up, phone typing, the night light keys). Windows does not say whose the last input was, so input that came
     /// right after one of ours counts as ours: then a real key press is missed, never a fake one counted (missing it only means
     /// Bluetooth comes back on, which is the safe side).
@@ -3956,12 +3956,16 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         var age = unchecked((uint)Environment.TickCount - info.Time);
         if (TimeSpan.FromMilliseconds(age) >= span) return false;
         var lastInput = Environment.TickCount64 - age;
-        return lastInput > KeyboardInput.LastInjected + 250;
+        // A full second after our own input (not 250 ms): Windows may report a made-up key or move a little later, and
+        // here a missed real input is the safe side (the couch browser's unlock runs out, Bluetooth comes back on).
+        return lastInput > KeyboardInput.LastInjected + 1000;
     }
 
     /// <summary>
-    /// The browser is in front and used: the 2-minute unlock is extended (so reading a page does not end in a closed
-    /// browser). Idle, it says 30 seconds before the end that the browser is about to close.
+    /// The browser is in front and used by a person: the 2-minute unlock is extended (so reading a page does not end in a closed
+    /// browser). Idle, it says 30 seconds before the end that the browser is about to close. What counts is decided by
+    /// <see cref="BrowserUnlock"/>: the controller (buttons, and the stick that steers the cursor), a real keyboard or mouse (not
+    /// CouchHUD's own SendInput, see <see cref="RealInputWithin"/>), the HUD bar and opening the browser; never the page itself.
     /// </summary>
     private void WatchBrowserUnlock()
     {
@@ -3971,17 +3975,11 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             _browserWarned = false;
             return;
         }
-        var active = now - _browserActivity < TimeSpan.FromSeconds(30) || InputWithin(TimeSpan.FromSeconds(30));
-        if (active)
-        {
-            if (_unlockedUntil - now < TimeSpan.FromSeconds(90)) _unlockedUntil = now.AddMinutes(2);
-            _browserWarned = false;
-        }
-        else if (_unlockedUntil - now <= TimeSpan.FromSeconds(30) && !_browserWarned)
-        {
-            _browserWarned = true;
-            Emit("toast", Strings.Get("browser.closesSoon"));
-        }
+        var inputNow = RealInputWithin(BrowserUnlock.InputWindow) || _mouse?.SteeredWithin(BrowserUnlock.InputWindow) == true;
+        var next = BrowserUnlock.Next(now, _unlockedUntil, _browserInput, inputNow, _browserWarned);
+        _unlockedUntil = next.UnlockedUntil;
+        _browserWarned = next.Warned;
+        if (next.Warn) Emit("toast", Strings.Get("browser.closesSoon"));
     }
 
     private BrowserPane Browser()
@@ -3989,12 +3987,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         if (_browser is not null) return _browser;
         var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CouchHud", "Browser");
         var pane = _browser = new BrowserPane(profile, () => !LockOn || IsUnlocked, () => RuntimeStrict);
-        pane.PageChanged += () =>
-        {
-            // Navigation counts as use: the unlock does not run out under a page being read.
-            _browserActivity = DateTimeOffset.UtcNow;
-            Emit("browser", BrowserState());
-        };
+        // Title, address, history and sound of the page: shown in the bar. Not use of the browser: a page changes them by itself
+        // (a ticking title kept the couch unlocked in 0.4.1/0.4.2), the unlock is extended by a person's input only.
+        pane.PageChanged += () => Emit("browser", BrowserState());
         // A video in full screen has the whole window; the page is steered by the controller then.
         pane.FullScreenChanged += () =>
         {
@@ -4066,7 +4061,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         {
             _mouse?.Start();
             if (_mouse is not null) _mouse.Paused = _browser!.TvMode;
-            _browserActivity = DateTimeOffset.UtcNow;
+            // No extension of the unlock here: a page's full screen gives it the controller too. The person's input that led here
+            // (controller, HUD bar, keyboard, mouse) counts by itself.
             _browser!.FocusPage();
             _window?.RaiseBrowser();
         }
@@ -4082,7 +4078,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     {
         var browser = _browser;
         if (browser is null) return;
-        _browserActivity = DateTimeOffset.UtcNow;
+        // A button of the HUD bar (the HUD's own page, never the web page): a person uses the browser.
+        _browserInput = MonoNow();
         switch (command)
         {
             case "back":
@@ -4142,6 +4139,26 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https") return false;
         return text.Contains('.');
     }
+
+    /// <summary>The HUD's browser tile or address field (bridge `openBrowser`): a person opened the page.</summary>
+    public async Task OpenBrowserFromHudAsync(string? text)
+    {
+        await OpenBrowserAsync(text);
+        BrowserOpenedByPerson();
+    }
+
+    /// <summary>A link in the HUD (news, store page, detail; bridge `openUrl`): a person opened the page.</summary>
+    public async Task OpenUrlFromHudAsync(string url, string source)
+    {
+        await OpenUrlAsync(url, source);
+        BrowserOpenedByPerson();
+    }
+
+    /// <summary>
+    /// Opening the browser counts as use only when a person did it in the HUD; a plugin's link (plugins.UrlOpener) or MCP does not
+    /// extend the unlock.
+    /// </summary>
+    private void BrowserOpenedByPerson() => _browserInput = MonoNow();
 
     /// <summary>Opens a website, or goes back to the open one when <paramref name="text"/> is empty.</summary>
     public async Task OpenBrowserAsync(string? text)

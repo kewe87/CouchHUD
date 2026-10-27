@@ -2,6 +2,20 @@
 
 Ein Abschnitt je Version, gegliedert nach Bereichen, erst Deutsch, dann Englisch. / One section per version, grouped by area, German first, then English.
 
+## 0.4.3 (2026-10-27)
+
+### Deutsch
+
+**Sicherheit**
+- **Fix für 0.4.1 und 0.4.2: Eine Webseite hielt die Couch ohne Eingabe entsperrt.** Der Couch-Browser verlängert die 2-Minuten-Entsperrung, solange jemand ihn benutzt. Als Benutzung zählte aber auch alles, was die Seite selbst tat: neuer Titel, neue Adresse (`pushState`), Verlauf, Ton. Eine Seite, die ihren Titel alle paar Sekunden ändert, hielt so die ganze Couch dauerhaft offen. Jetzt verlängern nur Eingaben eines Menschen: der Controller (Tasten, und der Stick, der den Mauszeiger führt), eine echte Tastatur oder Maus (nicht CouchHUDs eigene Eingaben wie die Controller-Maus, das Aufwecken des Bildschirms, die Tasten für das Nachtlicht oder das Holen in den Vordergrund), die Knöpfe der HUD-Leiste und das Öffnen des Browsers. Was die Seite selbst tut (Titel, Adresse, Navigation, Ton, Vollbild, ihre Dialoge, Downloads), verlängert nichts. Die Warnung „Der Browser schließt sich gleich“ kommt wie bisher 30 Sekunden vor dem Ende; eine Taste verlängert dann. Wer ein langes Video im Browser schaut, drückt also alle zwei Minuten eine Taste, oder schaltet die Couch-Sperre aus.
+- Nacharbeiten zum Fix: Das Öffnen des Browsers zählt nur, wenn ein Mensch es im HUD auslöst (Browser-Kachel, Adresse, Link, Website-Eintrag aus Bibliothek oder Menü); ein Link eines Plugins und ein Start über MCP oder den Assistenten verlängern nichts (deren Bestätigung mit A am Controller zählt ohnehin). Eingaben gelten erst eine volle Sekunde nach CouchHUDs eigenen Eingaben wieder als echt (vorher 250 ms). Neue Quelltext-Tests halten fest, wo die Nutzung des Browsers und die Entsperrung gesetzt werden dürfen und dass jede von CouchHUD erzeugte Taste, Mausbewegung und jeder Klick als eigene Eingabe markiert ist.
+
+### English
+
+**Security**
+- **Fix for 0.4.1 and 0.4.2: a web page kept the couch unlocked without any input.** The couch browser extends the 2-minute unlock while someone uses it. But everything the page did by itself counted as use too: a new title, a new address (`pushState`), history, sound. A page that changes its title every few seconds kept the whole couch open for good. Now only a person's input extends it: the controller (buttons, and the stick that moves the cursor), a real keyboard or mouse (not CouchHUD's own input such as the controller mouse, waking the display, the night light keys or bringing its window to the front), the HUD bar's buttons and opening the browser. What the page does by itself (title, address, navigation, sound, full screen, its dialogs, downloads) extends nothing. The warning "The browser closes soon" still comes 30 seconds before the end; a button press extends then. So whoever watches a long video in the browser presses a button every two minutes, or switches the couch lock off.
+- Follow-ups to the fix: opening the browser counts only when a person does it in the HUD (the browser tile, an address, a link, a website entry from the library or the menu); a plugin's link and a start through MCP or the assistant extend nothing (their confirmation with A on the controller counts anyway). Input counts as real again only a full second after CouchHUD's own input (250 ms before). New source tests pin where use of the browser and the unlock may be set, and that every key, mouse move and click CouchHUD makes up itself is marked as its own.
+
 ## 0.4.2 (2026-10-27)
 
 ### Deutsch
