@@ -20,6 +20,10 @@ import { ensureUnlocked } from '../components/passcode.js';
 import { holdScreensaver, screensaverActivity } from '../core/screensaver.js';
 import { cleanRecent, closeCountdown, dialogKind, fileSize, forgetRecent, forgetSite, host, initial, reconcileFocus, recentNote, rememberable, rememberSite, shortHost, siteHost, visibleRecent } from '../core/browser-logic.js';
 import { ensureParentGrant } from '../components/parental.js';
+import { favorites, toggleFavoriteSite } from '../core/favorites.js';
+
+/** Whether a bookmark is marked as a favorite website (the Favorites tab shows it). */
+const isFavoriteSite = (url) => favorites.entries.some((e) => e.kind === 'site' && e.url === url);
 
 const ZOOMS = [100, 125, 150, 175, 200, 250];
 const RECENT_KEY = 'couchhud.browser.recent';
@@ -44,6 +48,19 @@ function forgetAllWhenOff(s) {
   if (forgetRecent(s) && recent.length) storeRecent([]);
 }
 let recent = loadRecent();
+
+/**
+ * The recent sites the start page may show right now (none while hidden, locked or unknown), for the Favorites tab. Computed from the
+ * current state on every call, no copy: a lock, a profile switch or switching the history off shows no address, not even for one render.
+ */
+export const recentSitesNow = (limit = 4) => visibleRecent(recent, browserState, limit);
+
+/** Asks the host for the browser's state when none arrived yet (the recent sites need it to know whether they may show). */
+export async function ensureBrowserState() {
+  if (browserState) return;
+  takeState(await attempt(() => api.getBrowser()));
+  if (browserState) render();
+}
 /** Where the user came from when the browser opened (tab and pages on top of it), for "back" on the first page. */
 let origin = null;
 
@@ -73,7 +90,7 @@ function storeRecent(next) {
 }
 
 /** With the couch lock on, websites need the code: their upload and print dialogs lead into Windows. */
-const open = async (text) => (await ensureUnlocked(t('browser.openLock')))
+export const open = async (text) => (await ensureUnlocked(t('browser.openLock')))
   && attempt(() => api.openBrowser(text), t('browser.openFailed'));
 
 async function openAddress() {
@@ -148,7 +165,7 @@ export const browserView = {
       rows.push({ recent: r, label: r.title, detail: siteHost(r.url), run: () => open(r.url) });
     }
     for (const b of s?.bookmarks ?? []) {
-      rows.push({ bookmark: b, label: b.name, detail: siteHost(b.url), run: () => open(b.url) });
+      rows.push({ bookmark: b, label: b.name, detail: isFavoriteSite(b.url) ? `★ ${siteHost(b.url)}` : siteHost(b.url), run: () => open(b.url) });
     }
     rows.push({
       icon: '🔍',
@@ -240,6 +257,14 @@ export const browserView = {
       case 'a':
         sound.select();
         return row?.run();
+      case 'x': {
+        // A bookmark becomes a favorite website (or stops being one); the host refuses while websites are off for Favorites.
+        const mark = row?.bookmark;
+        if (!mark) return sound.bump();
+        if (!favorites.sites && !isFavoriteSite(mark.url)) return toast(t('browser.favoriteSitesOff'), 4000);
+        await toggleFavoriteSite(mark.url, mark.name);
+        return render();
+      }
       case 'y': {
         // A recent site is only on the list while it may be seen (unlocked, parental controls answered), so it may be removed too.
         if (row?.recent) {
@@ -312,7 +337,11 @@ export const browserView = {
         : [['←→', t('browser.hintPick')], ['A', t('browser.hintPress')], ['Y', t('browser.hintAddress')], ['B', t('browser.hintToPage')], ['LB', t('browser.hintTabs')]];
     }
     const row = this.list?.[this.index];
-    return row?.bookmark || row?.recent ? [['A', t('browser.hintOpen')], ['Y', t('browser.hintRemove')], ['B', t('browser.hintBack')]] : [['A', t('browser.hintOpen')], ['B', t('browser.hintBack')]];
+    if (row?.bookmark) {
+      const star = favorites.sites || isFavoriteSite(row.bookmark.url) ? [['X', isFavoriteSite(row.bookmark.url) ? t('browser.hintUnfavorite') : t('browser.hintFavorite')]] : [];
+      return [['A', t('browser.hintOpen')], ...star, ['Y', t('browser.hintRemove')], ['B', t('browser.hintBack')]];
+    }
+    return row?.recent ? [['A', t('browser.hintOpen')], ['Y', t('browser.hintRemove')], ['B', t('browser.hintBack')]] : [['A', t('browser.hintOpen')], ['B', t('browser.hintBack')]];
   }
 };
 

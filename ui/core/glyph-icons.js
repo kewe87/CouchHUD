@@ -76,6 +76,9 @@ const GLYPHS = {
   'ᛒ': 'bluetooth', '⏲': 'timer', '▭': 'desktop', '⏸': 'pause', '+': 'plus', '◆': 'dot', '○': 'circle', '⋯': 'dots', '🖴': 'drive', '▦': 'grid', '📺': 'tv', '🎧': 'headphones', '🎬': 'clapper', '📜': 'list', '💡': 'bulb', '🔌': 'plug', '🌀': 'refresh', '🔘': 'circle', '🪟': 'window', '🪄': 'spark', '🎵': 'music', '🌡️': 'thermometer', '🌡': 'thermometer', '🤖': 'robot', '🌤️': 'sun', '🌤': 'sun', '☀️': 'sun', '☀': 'sun', '💧': 'drop', '⚡': 'bolt', '🔋': 'battery', '🚪': 'door', '🏃': 'person', '⛨': 'shield'
 };
 
+/** Every glyph that is drawn as one of the HUD's own icons (a third party's plugin tab never carries one; see core/plugin-tabs.js). */
+export const BUILTIN_GLYPHS = Object.keys(GLYPHS);
+
 const FILLED = new Set(['★', '▶', '⏺', '◆']);
 
 /** An icon node for a row/menu glyph: an outline SVG for known glyphs, else the text itself. */

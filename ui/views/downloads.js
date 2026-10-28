@@ -28,15 +28,14 @@ let loading = false;
 let timer = null;
 const redrawHooks = [];
 
-const KIND_ICON = { game: '🎮', windows: '🪟', app: '⤓', couchHud: '↻', plugin: '🔌', caseHud: '🌀' };
+const KIND_ICON = { game: '🎮', windows: '🪟', app: '⤓', couchHud: '↻', plugin: '🔌' };
 const STATE_ICON = { downloading: '⬇', installing: '⬇', waiting: '⋯', inClient: '⋯', paused: '⏸', queued: '⋯', done: '✓', failed: '⚠' };
 
 const OWN_SOURCE = {
   windows: () => t('downloads.source.windows'),
   winget: () => t('downloads.source.winget'),
   plugin: () => t('downloads.source.plugin'),
-  skin: () => t('downloads.source.skin'),
-  casehud: () => 'CaseHUD'
+  skin: () => t('downloads.source.skin')
 };
 
 const STATE_TEXT = {

@@ -73,7 +73,6 @@ public interface IPrivilegedOps
 
     /// <summary>Streams a downloaded and verified setup; the service verifies it again and starts it (it stops itself and the shell).</summary>
     Task<JobResult> InstallCouchHudUpdateAsync(SetupStreamArgs header, Stream setup, IProgress<JobData>? progress, CancellationToken cancellation = default);
-    Task<JobResult> InstallCaseHudAsync(SetupStreamArgs header, Stream setup, IProgress<JobData>? progress, CancellationToken cancellation = default);
 
     /// <summary>The old scheduled tasks of this account go (the service deletes them as SYSTEM, only after it proved it works).</summary>
     Task<OpResult> MigrateTasksAsync(CancellationToken cancellation = default);
@@ -132,7 +131,6 @@ public interface IPrivilegedOps
 /// </summary>
 public sealed class ServiceOps : IPrivilegedOps
 {
-    // InstallCaseHud is not here: the service refuses a first installation whatever comes along, and an update needs no grant.
     // InstallCouchHudUpdate carries the unlock's grant so the update keeps the session (KEEPSESSION). The codes pick theirs themselves.
     private static readonly HashSet<Operation> GrantOperations =
         [Operation.ReleaseLockPolicies, Operation.CleanupPolicyKeys, Operation.SetRemoteFirewall, Operation.SetAutoLogon, Operation.InstallCouchHudUpdate];
@@ -334,9 +332,6 @@ public sealed class ServiceOps : IPrivilegedOps
 
     public Task<JobResult> InstallCouchHudUpdateAsync(SetupStreamArgs header, Stream setup, IProgress<JobData>? progress, CancellationToken cancellation = default) =>
         RunJobAsync(Operation.InstallCouchHudUpdate, g => _client.StreamAsync(Operation.InstallCouchHudUpdate, header, Rewound(setup), g, cancellation), progress, TimeSpan.FromMinutes(15), cancellation);
-
-    public Task<JobResult> InstallCaseHudAsync(SetupStreamArgs header, Stream setup, IProgress<JobData>? progress, CancellationToken cancellation = default) =>
-        RunJobAsync(Operation.InstallCaseHud, g => _client.StreamAsync(Operation.InstallCaseHud, header, Rewound(setup), g, cancellation), progress, TimeSpan.FromMinutes(15), cancellation);
 
     public Task<OpResult> MigrateTasksAsync(CancellationToken cancellation = default) =>
         RunAsync(Operation.MigrateTasks, g => _client.CallAsync(Operation.MigrateTasks, g, HandlerWait, cancellation), cancellation);

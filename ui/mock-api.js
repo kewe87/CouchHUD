@@ -1,5 +1,3 @@
-import { caseHudMock, setMockInstallApi } from './mock-casehud.js';
-import { vpnMock } from './mock-vpn.js';
 import { tvMock } from './mock-tv.js';
 import { demoMode, applyDemo } from './mock-demo.js';
 import { RATING_CHOICES, convertLimit, limitLabel, ratingSteps } from './core/age-rating-rules.js';
@@ -62,6 +60,12 @@ const library = [
   { id: 'custom:kodi', source: 'custom', type: 'app', name: 'Kodi', lastPlayed: 0, favorite: false, art: { cover: [], hero: [], logo: [], icon: ['data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Cpath d=%27M32 4l28 28-28 28L4 32z%27 fill=%27%2317b2e7%27/%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2710%27 fill=%27%23fff%27/%3E%3C/svg%3E'] } }
 ];
 library[0].favorite = true;
+// Favorites in the order they were marked. Preview: ?favs=demo marks a few more (games, apps and a website).
+let favoriteOrder = ['steam:1245620'];
+if (new URLSearchParams(location.search).get('favs') === 'demo') {
+  for (const id of ['custom:youtube', 'steam:1145360', 'custom:kodi']) library.find((i) => i.id === id).favorite = true;
+  favoriteOrder.push('custom:youtube', 'steam:1145360', 'custom:kodi', 'site:https://www.twitch.tv/');
+}
 // Preview: ?demo shows made-up games with generated artwork (README screenshots, no store covers).
 if (demoMode) applyDemo(library);
 // Preview: ?many=400 adds that many generated entries (scroll performance checks).
@@ -123,7 +127,7 @@ const mockProfilesView = () => ({
   gameRunning: false,
   profiles: mockProfiles.map((p) => ({ ...p, isProtected: p.hasCode, need: p.active ? 'same' : p.hasCode ? 'profileCode' : 'free' }))
 });
-const listeners = { downloads: [], uninstalledArt: [], unlocked: [], session: [], audio: [], toast: [], screenshot: [], updates: [], catalogUpdates: [], selfUpdate: [], assistant: [], remote: [], notification: [], parental: [], browser: [], browserui: [], browserdialog: [], pad: [], btRecovery: [], homeAssistantSignIn: [], battery: [] };
+const listeners = { downloads: [], uninstalledArt: [], unlocked: [], session: [], audio: [], toast: [], screenshot: [], updates: [], catalogUpdates: [], pluginSuggestionsReady: [], pluginPageChanged: [], selfUpdate: [], assistant: [], remote: [], notification: [], parental: [], browser: [], browserui: [], browserdialog: [], pad: [], btRecovery: [], battery: [] };
 // ?nopad: no controller and Bluetooth off (the code prompt's help for keyboard and mouse); ?btcountdown: the automatic switch-on asks.
 const noPad = new URLSearchParams(location.search).has('nopad');
 let btOn = !noPad;
@@ -159,6 +163,7 @@ const finishedDownloads = [];
 const requestedDownloads = new Map();
 const downloadCenter = () => {
   dl = Math.min(1, dl + 0.04);
+  if (batteryQuery.has('nodownloads')) return { entries: [], summary: { active: 0, finished: 0, progress: null } }; // ?nodownloads: no Downloads tab (docs screenshots)
   const now = Date.now();
   const running = [
     { id: 'steam:1091500', kind: 'game', source: 'steam', name: 'Cyberpunk 2077', state: 'downloading', progress: dl, bytesDone: Math.round(dl * 18_400_000_000), bytesTotal: 18_400_000_000, isUpdate: true, detail: null, updatedAt: now },
@@ -196,10 +201,43 @@ const display = {
 // Preview: screenshots drawn as gradients (the real app shows the image files).
 let mockCodeEntry = false;
 const fakeShot = (title, hue) => 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},70%,45%)"/><stop offset="1" stop-color="hsl(${hue + 50},60%,15%)"/></linearGradient></defs><rect width="160" height="90" fill="url(#g)"/><text x="8" y="80" font-family="sans-serif" font-size="9" fill="white" opacity="0.8">${title}</text></svg>`);
+// Preview pictures are drawn as PNG (the real app gets verified PNGs from the host and shows nothing else).
+const png = (hue, glyph = '', w = 96, h = 96) => {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, `hsl(${hue},70%,48%)`);
+  grad.addColorStop(1, `hsl(${hue + 50},60%,16%)`);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, w, h);
+  if (glyph) {
+    g.fillStyle = 'rgba(255,255,255,0.92)';
+    g.font = `bold ${Math.round(h * 0.5)}px sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(glyph, w / 2, h / 2 + 2);
+  }
+  return c.toDataURL('image/png');
+};
+// Plugin functions (who may use what): the levels the owner chose, plugin id -> function id -> 'admin' | 'restricted' | 'off'. A suggestion
+// of CouchHUD's own plugin applies until then; ?fnnolock mocks "couch lock and parental controls off" (the settings then say so).
+const fnLevels = {};
+// i18n-used: mock.plug.fnLighting mock.plug.fnSettings mock.plug.fnControl
+const fnDefs = {
+  lumen: [['lighting', 'restricted', 'mock.plug.fnLighting'], ['settings', 'admin', 'mock.plug.fnSettings']],
+  retrobar: [['control', 'admin', 'mock.plug.fnControl']]
+};
+const fnList = (id) => (fnDefs[id] ?? []).map(([fid, suggested, key]) => ({
+  id: fid, label: t(key), level: fnLevels[id]?.[fid] ?? suggested, custom: !!fnLevels[id]?.[fid]
+}));
+const restrictionsPossible = () => !new URLSearchParams(location.search).has('fnnolock') && (security.couchLock !== 'off' || !!parentalState()?.enabled);
 const plugins = [
   lz({
     folder: 'CouchHud.Plugin.Wand', id: 'wand', name: 'Wand', version: '1.0.0', author: 'kewe87', homepage: 'https://www.wand.com',
-    enabled: true, loaded: true, error: null, userInstalled: false,
+    enabled: true, loaded: true, error: null, userInstalled: true, origin: 'firstParty', publisher: null, revoked: false, revokedReason: null,
+    capabilities: ['pages', 'quickActions', 'assistant', 'process'],
     pages: [lz({ id: 'status', title: 'Wand', icon: '🪄' }, { description: () => t('mock.wandPageDesc') })],
     settings: [
       lz({ key: 'autostart', kind: 'toggle', choices: [], value: 'false' }, { label: () => t('mock.wandAutostartLabel'), description: () => t('mock.wandAutostartDesc') }),
@@ -207,18 +245,82 @@ const plugins = [
     ],
     tools: ['wand_open_cheats']
   }, { description: () => t('mock.wandDesc') }),
-  lz({ folder: 'Kodi', id: 'kodi', name: 'Kodi', version: '0.3.0', author: 'community', homepage: null, enabled: false, loaded: false, error: null, userInstalled: true, pages: [], settings: [], tools: [] }, { description: () => t('mock.kodiPluginDesc') })
+  lz({
+    folder: 'CouchHud.Plugin.Lumen', id: 'lumen', name: 'Lumen', version: '1.2.0', author: 'kewe87', homepage: null,
+    enabled: true, loaded: true, error: null, userInstalled: true, origin: 'firstParty', publisher: null, revoked: false, revokedReason: null,
+    capabilities: ['pages', 'notify', 'tabs'],
+    pages: [lz({ id: 'main', icon: '💡' }, { title: () => 'Lumen', description: () => t('mock.plug.lumenPageDesc') })],
+    settings: [], tools: []
+  }, { description: () => t('mock.plug.lumenDesc'), functions: () => fnList('lumen'), restrictionsPossible }),
+  lz({
+    folder: 'Kodi', id: 'kodi', name: 'Kodi', version: '0.3.0', author: 'community', homepage: null, enabled: false, loaded: false, error: null, userInstalled: true,
+    origin: 'thirdParty', publisher: 'a1b2-c3d4-e5f6-7890', revoked: false, revokedReason: null, capabilities: ['library', 'network:loopback'], pages: [], settings: [], tools: []
+  }, { description: () => t('mock.kodiPluginDesc') }),
+  lz({
+    folder: 'GlowBar', id: 'glowbar', name: 'GlowBar', version: '2.0.1', author: 'dev-hans', homepage: null, enabled: true, loaded: false, error: null, userInstalled: true,
+    origin: 'thirdParty', publisher: '5e6f-7a8b-9c0d-1e2f', revoked: true, capabilities: ['network:internet', 'registry'], pages: [], settings: [], tools: []
+  }, { description: () => t('mock.plug.glowbarDesc'), revokedReason: () => t('mock.plug.glowbarReason') }),
+  lz({
+    folder: 'RetroBar', id: 'retrobar', name: 'RetroBar', version: '0.9.0', author: 'dev-anna', homepage: null, enabled: true, loaded: true, error: null, userInstalled: true,
+    origin: 'thirdParty', publisher: '3c4d-5e6f-7a8b-9c0d', revoked: false, revokedReason: null, capabilities: ['pages'], pages: [], settings: [], tools: []
+  }, { description: () => t('mock.plug.retroDesc'), functions: () => fnList('retrobar'), restrictionsPossible })
 ];
-// Preview catalog: one of each status (update, installed, new, needs newer CouchHUD, no hash).
+// Preview catalog: every state the page has (update, installed, new, third-party, withdrawn, needs a newer CouchHUD, the official catalog first,
+// unlisted, no hash).
+const shots = (hue) => [png(hue, '1', 320, 180), png(hue + 40, '2', 320, 180), png(hue + 80, '3', 320, 180)];
+const cat = (o, f) => lz({ restartPending: false, reason: null, reasonCode: null, addsCapabilities: false, installedVersion: null, unsigned: false, extra: false, origin: 'firstParty', publisher: null, thirdParty: false, license: 'GPL-3.0-only', capabilities: [], size: null, minCouchHud: null, homepage: null, ...o }, f);
 const catalog = [
-  lz({ id: 'wand', name: 'Wand', author: 'kewe87', kind: 'plugin', version: '1.1.0', installedVersion: '1.0.0', status: 'update', restartPending: false, reason: null }, { description: () => t('mock.wandDesc') }),
-  lz({ id: 'kodi', name: 'Kodi', author: 'community', kind: 'plugin', version: '0.3.0', installedVersion: '0.3.0', status: 'installed', restartPending: false, reason: null }, { description: () => t('mock.catKodiDesc') }),
-  lz({ id: 'synthwave', name: 'Synthwave', author: 'community', kind: 'skin', version: '1.0.2', installedVersion: null, status: 'notInstalled', restartPending: false, reason: null, unsigned: true }, { description: () => t('mock.catSynthDesc') }),
-  lz({ id: 'signalrgb', name: 'SignalRGB', author: 'community', kind: 'plugin', version: '2.0.0', installedVersion: null, status: 'unavailable', restartPending: false, minCouchHud: '9.0.0' }, { description: () => t('mock.catSignalDesc'), reason: () => t('mock.catSignalReason', { min: '9.0.0', running: '0.3.0' }) }),
-  lz({ id: 'broken', author: 'jemand', kind: 'plugin', version: '1.0.0', installedVersion: null, status: 'unavailable', restartPending: false }, { name: () => t('mock.catBrokenName'), description: () => t('mock.catBrokenDesc'), reason: () => t('mock.catBrokenReason') })
+  cat({ id: 'wand', name: 'Wand', author: 'kewe87', kind: 'plugin', version: '1.1.0', installedVersion: '1.0.0', status: 'update', size: 3_200_000, icon: png(265, 'W'), capabilities: ['pages', 'quickActions', 'assistant', 'process'] }, { description: () => t('mock.wandDesc') }),
+  cat({ id: 'lumen', name: 'Lumen', author: 'kewe87', kind: 'plugin', version: '1.2.0', installedVersion: '1.2.0', status: 'installed', size: 480_000, icon: png(45, 'L'), license: 'MIT', capabilities: ['pages', 'notify'] }, { description: () => t('mock.plug.lumenDesc') }),
+  cat({ id: 'casehud', name: 'CaseHUD', author: 'kewe87', kind: 'plugin', version: '1.1.0', status: 'notInstalled', size: 5_600_000, icon: png(190, 'C'), capabilities: ['pages', 'quickActions', 'assistant', 'setup.run', 'lock.restrict', 'startup.args', 'process', 'network:loopback'] }, { description: () => t('mock.plug.casehudDesc') }),
+  cat({ id: 'kodi', name: 'Kodi', author: 'community', kind: 'plugin', version: '0.3.0', installedVersion: '0.3.0', status: 'installed', origin: 'thirdParty', thirdParty: true, publisher: 'a1b2-c3d4-e5f6-7890', size: 1_900_000, icon: png(20, 'K'), license: 'GPL-2.0-or-later', capabilities: ['library', 'network:loopback'] }, { description: () => t('mock.catKodiDesc') }),
+  cat({ id: 'glowbar', name: 'GlowBar', author: 'dev-hans', kind: 'plugin', version: '2.0.1', installedVersion: '2.0.1', status: 'installed', origin: 'thirdParty', thirdParty: true, publisher: '5e6f-7a8b-9c0d-1e2f', size: 760_000, icon: png(320, 'G'), license: 'MIT', capabilities: ['network:internet', 'registry'] }, { description: () => t('mock.plug.glowbarDesc') }),
+  cat({ id: 'nightsky', name: 'NightSky', author: 'dev-clara', kind: 'plugin', version: '1.0.0', status: 'notInstalled', origin: 'thirdParty', thirdParty: true, extra: true, publisher: '9f8e-7d6c-5b4a-3921', size: 2_400_000, icon: png(240, 'N'), license: 'Apache-2.0', capabilities: ['pages', 'notify', 'network:internet', 'native'] }, { description: () => t('mock.plug.nightskyDesc') }),
+  cat({ id: 'signalrgb', name: 'SignalRGB', author: 'community', kind: 'plugin', version: '2.0.0', status: 'unavailable', reasonCode: 'needsNewer', origin: 'thirdParty', thirdParty: true, publisher: 'b7c8-d9e0-f1a2-b3c4', minCouchHud: '9.0.0', size: 4_100_000, icon: png(300, 'S'), license: 'GPL-3.0-only', capabilities: ['pages'] }, { description: () => t('mock.catSignalDesc'), reason: () => t('mock.catSignalReason', { min: '9.0.0', running: '0.6.0' }) }),
+  cat({ id: 'tidepool', name: 'Tidepool', author: 'dev-clara', kind: 'plugin', version: '0.4.0', status: 'unavailable', reasonCode: 'officialFirst', origin: 'thirdParty', thirdParty: true, extra: true, publisher: '9f8e-7d6c-5b4a-3921', size: 900_000, icon: png(180, 'T'), license: 'MIT', capabilities: ['pages'] }, { description: () => t('mock.plug.tidepoolDesc'), reason: () => t('plugins.state.officialFirstDetail') }),
+  cat({ id: 'harbor', name: 'Harbor', author: 'dev-clara', kind: 'skin', version: '1.0.0', status: 'notInstalled', origin: 'local', extra: true, thirdParty: true, publisher: '9f8e-7d6c-5b4a-3921', size: 520_000, icon: png(200, 'H') }, { description: () => t('mock.plug.harborDesc') }),
+  cat({ id: 'synthwave', name: 'Synthwave', author: 'community', kind: 'skin', version: '1.0.2', status: 'notInstalled', unsigned: true, origin: 'local', size: 640_000, icon: png(310, 'S') }, { description: () => t('mock.catSynthDesc') }),
+  cat({ id: 'broken', author: 'jemand', kind: 'plugin', version: '1.0.0', status: 'unavailable', origin: 'local', license: null }, { name: () => t('mock.catBrokenName'), description: () => t('mock.catBrokenDesc'), reason: () => t('mock.catBrokenReason') })
 ];
-const catalogState = () => ({ entries: structuredClone(catalog), fromCache: false, fetchedAt: Date.now(), error: null, version: '0.3.0' });
+const catalogDetails = {
+  wand: { long: () => t('mock.plug.wandLong'), log: () => t('mock.plug.wandLog'), hue: 265 },
+  lumen: { long: () => t('mock.plug.lumenLong'), log: () => t('mock.plug.lumenLog'), hue: 45 },
+  casehud: { long: () => t('mock.plug.casehudLong'), log: () => t('mock.plug.casehudLog'), hue: 190 },
+  kodi: { long: () => t('mock.plug.kodiLong'), log: () => t('mock.plug.kodiLog'), hue: 20 },
+  nightsky: { long: () => t('mock.plug.nightskyLong'), log: () => t('mock.plug.nightskyLog'), hue: 240 }
+};
+const catalogState = () => ({ entries: structuredClone(catalog), fromCache: false, fetchedAt: Date.now(), error: null, version: '0.6.0' });
 const catalogUpdates = () => structuredClone(catalog.filter((c) => c.status === 'update'));
+// The official catalog is built in and cannot be removed; the others were added after the "I trust this developer" warning.
+const catalogSources = {
+  official: { url: 'https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/index.json', builtIn: true, removable: false },
+  extra: [
+    { url: 'https://plugins.example-dev.net/catalog/index.json', host: 'plugins.example-dev.net', name: 'Example Dev', keyCode: '9f8e-7d6c-5b4a-3921', signed: true, added: '2026-10-20T10:00:00Z' },
+    { url: 'https://catalog.community-hub.org/index.json', host: 'catalog.community-hub.org', name: null, keyCode: null, signed: false, added: '2026-10-22T18:30:00Z' }
+  ],
+  max: 8,
+  warning: lz({}, { title: () => t('plugins.src.warningTitle'), body: () => t('plugins.src.warningBody'), confirm: () => t('plugins.src.trust') })
+};
+// Lumen: a plugin page with tiles, a toggle, a stepper, a choice and a link (what the declarative pages can do).
+const lumen = { scene: 'cinema', on: true, brightness: 70, effect: 'calm', night: false, sleep: 30 };
+const lumenSections = () => [
+  { id: 'scenes', title: t('mock.plug.lumenScenes'), kind: 'tiles' },
+  { id: 'light', title: t('mock.plug.lumenLight'), kind: 'list' },
+  { id: 'more', title: t('mock.plug.lumenMore'), kind: 'list' }
+];
+const lumenScenes = () => [['cinema', t('mock.plug.sceneCinema'), 265, '🎬'], ['gaming', t('mock.plug.sceneGaming'), 150, '🎮'], ['evening', t('mock.plug.sceneEvening'), 20, '🌇'], ['off', t('mock.plug.sceneOff'), 220, '⏻']];
+const lumenRows = (pageId) => (pageId === 'displays' ? [
+  { id: 'night', label: t('mock.plug.nightMode'), icon: '🌙', kind: 'toggle', on: lumen.night, value: lumen.night ? t('plugins.value.on') : t('plugins.value.off') },
+  { id: 'sleep', label: t('mock.plug.sleepAfter'), detail: t('mock.plug.sleepDetail'), icon: '⏱', kind: 'stepper', min: 5, max: 120, step: 5, settleMs: 700, value: `${lumen.sleep} min` }
+] : [
+  ...lumenScenes().map(([id, label, hue, icon]) => ({ id: `scene:${id}`, label, icon, section: 'scenes', image: png(hue, icon, 160, 100), kind: 'action', on: lumen.scene === id, badge: lumen.scene === id ? t('mock.plug.sceneActive') : null })),
+  { id: 'power', label: t('mock.plug.power'), icon: '💡', section: 'light', kind: 'toggle', on: lumen.on, value: lumen.on ? t('plugins.value.on') : t('plugins.value.off') },
+  { id: 'brightness', label: t('mock.plug.brightness'), detail: t('mock.plug.brightnessDetail'), icon: '☀', section: 'light', kind: 'stepper', min: 0, max: 100, step: 5, settleMs: 700, value: `${lumen.brightness} %` },
+  { id: 'effect', label: t('mock.plug.effect'), icon: '✨', section: 'light', kind: 'choice', value: { calm: t('mock.plug.effectCalm'), breathe: t('mock.plug.effectBreathe'), rainbow: t('mock.plug.effectRainbow') }[lumen.effect], options: [{ id: 'calm', label: t('mock.plug.effectCalm') }, { id: 'breathe', label: t('mock.plug.effectBreathe') }, { id: 'rainbow', label: t('mock.plug.effectRainbow') }] },
+  { id: 'displays', label: t('mock.plug.displays'), detail: t('mock.plug.displaysDetail'), icon: '🖥', section: 'more', kind: 'link' }
+]);
+// The preview shows the suggestion once (?suggest): a program is installed and the catalog has a plugin for it.
+let suggestionOpen = new URLSearchParams(location.search).has('suggest');
 const wandRows = () => [
   { id: 'state', label: 'Wand', detail: t('mock.wandFound', { path: 'C:\\Users\\kewe87\\AppData\\Local\\Wand\\Wand.exe' }), icon: '✓', value: t('mock.wandInstalled'), on: true },
   { id: 'open', label: t('mock.wandOpen'), detail: session ? t('mock.wandCheatsFor', { name: session.name }) : t('mock.wandStartsOrFront'), icon: '🪄' }
@@ -240,7 +342,7 @@ const notes = [
   lz({ id: 'n3', source: 'windows', app: demoMode ? 'Chat' : 'Discord', time: Date.now() - 5 * 3_600_000, read: true }, { title: () => t('mock.noteLenaTitle'), body: () => t('mock.noteLenaBody') })
 ];
 // Preview: a WhatsApp message arrives a few seconds after start (not in ?demo, it would cover the screenshots).
-if (!demoMode) setTimeout(() => {
+if (!demoMode && !new URLSearchParams(location.search).has('quiet')) setTimeout(() => {
   const n = { id: 'n4', source: 'windows', app: 'WhatsApp', title: 'Tim', body: t('mock.noteTimBody'), time: Date.now(), read: false };
   notes.unshift(n);
   listeners.notification.forEach((cb) => cb(n));
@@ -331,57 +433,7 @@ let selfUpdate = {
 };
 const setSelfUpdate = (u) => emit('selfUpdate', (selfUpdate = { ...selfUpdate, ...u }));
 const setUpdates = (u) => emit('updates', (updates = { ...updates, ...u }));
-const haNames = {
-  'scene.kino': () => t('mock.haCinema'), 'scene.gaming': () => t('mock.haGamingLight'), 'light.wohnzimmer': () => t('mock.haCeiling'),
-  'light.tv_led': () => t('mock.haTvBacklight'), 'climate.wohnzimmer': () => t('mock.haHeating'), 'sensor.temp': () => t('mock.haTemp'),
-  'sensor.humidity': () => t('mock.haHumidity'), 'sensor.pc_power': () => t('mock.haPcPower'), 'binary_sensor.door': () => t('mock.haDoor')
-};
-const ha = [
-  { id: 'scene.kino', domain: 'scene', name: '', state: 'scening', controllable: true },
-  { id: 'scene.gaming', domain: 'scene', name: '', state: 'scening', controllable: true },
-  { id: 'light.wohnzimmer', domain: 'light', name: '', state: 'on', controllable: true },
-  { id: 'light.tv_led', domain: 'light', name: '', state: 'off', controllable: true },
-  { id: 'switch.subwoofer', domain: 'switch', name: 'Subwoofer', state: 'on', controllable: true },
-  { id: 'media_player.sonos', domain: 'media_player', name: 'Sonos Arc', state: 'playing', controllable: true },
-  { id: 'climate.wohnzimmer', domain: 'climate', name: '', state: 'heat', controllable: false },
-  { id: 'sensor.temp', domain: 'sensor', name: '', state: '21.4', unit: '°C', deviceClass: 'temperature', controllable: false },
-  { id: 'sensor.humidity', domain: 'sensor', name: '', state: '48', unit: '%', deviceClass: 'humidity', controllable: false },
-  { id: 'sensor.pc_power', domain: 'sensor', name: '', state: '412', unit: 'W', deviceClass: 'power', controllable: false },
-  { id: 'binary_sensor.door', domain: 'binary_sensor', name: '', state: 'off', deviceClass: 'door', controllable: false }
-];
-ha.forEach((e) => { if (haNames[e.id]) lz(e, { name: haNames[e.id] }); });
-ha.forEach((e) => { e.area = 'living'; });
-// A big home for the picker: ten rooms, about 1600 entities, mostly sensors (like real installations).
-// i18n-used: mock.haArea.living mock.haArea.kitchen mock.haArea.bedroom mock.haArea.hall mock.haArea.bath mock.haArea.office mock.haArea.kids mock.haArea.basement mock.haArea.garden mock.haArea.garage
-// i18n-used: mock.haKind.light mock.haKind.switch mock.haKind.cover mock.haKind.media_player mock.haKind.fan mock.haKind.lock mock.haKind.climate mock.haKind.script mock.haKind.automation mock.haKind.button mock.haKind.sensor mock.haKind.binary_sensor
-const HA_AREAS = ['living', 'kitchen', 'bedroom', 'hall', 'bath', 'office', 'kids', 'basement', 'garden', 'garage'];
-const HA_KINDS = [['light', 4], ['switch', 4], ['cover', 2], ['media_player', 1], ['fan', 1], ['lock', 1], ['climate', 1], ['script', 2], ['automation', 10], ['button', 6], ['sensor', 110], ['binary_sensor', 18]];
-const haAll = [...ha];
-HA_AREAS.forEach((area, a) => HA_KINDS.forEach(([domain, n]) => {
-  if (domain === 'lock' && !['hall', 'garage'].includes(area)) return;
-  for (let i = 1; i <= n; i++) {
-    const sensor = domain === 'sensor' || domain === 'binary_sensor';
-    const e = {
-      id: `${domain}.${area}_${i}`, domain, area,
-      state: sensor ? (domain === 'sensor' ? String((18 + ((a * 7 + i) % 9) + i / 10).toFixed(1)) : 'off') : (i + a) % 3 ? 'off' : 'on',
-      unit: domain === 'sensor' ? '°C' : undefined, deviceClass: domain === 'sensor' ? 'temperature' : domain === 'binary_sensor' ? 'motion' : undefined,
-      controllable: !sensor && domain !== 'climate' && domain !== 'lock',
-      // Device settings Home Assistant hides (child lock, LED) are no suggestion.
-      hidden: domain === 'switch' && i === 4
-    };
-    const areaKey = `mock.haArea.${area}`;
-    const kindKey = `mock.haKind.${domain}`;
-    lz(e, { name: () => `${t(areaKey)} ${t(kindKey)} ${i}` });
-    haAll.push(e);
-  }
-}));
-const HA_SUGGESTED = ['light', 'switch', 'climate', 'cover', 'media_player', 'scene', 'script', 'fan', 'lock'];
-const haAreaName = (area) => {
-  const key = `mock.haArea.${area}`;
-  return t(key);
-};
-const haView = (e) => ({ ...e, area: e.area ? haAreaName(e.area) : undefined });
-const settings = { padGlyphs: new URLSearchParams(location.search).get('glyphs') ?? 'auto', areas: new URLSearchParams(location.search).get('areas')?.split(',') ?? ['games', 'apps', 'browser', 'news'], language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), homeAssistantUrl: 'http://homeassistant.local:8123', homeAssistantTokenSet: true, homeAssistantPinned: ['scene.kino', 'light.tv_led'], homeAssistantEntities: new URLSearchParams(location.search).has('haempty') ? [] : [...ha.map((e) => e.id), 'light.gartenhaus'], sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, browserHistory: true, guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, artworkCacheBytes: 42_000_000, caseHudInstallAutostart: true, caseHudInstallFps: false, caseHudInstallApi: true, caseHudGamingLease: true, vpnInGuide: true, tvInGuide: true, tvOnWithCouchHud: false, tvOffWithPc: false, bluetoothAutoOn: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: new URLSearchParams(location.search).has('pauseInMenu'), screenshotCombo: true, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
+const settings = { padGlyphs: new URLSearchParams(location.search).get('glyphs') ?? 'auto', areas: new URLSearchParams(location.search).get('areas')?.split(',') ?? ['games', 'apps', 'browser', 'news'], language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, browserHistory: true, favoritesMode: new URLSearchParams(location.search).get('favmode') ?? 'combined', favoritesSites: new URLSearchParams(location.search).has('favsites'), guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, artworkCacheBytes: 42_000_000, tvInGuide: true, tvOnWithCouchHud: false, tvOffWithPc: false, bluetoothAutoOn: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: new URLSearchParams(location.search).has('pauseInMenu'), screenshotCombo: true, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
   aiProvider: 'anthropic', aiModel: '', anthropicKeySet: true, openAiKeySet: false,
   aiModels: { anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'], openai: ['gpt-5', 'gpt-5-mini'] },
   mcpEnabled: true, mcpLan: true, mcpPort: 8765, mcpToken: '3f9c1e7a5b2d48e6a0c4f1b7d9e2a6c8b5f0e3d1a7c9b2e4',
@@ -564,54 +616,6 @@ window.couchhud = {
     { name: q, region: t('mock.regionBavaria'), latitude: 48.1, longitude: 11.6 },
     { name: t('mock.placeEast', { name: q }), region: t('mock.regionSaxony'), latitude: 51.0, longitude: 13.7 }
   ],
-  getHomeEntities: async () => {
-    const byId = new Map(haAll.map((e) => [e.id, e]));
-    const chosen = settings.homeAssistantEntities.map((id) => byId.get(id)).filter(Boolean).map((e) => ({ ...haView(e), selected: true }));
-    const pins = settings.homeAssistantPinned.filter((id) => !settings.homeAssistantEntities.includes(id)).map((id) => byId.get(id)).filter(Boolean).map((e) => ({ ...haView(e), selected: false }));
-    return structuredClone([...chosen, ...pins]);
-  },
-  getHomeCatalog: async () => structuredClone({
-    entities: haAll.map((e) => ({ ...haView(e), suggested: !e.hidden && HA_SUGGESTED.includes(e.domain) })),
-    selected: settings.homeAssistantEntities,
-    areas: true
-  }),
-  testHomeAssistant: async () => haAll.length,
-  // The host opens Home Assistant's sign-in page in the couch browser; the preview signs in after a moment.
-  signInHomeAssistant: async (url) => {
-    log('signInHomeAssistant', url);
-    settings.homeAssistantUrl = url;
-    setTimeout(() => {
-      Object.assign(settings, { homeAssistantSignedIn: true, homeAssistantTokenSet: false });
-      emit('homeAssistantSignIn', { ok: true });
-    }, 1500);
-    return { ok: true };
-  },
-  signOutHomeAssistant: async () => {
-    log('signOutHomeAssistant');
-    settings.homeAssistantSignedIn = false;
-    return { ok: true, revoked: true };
-  },
-  onHomeAssistantSignIn: (cb) => listeners.homeAssistantSignIn.push(cb),
-  setHomeSelection: async (ids) => {
-    const clean = [...new Set((Array.isArray(ids) ? ids : []).filter((id) => typeof id === 'string' && /^[a-z_]+\.[a-z0-9_]+$/.test(id)))].slice(0, 500);
-    settings.homeAssistantEntities = clean;
-    settings.homeAssistantPinned = settings.homeAssistantPinned.filter((id) => clean.includes(id));
-    log('setHomeSelection', clean.length);
-    return clean;
-  },
-  activateHomeEntity: async (id) => {
-    const e = haAll.find((x) => x.id === id);
-    if (['light', 'switch', 'fan'].includes(e.domain)) e.state = e.state === 'on' ? 'off' : 'on';
-    if (e.domain === 'media_player') e.state = e.state === 'playing' ? 'paused' : 'playing';
-    log('activateHomeEntity', id);
-    return null;
-  },
-  pinHomeEntity: async (id) => {
-    const i = settings.homeAssistantPinned.indexOf(id);
-    if (i >= 0) settings.homeAssistantPinned.splice(i, 1);
-    else if (settings.homeAssistantEntities.includes(id)) settings.homeAssistantPinned.push(id);
-    return i < 0 && settings.homeAssistantPinned.includes(id);
-  },
   getStoreInfo: async (id) => ({
     description: '',
     trailers: id.startsWith('steam:') && !demoMode ? ['https://video.cloudflare.steamstatic.com/store_trailers/sample/movie_max.mp4'] : [],
@@ -721,7 +725,6 @@ window.couchhud = {
   getSettings: async () => ({ ...settings, isShell, configPath: 'C:\\Users\\kewe87\\AppData\\Roaming\\CouchHud\\config.json', logPath: 'C:\\Users\\kewe87\\AppData\\Local\\CouchHud\\logs' }),
   setSetting: async (key, value) => {
     if (key === 'steamGridDbApiKey') settings.steamGridDbKeySet = !!value;
-    else if (key === 'homeAssistantToken') settings.homeAssistantTokenSet = !!value;
     else if (key === 'weatherLocation') settings.weatherPlace = value;
     else if (key === 'anthropicApiKey') settings.anthropicKeySet = !!value;
     else if (key === 'openAiApiKey') settings.openAiKeySet = !!value;
@@ -731,7 +734,6 @@ window.couchhud = {
     if (key === 'guideTapInGame' && value) settings.gameBarButton = false;
     if (key === 'gameBarButton' && value) settings.guideTapInGame = false;
     if (key === 'bluetoothAutoOn') btAutoOn = !!value;
-    if (key === 'caseHudInstallApi') setMockInstallApi(value);
     log('setSetting', key, value);
     return null;
   },
@@ -917,10 +919,63 @@ window.couchhud = {
   toggleFavorite: async (id) => {
     const item = library.find((i) => i.id === id);
     item.favorite = !item.favorite;
+    favoriteOrder = favoriteOrder.filter((x) => x !== id);
+    if (item.favorite) favoriteOrder.push(id);
     return item.favorite;
   },
-  systemInfo: async () => ({ platform: 'browser', version: 'preview', dev: true, nativeInput: false, padKind: new URLSearchParams(location.search).get('pad') === 'ps' ? 'playstation' : 'xbox', padGlyphs: settings.padGlyphs, isShell, sounds: true, skin, language: settings.language, homeAssistant: true, weather: true, trailerPreviews: true, assistant: !!settings.aiProvider, uiHdr: settings.uiHdr, hdrOn: new URLSearchParams(location.search).has('hdr'), soundVolume: settings.soundVolume, soundSet: settings.soundSet, audioMode: settings.audioMode, musicVolume: settings.musicVolume, integrationMode: settings.integrationMode, acceptedTerms: settings.acceptedTerms, setupWizardDone: settings.setupWizardDone, areas: [...settings.areas], screensaverMinutes: settings.screensaverMinutes, screensaverStyle: settings.screensaverStyle, displayOffMinutes: settings.displayOffMinutes, pixelShift: settings.pixelShift, reduceMotion: settings.reduceMotion, pointer: settings.pointer, mouseUnlocked: settings.mouseUnlocked }),
-  listSkins: async () => [],
+  toggleFavoriteSite: async (url) => {
+    const id = `site:${url}`;
+    if (favoriteOrder.includes(id)) {
+      favoriteOrder = favoriteOrder.filter((x) => x !== id);
+      return false;
+    }
+    if (!settings.favoritesSites || !settings.areas.includes('browser')) throw new Error(t('mock.favoriteSitesOff'));
+    if (!browser.bookmarks.some((b) => b.url === url)) throw new Error(t('mock.notBookmark'));
+    favoriteOrder.push(id);
+    return true;
+  },
+  // The host's arrangement (Core FavoritesShelf): favorites in the order marked, recent by last use, areas and websites applied.
+  getFavorites: async () => {
+    const mode = ['favorites', 'recent', 'combined'].includes(settings.favoritesMode) ? settings.favoritesMode : 'combined';
+    const areas = settings.areas;
+    const shown = (i) => !i.hidden && areas.includes(i.type === 'game' ? 'games' : 'apps');
+    const byId = new Map(library.filter(shown).map((i) => [i.id, i]));
+    const entries = [];
+    if (mode !== 'recent') {
+      for (const id of favoriteOrder) if (byId.has(id)) entries.push({ kind: 'item', id, name: byId.get(id).name, favorite: true });
+      if (settings.favoritesSites && areas.includes('browser')) {
+        for (const id of favoriteOrder) {
+          const mark = id.startsWith('site:') && browser.bookmarks.find((b) => `site:${b.url}` === id);
+          if (mark) entries.push({ kind: 'site', id, name: mark.name, url: mark.url, favorite: true });
+        }
+      }
+    }
+    if (mode !== 'favorites') {
+      library.filter((i) => byId.has(i.id) && i.lastPlayed > 0 && (mode === 'recent' || !favoriteOrder.includes(i.id)))
+        .sort((a, b) => b.lastPlayed - a.lastPlayed).slice(0, 24)
+        .forEach((i) => entries.push({ kind: 'item', id: i.id, name: i.name, favorite: favoriteOrder.includes(i.id) }));
+    }
+    return { mode, sites: !!settings.favoritesSites && areas.includes('browser'), entries, blocked: [] };
+  },
+  systemInfo: async () => ({ platform: 'browser', version: 'preview', dev: true, nativeInput: false, padKind: new URLSearchParams(location.search).get('pad') === 'ps' ? 'playstation' : 'xbox', padGlyphs: settings.padGlyphs, isShell, sounds: true, skin, skinRestore: new URLSearchParams(location.search).get('skinRestore') ? { skin, state: new URLSearchParams(location.search).get('skinRestore') } : null, language: settings.language, weather: true, trailerPreviews: true, assistant: !!settings.aiProvider, uiHdr: settings.uiHdr, hdrOn: new URLSearchParams(location.search).has('hdr'), soundVolume: settings.soundVolume, soundSet: settings.soundSet, audioMode: settings.audioMode, musicVolume: settings.musicVolume, integrationMode: settings.integrationMode, acceptedTerms: settings.acceptedTerms, setupWizardDone: settings.setupWizardDone, areas: [...settings.areas], screensaverMinutes: settings.screensaverMinutes, screensaverStyle: settings.screensaverStyle, displayOffMinutes: settings.displayOffMinutes, pixelShift: settings.pixelShift, reduceMotion: settings.reduceMotion, pointer: settings.pointer, mouseUnlocked: settings.mouseUnlocked }),
+  // Skins the preview server serves from CATALOG_SKINS (scripts/preview-server.js), shaped like the host's list; none without it.
+  listSkins: async () => {
+    try {
+      const found = await (await fetch('/__catalog-skins/index.json')).json();
+      const pick = (v, fallback) => (typeof v === 'string' ? v : v?.[settings.language] ?? v?.en ?? v?.de ?? fallback);
+      return found.map(({ folder, manifest }) => ({
+        id: `user:${folder}`,
+        name: pick(manifest.name, folder),
+        description: pick(manifest.description, ''),
+        glyphs: manifest.glyphs ?? {},
+        css: `/__catalog-skins/${folder}/skin.css`,
+        sounds: {},
+        soundSet: manifest.soundSet ?? null
+      }));
+    } catch {
+      return [];
+    }
+  },
   setSkin: async (id) => (skin = id),
   setShell: async (install) => {
     await sleep(400);
@@ -944,11 +999,10 @@ window.couchhud = {
   onScreenshot: (cb) => listeners.screenshot.push(cb),
   onUpdates: (cb) => listeners.updates.push(cb),
   onCatalogUpdates: (cb) => listeners.catalogUpdates.push(cb),
+  onPluginSuggestionsReady: (cb) => listeners.pluginSuggestionsReady.push(cb),
   onDownloads: (cb) => listeners.downloads.push(cb),
   onUninstalledArt: (cb) => listeners.uninstalledArt.push(cb),
   onSelfUpdate: (cb) => listeners.selfUpdate.push(cb),
-  ...caseHudMock(),
-  ...vpnMock(),
   ...tvMock(),
   onAssistant: (cb) => listeners.assistant.push(cb),
   onRemote: (cb) => listeners.remote.push(cb),
@@ -1031,21 +1085,129 @@ window.couchhud = {
     { url: fakeShot('Hollow Knight', 250), name: 'hk_boss', source: 'Steam', video: false, time: Date.now() - 9 * 86_400_000, size: 1_100_000 }
   ],
   getPlugins: async () => structuredClone(plugins),
-  approvePlugin: async (folder) => ((plugins.find((p) => p.folder === folder).needsApproval = false), structuredClone(plugins)),
+  getPluginGate: async (change, _origin, plugin, fn) => {
+    if (change === 'use') {
+      const level = fnList(plugin).find((f) => f.id === fn)?.level ?? 'admin';
+      return { refused: level === 'off' ? t('plugin.fn.off') : level === 'admin' && !parentalUnlocked() ? t('mock.unlockFirst') : null };
+    }
+    return { refused: parentalUnlocked() ? null : t('mock.unlockFirst') };
+  },
+  endPluginVisit: async () => true,
+  setPluginFunctionLevel: async (plugin, fn, level) => {
+    if (!parentalUnlocked()) throw new Error(t('mock.unlockFirst'));
+    if (!fnDefs[plugin]?.some(([id]) => id === fn) || !['admin', 'restricted', 'off'].includes(level)) throw new Error(t('plugin.fn.unknown'));
+    (fnLevels[plugin] ??= {})[fn] = level;
+    return structuredClone(plugins);
+  },
+  approvePlugin: async (folder, _hash) => ((plugins.find((p) => p.folder === folder).needsApproval = false), structuredClone(plugins)),
   setPluginEnabled: async (folder, enabled) => ((plugins.find((p) => p.folder === folder).enabled = enabled), structuredClone(plugins)),
   setPluginSetting: async (id, key, value) => ((plugins.find((p) => p.id === id).settings.find((s) => s.key === key).value = value), structuredClone(plugins)),
-  getPluginPage: async () => ({ title: 'Wand', description: t('mock.wandPageDesc'), rows: wandRows() }),
-  activatePluginRow: async (id, page, row) => ({ message: row === 'open' ? t('mock.wandOpening') : null, rows: wandRows() }),
+  uninstallPlugin: async (folder) => {
+    const at = plugins.findIndex((p) => p.folder === folder);
+    if (at < 0) throw new Error(t('mock.notInCatalog'));
+    const [gone] = plugins.splice(at, 1);
+    delete fnLevels[gone.id];
+    const entry = catalog.find((c) => c.id === gone.id);
+    if (entry) Object.assign(entry, { status: 'notInstalled', installedVersion: null });
+    emit('catalogUpdates', catalogUpdates());
+    return { gone: true, plugins: structuredClone(plugins) };
+  },
+  acceptRevokedPlugin: async (folder) => ((plugins.find((p) => p.folder === folder).revoked = false), structuredClone(plugins)),
+  // One plugin tab (Lumen, capability "tabs"): ?notab leaves it out, ?tabglyph shows a built-in glyph instead of the PNG.
+  getPluginTabs: async () => {
+    const q = new URLSearchParams(location.search);
+    if (q.has('notab')) return [];
+    const glyph = q.has('tabglyph');
+    // ?hatab: the Home Assistant plugin provides its own Smart Home tab (the plugin's own tab, as the host lists it).
+    const haTab = q.has('hatab')
+      ? [{ plugin: 'homeassistant', pluginName: 'Home Assistant', id: 'home', page: 'home', title: 'Smart Home', pageTitle: 'Smart Home', pageDescription: null,
+        area: 'always', glyph: '🏠', image: null, origin: 'firstParty' }]
+      : [];
+    const first = { plugin: 'lumen', pluginName: 'Lumen', id: 'lights', page: 'main', title: 'Lumen', pageTitle: 'Lumen', pageDescription: t('mock.plug.lumenPageDesc'),
+      area: 'always', glyph: glyph ? '💡' : null, image: glyph ? null : png(48, '', 48, 48), origin: 'firstParty' };
+    // ?tabs=6: six plugin tabs (two per plugin), to see how the bar holds them (no icons then).
+    const more = ['Garage', 'Wetter', 'Musik', 'Kamera', 'Energie'].slice(0, Math.max(0, Math.min(5, (Number(q.get('tabs')) || 1) - 1)));
+    const owners = ['lumen', 'wand', 'wand', 'retrobar', 'retrobar'];
+    return [...haTab, first, ...more.map((title, i) => ({ plugin: owners[i], pluginName: owners[i], id: `t${i}`, page: 'status', title, pageTitle: title, pageDescription: null,
+      area: 'apps', glyph: null, image: png(60 + i * 40, '', 48, 48), origin: owners[i] === 'retrobar' ? 'other' : 'firstParty' }))];
+  },
+  onPluginTabs: noop,
+  getPluginPage: async (id, page) => (id === 'homeassistant'
+    ? { title: 'Smart Home', description: null, origin: 'FirstParty', sections: [{ id: 'devices', title: null, kind: 'tiles' }, { id: 'manage', title: null, kind: 'list' }], rows: [
+      { id: 'light.sofa', label: 'Sofa', icon: '💡', detail: 'On', section: 'devices', kind: 'toggle', on: true, allowedWhileLocked: true },
+      { id: 'cover.garage', label: 'Garage', icon: '🪟', detail: 'Closed', section: 'devices', kind: 'toggle', allowedWhileLocked: true },
+      { id: 'connection', label: 'Connection', icon: '🔗', section: 'manage', kind: 'link', page: 'connection' }] }
+    : id === 'lumen'
+    ? { title: page === 'displays' ? t('mock.plug.displays') : 'Lumen', description: t('mock.plug.lumenPageDesc'), rows: lumenRows(page), sections: page === 'displays' ? [] : lumenSections(), origin: 'FirstParty' }
+    : { title: 'Wand', description: t('mock.wandPageDesc'), rows: wandRows(), sections: [], origin: 'FirstParty' }),
+  activatePluginRow: async (id, page, row) => {
+    if (id !== 'lumen') return { message: row === 'open' ? t('mock.wandOpening') : null, navigate: null, rows: wandRows() };
+    if (row === 'displays') return { message: null, navigate: { id: 'displays', title: t('mock.plug.displays'), description: t('mock.plug.displaysDetail') }, rows: lumenRows(page) };
+    if (row.startsWith('scene:')) lumen.scene = row.slice(6);
+    if (row === 'power') lumen.on = !lumen.on;
+    if (row === 'night') lumen.night = !lumen.night;
+    return { message: row.startsWith('scene:') ? t('mock.plug.sceneSet', { name: lumenScenes().find(([sid]) => `scene:${sid}` === row)?.[1] }) : null, navigate: null, rows: lumenRows(page) };
+  },
+  changePluginRow: async (id, page, row, value) => {
+    if (row === 'brightness') lumen.brightness = Number(value);
+    if (row === 'sleep') lumen.sleep = Number(value);
+    if (row === 'effect') lumen.effect = value;
+    return { message: null, rows: lumenRows(page) };
+  },
+  onPluginPageChanged: (cb) => listeners.pluginPageChanged.push(cb),
+  getPluginSuggestions: async () => (suggestionOpen ? [{ entryId: 'casehud', name: 'CaseHUD', reason: 'program', text: t('mock.plug.suggestText') }] : []),
+  dismissPluginSuggestion: async () => {
+    suggestionOpen = false;
+  },
   getQuickActions: async () => [{ plugin: 'wand', id: 'open', label: t('mock.wandQuickLabel'), icon: '🪄', detail: session ? t('mock.wandQuickFor', { name: session.name }) : t('mock.wandQuickOpens') }],
   runQuickAction: async () => t('mock.wandOpening'),
   installPackage: async (path) => path.split('\\').pop().replace('.zip', ''),
   getCatalog: async () => (await new Promise((r) => setTimeout(r, 600)), catalogState()),
   getCatalogUpdates: async () => catalogUpdates(),
+  getCatalogDetail: async (id, kind) => {
+    const c = catalog.find((x) => x.id === id && x.kind === kind);
+    if (!c) throw new Error(t('mock.notInCatalog'));
+    const d = catalogDetails[id];
+    return structuredClone({
+      row: c,
+      longDescription: d?.long() ?? null,
+      screenshots: d ? shots(d.hue) : [],
+      changelog: d?.log() ?? null,
+      changelogUrl: null,
+      warning: c.thirdParty ? t('plugin.thirdParty.short') : null
+    });
+  },
+  getCatalogSources: async () => structuredClone(catalogSources),
+  // The host's checks, in short: expert mode, the trust confirmation, https, no private addresses, no look-alike names, no duplicates, at most 8.
+  addCatalogSource: async (url, _key, name, acknowledgedTrust) => {
+    if (!settings.expertMode) throw new Error('catalog.source.expert');
+    if (acknowledgedTrust !== true) throw new Error('catalog.source.ackNeeded');
+    if (!/^https:\/\//i.test(url)) throw new Error('catalog.source.httpsOnly');
+    const host = new URL(url).hostname;
+    if (/^(localhost|127\.|10\.|192\.168\.)/i.test(host) || !host.includes('.')) throw new Error('catalog.source.privateHost');
+    if (/couchhud|official/i.test(`${host}${name ?? ''}`)) throw new Error('catalog.source.nameImitates');
+    if (url === catalogSources.official.url) throw new Error('catalog.source.isOfficial');
+    if (catalogSources.extra.some((s) => s.url === url)) throw new Error('catalog.source.twice');
+    if (catalogSources.extra.length >= catalogSources.max) throw new Error('catalog.source.tooMany');
+    catalogSources.extra.push({ url, host, name: name ?? null, keyCode: _key ? '1a2b-3c4d-5e6f-7a8b' : null, signed: !!_key, added: new Date().toISOString() });
+    return structuredClone(catalogSources);
+  },
+  removeCatalogSource: async (url) => {
+    if (url === catalogSources.official.url) throw new Error('catalog.source.officialStays');
+    if (!catalogSources.extra.some((s) => s.url === url)) throw new Error('catalog.source.unknown');
+    catalogSources.extra = catalogSources.extra.filter((s) => s.url !== url);
+    return structuredClone(catalogSources);
+  },
   installCatalogEntry: async (id, kind) => {
     await new Promise((r) => setTimeout(r, 1200));
     const c = catalog.find((x) => x.id === id && x.kind === kind);
     if (!c || c.status === 'unavailable') throw new Error(c?.reason ?? t('mock.notInCatalog'));
     Object.assign(c, { status: 'installed', installedVersion: c.version, restartPending: c.kind === 'plugin' });
+    if (c.kind === 'plugin') {
+      const have = plugins.find((p) => p.id === c.id);
+      if (have) have.version = c.version;
+      else plugins.push(lz({ folder: c.name, id: c.id, name: c.name, version: c.version, author: c.author, homepage: null, enabled: true, loaded: false, error: null, userInstalled: true, origin: c.origin, publisher: c.publisher, revoked: false, revokedReason: null, capabilities: [...c.capabilities], pages: [], settings: [], tools: [] }, { description: () => c.description }));
+    }
     emit('catalogUpdates', catalogUpdates());
     return {
       message: c.kind === 'skin' ? t('mock.skinInstalled', { name: c.name, version: c.version }) : t('mock.pluginInstalled', { name: c.name, version: c.version }),
@@ -1128,6 +1290,7 @@ window.couchhud = {
   revokeRemoteDevice: async () => null,
   allowFirewall: async () => null,
   onSkin: noop,
+  onSkinRestore: noop,
   onHdr: noop,
   onSettings: noop,
   onAreas: noop,

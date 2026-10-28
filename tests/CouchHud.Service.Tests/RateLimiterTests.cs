@@ -118,8 +118,8 @@ public class RateLimiterTests
         var clock = new FakeClock();
         var limiter = new RateLimiter(clock);
         for (var i = 0; i < 6; i++) Assert.Equal(RateVerdict.Allow, limiter.TryAcquire(Sid, Operation.InstallCouchHudUpdate).Verdict);
-        Assert.Equal(RateVerdict.RateLimited, limiter.TryAcquire(Sid, Operation.InstallCaseHud).Verdict);
+        Assert.Equal(RateVerdict.RateLimited, limiter.TryAcquire(Sid, Operation.InstallCouchHudUpdate).Verdict);
         clock.Advance(TimeSpan.FromMinutes(10));
-        Assert.Equal(RateVerdict.Allow, limiter.TryAcquire(Sid, Operation.InstallCaseHud).Verdict);
+        Assert.Equal(RateVerdict.Allow, limiter.TryAcquire(Sid, Operation.InstallCouchHudUpdate).Verdict);
     }
 }

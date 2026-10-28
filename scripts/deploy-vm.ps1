@@ -33,8 +33,6 @@ if (-not $NoBuild) {
     if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
     dotnet publish "$root\src\CouchHud.Shell\CouchHud.Shell.csproj" -c Release -r win-x64 --self-contained true -o $publish --nologo -v quiet
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    dotnet publish "$root\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.csproj" -c Release -o "$publish\plugins\CouchHud.Plugin.Wand" --nologo -v quiet
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if ($Service) {
         Write-Host '› dotnet publish (service)'
         # As in .github/workflows/build.yml: single file, symbols embedded, the folder holds exactly the one exe.

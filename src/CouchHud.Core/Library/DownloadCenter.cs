@@ -1,14 +1,13 @@
 namespace CouchHud.Core.Library;
 
-/// <summary>What is loading: a game, an update of Windows or of an app, CouchHUD itself, a plugin or skin, CaseHUD.</summary>
+/// <summary>What is loading: a game, an update of Windows or of an app, CouchHUD itself, a plugin or skin.</summary>
 public enum DownloadKind
 {
     Game,
     Windows,
     App,
     CouchHud,
-    Plugin,
-    CaseHud
+    Plugin
 }
 
 public enum DownloadState
@@ -58,7 +57,7 @@ public sealed record DownloadSummary(int Active, int Finished, double? Progress)
 /// <list type="bullet">
 /// <item>snapshots that are polled from a client (Steam's manifests): a line that disappears after it was seen loading, and whose game
 /// is installed now, is finished; one that disappears otherwise was cancelled and simply goes;</item>
-/// <item>activities CouchHUD runs itself (Windows Update, winget, its own update, a plugin, CaseHUD): begun, reported and ended by the
+/// <item>activities CouchHUD runs itself (Windows Update, winget, its own update, a plugin): begun, reported and ended by the
 /// code that runs them;</item>
 /// <item>installs the user asked for in a client (a store link): waiting until the client shows them, or, for a client without readable
 /// progress, "runs in the client" until the game is installed.</item>

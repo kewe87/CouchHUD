@@ -53,6 +53,9 @@ public sealed class ForegroundGuard : IDisposable
     // The mouse mode of a launcher that was opened unlocked ends when the lock closes again (see AfterMinimizeAsync).
     private readonly Action? _endMouseMode;
 
+    /// <summary>Programs first-party plugins restrict on the locked couch (lock.restrict), by process id.</summary>
+    public Func<int, bool>? PluginRestrictions { get; init; }
+
     public ForegroundGuard(Func<ForegroundContext> context, ForegroundState state, Action bringHud, Action<string, string> needsAttention, Action<string> log,
         Func<IReadOnlyCollection<int>>? gamePids = null, Action? endMouseMode = null)
     {
@@ -184,7 +187,7 @@ public sealed class ForegroundGuard : IDisposable
             WebViewGenuine = () => IsGenuineWebView(pid),
             // Only counts while the parents' release is on (ForegroundContext.AppsReleased).
             AppTree = () => OwnLaunches.Contains(pid),
-            CaseHud = () => CaseHudManager.IsCaseHudProcess(pid)
+            PluginRestricted = () => PluginRestrictions?.Invoke(pid) == true
         };
         var decision = LockedForeground.Decide(context, window);
         if (!decision.Suppress)

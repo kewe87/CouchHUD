@@ -142,7 +142,6 @@ public class WindowsUpdateJobTests
         Assert.Equal(RateBucket.WindowsUpdates, RateLimiter.BucketFor(Operation.InstallWindowsUpdates));
         Assert.Equal(RateBucket.UpdateSearch, RateLimiter.BucketFor(Operation.SearchWindowsUpdates));
         Assert.Equal(RateBucket.Setups, RateLimiter.BucketFor(Operation.InstallCouchHudUpdate));
-        Assert.Equal(RateBucket.Setups, RateLimiter.BucketFor(Operation.InstallCaseHud));
     }
 
     [Fact]

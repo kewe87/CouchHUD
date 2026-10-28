@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "serial": 2,
   "name": "CouchHUD Katalog",
   "entries": [
     {
@@ -7,17 +8,131 @@
       "folder": "CouchHud.Plugin.Wand",
       "name": "Wand",
       "type": "plugin",
-      "version": "1.0.0",
-      "minCouchHud": "0.3.0",
+      "version": "1.1.0",
+      "minCouchHud": "0.6.0",
       "author": "kewe87",
       "description": {
-        "de": "Cheats und Mods für deine Spiele über Wand (früher WeMod)",
-        "en": "Cheats and mods for your games through Wand (formerly WeMod)"
+        "de": "Cheats und Mods für deine Spiele über Wand (früher WeMod), mit Eintrag im Guide-Menü und Assistenten-Werkzeug",
+        "en": "Cheats and mods for your games through Wand (formerly WeMod), with a guide menu entry and an assistant tool"
       },
-      "homepage": "https://github.com/kewe87/couchhud/tree/master/plugins/CouchHud.Plugin.Wand",
-      "icon": "https://raw.githubusercontent.com/kewe87/couchhud-catalog/main/icons/wand.png",
-      "download": "https://github.com/kewe87/couchhud-catalog/releases/download/wand-1.0.0/CouchHud.Plugin.Wand-1.0.0.zip",
-      "sha256": "8c9dcd14119d57ff21856d24ee4a5b25852321c8b8ce77fe89f26280117d7dd6"
+      "homepage": "https://github.com/kewe87/CouchHUD/tree/master/plugins/CouchHud.Plugin.Wand",
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/wand.png",
+      "iconSha256": "a1080a42220783ec2e1db960d6eaeea557aa7476d1b7fcdd75de5a669828fb6e",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/wand-1.1.0/CouchHud.Plugin.Wand-1.1.0.zip",
+      "sha256": "b1551753953cb423908abcd7cb077626f4ffa6a3ff7164f836cde7930a42e9ef",
+      "license": "GPL-3.0-or-later",
+      "capabilities": [
+        "pages",
+        "quickActions",
+        "assistant",
+        "browser",
+        "process"
+      ],
+      "statement": "eyJpZCI6IndhbmQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uV2FuZCIsInZlcnNpb24iOiIxLjEuMCIsInNoYTI1NiI6ImIxNTUxNzUzOTUzY2I0MjM5MDhhYmNkN2NiMDc3NjI2ZjRmZmE2YTNmZjcxNjRmODM2Y2RlNzkzMGE0MmU5ZWYiLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC42LjAiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJxdWlja0FjdGlvbnMiLCJhc3Npc3RhbnQiLCJicm93c2VyIiwicHJvY2VzcyJdLCJwdWJsaXNoZXJLZXkiOiIyNDdiYmE2Mjg0OWRkZmVhYjg3NDlhMzg0ODg3OTE4MDdiZmZhMzNjNzIzNDdlYTIwOTMxODcwZGJiYjc3MDlmIiwibGljZW5zZSI6IkdQTC0zLjAtb3ItbGF0ZXIiLCJhdXRob3IiOiJrZXdlODciLCJuYW1lIjoiV2FuZCIsInN1bW1hcnkiOiJDaGVhdHMgYW5kIG1vZHMgZm9yIHlvdXIgZ2FtZXMgdGhyb3VnaCBXYW5kIChmb3JtZXJseSBXZU1vZCksIHdpdGggYSBndWlkZSBtZW51IGVudHJ5IGFuZCBhbiBhc3Npc3RhbnQgdG9vbCIsImljb24iOnsic2hhMjU2IjoiYTEwODBhNDIyMjA3ODNlYzJlMWRiOTYwZDZlYWVlYTU1N2FhNzQ3NmQxYjdmY2RkNzVkZTVhNjY5ODI4ZmI2ZSIsImJ5dGVzIjo3MTcyfSwic2l6ZSI6MTY0NDB9",
+      "signature": "CPQVgPJtjT+/dARVEOEhDB05vhR5fY1BEXhkKOR1OH0Fe2Xm2yE8MnZ30ASDa+o2toLrmKYHy4n+jI7u02SwsA=="
+    },
+    {
+      "id": "homeassistant",
+      "folder": "CouchHud.Plugin.HomeAssistant",
+      "name": "Home Assistant",
+      "type": "plugin",
+      "version": "1.0.0",
+      "minCouchHud": "0.6.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Lichter, Szenen und Sensoren aus Home Assistant am Fernseher schalten, mit Anmeldung über Home Assistant",
+        "en": "Switch lights, scenes and read sensors from Home Assistant on the TV, with sign-in through Home Assistant"
+      },
+      "license": "GPL-3.0-only",
+      "capabilities": [
+        "pages",
+        "tabs",
+        "quickActions",
+        "assistant",
+        "notify",
+        "browser.signin",
+        "network:internet"
+      ],
+      "suggestWhen": {
+        "feature": "homeAssistant"
+      },
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/homeassistant.png",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/homeassistant-1.0.0/CouchHud.Plugin.HomeAssistant-1.0.0.zip",
+      "sha256": "f3e86c508b47d5b01d363776d3e4385cb59d6758584ff50656557ea0567c1dd0",
+      "statement": "eyJpZCI6ImhvbWVhc3Npc3RhbnQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uSG9tZUFzc2lzdGFudCIsInZlcnNpb24iOiIxLjAuMCIsInNoYTI1NiI6ImYzZTg2YzUwOGI0N2Q1YjAxZDM2Mzc3NmQzZTQzODVjYjU5ZDY3NTg1ODRmZjUwNjU2NTU3ZWEwNTY3YzFkZDAiLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC42LjAiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJ0YWJzIiwicXVpY2tBY3Rpb25zIiwiYXNzaXN0YW50Iiwibm90aWZ5IiwiYnJvd3Nlci5zaWduaW4iLCJuZXR3b3JrOmludGVybmV0Il0sInB1Ymxpc2hlcktleSI6IjI0N2JiYTYyODQ5ZGRmZWFiODc0OWEzODQ4ODc5MTgwN2JmZmEzM2M3MjM0N2VhMjA5MzE4NzBkYmJiNzcwOWYiLCJsaWNlbnNlIjoiR1BMLTMuMC1vbmx5IiwiYXV0aG9yIjoia2V3ZTg3IiwibmFtZSI6IkhvbWUgQXNzaXN0YW50Iiwic3VtbWFyeSI6IkxpZ2h0cywgc2NlbmVzIGFuZCBzZW5zb3JzIGZyb20gSG9tZSBBc3Npc3RhbnQgb24gdGhlIFRWLCB3aXRoIHNpZ24taW4gdGhyb3VnaCBIb21lIEFzc2lzdGFudCwgZ3VpZGUgbWVudSBlbnRyaWVzIGFuZCBhc3Npc3RhbnQgdG9vbHMiLCJpY29uIjp7InNoYTI1NiI6Ijc1OGU2YjJjNTM3N2RkZTQ1MjA2OTdlMzNiZDQyNGJjM2Y2ZWJkMjk3MjczMTgyNGU0ZWQyMTEyMDg0MDRlZWIiLCJieXRlcyI6MzkzMjJ9LCJzaXplIjo5OTUzOH0=",
+      "signature": "c+IM4cMKSGsA7MmK9HXd6zyxI7mfoJTfuMNUOc9r6dfPYAmtzmXD2F3ceMu+7qW5OXxkvFMISsoXfx9icZrjZQ=="
+    },
+    {
+      "id": "casehud",
+      "folder": "CouchHud.Plugin.CaseHud",
+      "name": "CaseHUD",
+      "type": "plugin",
+      "version": "1.0.0",
+      "minCouchHud": "0.6.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Schaltet die LCDs in Lüftern und Pumpen von CaseHUD: Szenen, Helligkeit, Beleuchtung, Automatik",
+        "en": "Switch and operate the LCDs in your fans and pumps through CaseHUD: scenes, brightness, lighting, automation"
+      },
+      "longDescription": {
+        "de": "Bedient CaseHUD vom Sofa aus: Szenen und Stile wählen, Helligkeit, Modus und Farbschema jedes Displays, Beleuchtung, Automatik und Szenenwechsel ein- und ausschalten, Displays finden. Designs, Effekte und Geräte stellst du in CaseHUD am PC ein (\"Am PC öffnen\"). Das Plugin spricht nur mit CaseHUD auf diesem PC; für die erste Installation lädt es die signierte Version von GitHub, das Aktualisieren erledigt CaseHUD selbst.",
+        "en": "Operates CaseHUD from the couch: pick scenes and styles, set the brightness, mode and colour scheme of each display, switch lighting, automation and scene rotation on and off, find the displays. Designs, effects and devices are set up in CaseHUD on the PC (\"Open on the PC\"). The plugin only talks to CaseHUD on this PC; for the first installation it downloads the signed version from GitHub, updating is done by CaseHUD itself."
+      },
+      "license": "GPL-3.0-only",
+      "capabilities": [
+        "pages",
+        "quickActions",
+        "downloads",
+        "setup.run",
+        "lock.restrict",
+        "startup.args",
+        "process",
+        "registry",
+        "native",
+        "network:loopback",
+        "network:internet"
+      ],
+      "suggestWhen": {
+        "uninstallEntry": "CaseHUD"
+      },
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/casehud.png",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/casehud-1.0.0/CouchHud.Plugin.CaseHud-1.0.0.zip",
+      "sha256": "c3072c39a89552613c598a0e7de58e01cffcdafc504f744237c747ddba404447",
+      "statement": "eyJpZCI6ImNhc2VodWQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uQ2FzZUh1ZCIsInZlcnNpb24iOiIxLjAuMCIsInNoYTI1NiI6ImMzMDcyYzM5YTg5NTUyNjEzYzU5OGEwZTdkZTU4ZTAxY2ZmY2RhZmM1MDRmNzQ0MjM3Yzc0N2RkYmE0MDQ0NDciLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC42LjAiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJxdWlja0FjdGlvbnMiLCJkb3dubG9hZHMiLCJzZXR1cC5ydW4iLCJsb2NrLnJlc3RyaWN0Iiwic3RhcnR1cC5hcmdzIiwicHJvY2VzcyIsInJlZ2lzdHJ5IiwibmF0aXZlIiwibmV0d29yazpsb29wYmFjayIsIm5ldHdvcms6aW50ZXJuZXQiXSwicHVibGlzaGVyS2V5IjoiMjQ3YmJhNjI4NDlkZGZlYWI4NzQ5YTM4NDg4NzkxODA3YmZmYTMzYzcyMzQ3ZWEyMDkzMTg3MGRiYmI3NzA5ZiIsImxpY2Vuc2UiOiJHUEwtMy4wLW9ubHkiLCJhdXRob3IiOiJrZXdlODciLCJuYW1lIjoiQ2FzZUhVRCIsInN1bW1hcnkiOiJTd2l0Y2ggYW5kIG9wZXJhdGUgdGhlIExDRHMgaW4geW91ciBmYW5zIGFuZCBwdW1wcyB0aHJvdWdoIENhc2VIVUQ6IHNjZW5lcywgYnJpZ2h0bmVzcywgbGlnaHRpbmcsIGF1dG9tYXRpb24sIHdpdGggZ3VpZGUgbWVudSBlbnRyaWVzIiwiaWNvbiI6eyJzaGEyNTYiOiIxYTM1ZDU1MDM0YzE2ZmNmZWJmZDMwODZjOThiMTgxMmQwMmQ3YWE2OTI0MjI3NTI5MTBmNmY3Y2RkNGI2MjNmIiwiYnl0ZXMiOjI3OTk2fSwic2l6ZSI6MTUyNjMxfQ==",
+      "signature": "D8Bag1cZTlEyHY0rhss7wNUoaE8Tq2Vh1mjkmJRMFOmhOGQ6TYLJcipZ0abE5OCatiIR0lqR3QBYeVhuze81tg=="
+    },
+    {
+      "id": "vpn",
+      "folder": "CouchHud.Plugin.Vpn",
+      "name": "VPN",
+      "type": "plugin",
+      "version": "1.0.0",
+      "minCouchHud": "0.6.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Schaltet das VPN vom Sofa aus: Status sehen, verbinden, trennen und ein Land wählen (NordVPN), mit Einträgen im Guide-Menü",
+        "en": "Switch the VPN from the couch: see the status, connect, disconnect and choose a country (NordVPN), with guide menu entries"
+      },
+      "longDescription": {
+        "de": "Bedient die auf dem PC installierte NordVPN-App vom Sofa aus: Status sehen, Schnellverbindung, mit einem Land aus der Liste verbinden, trennen, dazu ein Eintrag im Guide-Menü. Das Plugin ist kein VPN-Client und kennt keine Zugangsdaten; angemeldet wird nur in der NordVPN-App. Es fragt keinen Dienst nach deiner Adresse: der Status kommt vom VPN-Adapter dieses PCs, und die App wird nur aus dem Programme-Ordner gestartet.",
+        "en": "Operates the NordVPN app installed on the PC from the couch: see the status, quick connect, connect to a country from the list, disconnect, with an entry in the guide menu. The plugin is no VPN client and knows no credentials; signing in only works in the NordVPN app. It asks no service for your address: the status comes from this PC's VPN adapter, and the app is only started from the Program Files folder."
+      },
+      "license": "GPL-3.0-only",
+      "capabilities": [
+        "pages",
+        "quickActions",
+        "process",
+        "registry",
+        "native"
+      ],
+      "suggestWhen": {
+        "uninstallEntry": "NordVPN"
+      },
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/vpn.png",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/vpn-1.0.0/CouchHud.Plugin.Vpn-1.0.0.zip",
+      "sha256": "a48a60144a6b946f3a489cea3e38636782105e5b45f2c81aa931466990225cf2",
+      "statement": "eyJpZCI6InZwbiIsImZvbGRlciI6IkNvdWNoSHVkLlBsdWdpbi5WcG4iLCJ2ZXJzaW9uIjoiMS4wLjAiLCJzaGEyNTYiOiJhNDhhNjAxNDRhNmI5NDZmM2E0ODljZWEzZTM4NjM2NzgyMTA1ZTViNDVmMmM4MWFhOTMxNDY2OTkwMjI1Y2YyIiwic2RrIjozLCJtaW5Db3VjaEh1ZCI6IjAuNi4wIiwiY2FwYWJpbGl0aWVzIjpbInBhZ2VzIiwicXVpY2tBY3Rpb25zIiwicHJvY2VzcyIsInJlZ2lzdHJ5IiwibmF0aXZlIl0sInB1Ymxpc2hlcktleSI6IjI0N2JiYTYyODQ5ZGRmZWFiODc0OWEzODQ4ODc5MTgwN2JmZmEzM2M3MjM0N2VhMjA5MzE4NzBkYmJiNzcwOWYiLCJsaWNlbnNlIjoiR1BMLTMuMC1vbmx5IiwiYXV0aG9yIjoia2V3ZTg3IiwibmFtZSI6IlZQTiIsInN1bW1hcnkiOiJTd2l0Y2ggdGhlIFZQTiBmcm9tIHRoZSBjb3VjaDogc2VlIHRoZSBzdGF0dXMsIGNvbm5lY3QsIGRpc2Nvbm5lY3QgYW5kIGNob29zZSBhIGNvdW50cnkgKE5vcmRWUE4pLCB3aXRoIGd1aWRlIG1lbnUgZW50cmllcyIsImljb24iOnsic2hhMjU2IjoiYjQ1ZmM1N2IxMjIzMWY3ZjlhOTk4ZjE4N2Y1YTkyNjNjNmE1NjdjMDUzZjY4NTFkMDJlNjJlNDVkOTdkYTU0YSIsImJ5dGVzIjo0MTU0MH0sInNpemUiOjcyOTc2fQ==",
+      "signature": "zzf41n7UyNqmnQ9wl0/oITmIFT1FiEJSB7cFSOTo5+cM9HOolQ56zN+T9SlHK6YG90zb4JX3TgYlDnEpvaTNCg=="
     },
     {
       "id": "synthwave",
@@ -30,26 +145,116 @@
         "de": "Neon, Sonnenuntergang, Gitterboden",
         "en": "Neon, sunset, grid floor"
       },
-      "homepage": "https://github.com/kewe87/couchhud-catalog/tree/main/skins/synthwave",
-      "icon": "https://raw.githubusercontent.com/kewe87/couchhud-catalog/main/icons/synthwave.png",
-      "download": "https://github.com/kewe87/couchhud-catalog/releases/download/synthwave-1.0.0/synthwave-1.0.0.zip",
+      "homepage": "https://github.com/kewe87/CouchHUD-Catalog/tree/main/skins/synthwave",
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/synthwave.png",
+      "iconSha256": "1446651f0cb5de66dc488cd2010c92d485492fe7b728a4cf2c170d9d0bcb8b32",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/synthwave-1.0.0/synthwave-1.0.0.zip",
       "sha256": "78f237840055426ba8a95edc669787f9da7e12db267b7476cc461e0482a00b2d"
     },
     {
       "id": "stardust",
       "name": "Sternenstaub",
+      "names": {
+        "de": "Sternenstaub",
+        "en": "Stardust"
+      },
       "type": "skin",
-      "version": "1.0.0",
-      "minCouchHud": "0.5.0",
+      "version": "1.0.2",
+      "minCouchHud": "0.6.0",
       "author": "kewe87",
       "description": {
         "de": "Dunkel und ruhig: die Spielgrafik füllt den Hintergrund, kleine abgerundete Kacheln oben links, schlanke Schrift, sanftes Leuchten im Fokus",
         "en": "Dark and calm: the game's artwork fills the background, small rounded tiles at the top left, slim type, a soft glow on the focus"
       },
-      "homepage": "https://github.com/kewe87/couchhud-catalog/tree/main/skins/stardust",
-      "icon": "https://raw.githubusercontent.com/kewe87/couchhud-catalog/main/icons/stardust.png",
-      "download": "https://github.com/kewe87/couchhud-catalog/releases/download/stardust-1.0.0/stardust-1.0.0.zip",
-      "sha256": "749196cb446880b2f2b28395b61d81f69750c0bdbc27de05fb9fda8da44dba34"
+      "homepage": "https://github.com/kewe87/CouchHUD-Catalog/tree/main/skins/stardust",
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/stardust.png",
+      "iconSha256": "94ecd6a425ac6c85a875b515db522ca624ac657e90adaa57a37dd47b3c00b901",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/stardust-1.0.2/stardust-1.0.2.zip",
+      "sha256": "d0663d6f7b9c4fee11eee8a0b11c8ff4c9322788881e9914002a7426dd4dee69"
+    },
+    {
+      "id": "deepsea",
+      "name": "Tiefsee",
+      "names": {
+        "de": "Tiefsee",
+        "en": "Deep Sea"
+      },
+      "type": "skin",
+      "version": "1.0.0",
+      "minCouchHud": "0.6.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Klassisches Konsolenmenü: Wellen in Tiefblau, quadratische Kacheln in einer Reihe.",
+        "en": "Classic console menu: deep blue waves, square tiles in one row."
+      },
+      "homepage": "https://github.com/kewe87/CouchHUD-Catalog/tree/main/skins/deepsea",
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/deepsea.png",
+      "iconSha256": "497357d7144c81e4d1189f2217e19782b0bb8f704e69c93085a7142d0cdb8b37",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/deepsea-1.0.0/deepsea-1.0.0.zip",
+      "sha256": "4a51b5caf25766af2807594719686dbae71877ad4c2a10d3298e60ee50512ee1"
+    },
+    {
+      "id": "greenlight",
+      "name": "Grünlicht",
+      "names": {
+        "de": "Grünlicht",
+        "en": "Greenlight"
+      },
+      "type": "skin",
+      "version": "1.0.0",
+      "minCouchHud": "0.6.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Dunkel mit leuchtendem Grün, abgerundete Kacheln, weißer Fokus-Rahmen.",
+        "en": "Dark with bright green, rounded tiles, white focus frame."
+      },
+      "homepage": "https://github.com/kewe87/CouchHUD-Catalog/tree/main/skins/greenlight",
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/greenlight.png",
+      "iconSha256": "fda0a218b23fcc8cf1f4ac579c7b315b6196d50b42177bd6917f9b9edf524d29",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/greenlight-1.0.0/greenlight-1.0.0.zip",
+      "sha256": "885fca6de99865f7bde45bc2ca2525d3ff0d1302f80677eac22f259403bdbffa"
+    },
+    {
+      "id": "neoncity",
+      "name": "Neonstadt",
+      "names": {
+        "de": "Neonstadt",
+        "en": "Neon City"
+      },
+      "type": "skin",
+      "version": "1.0.0",
+      "minCouchHud": "0.6.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Neon-Gelb auf Schwarz, Scanlines, Glitch und harte Kanten.",
+        "en": "Neon yellow on black, scanlines, glitch and hard edges."
+      },
+      "homepage": "https://github.com/kewe87/CouchHUD-Catalog/tree/main/skins/neoncity",
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/neoncity.png",
+      "iconSha256": "b8b830b9a8d2f511e8f4004d110ceb562e0d675ecfabf92c6f63ccfbe55e7039",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/neoncity-1.0.0/neoncity-1.0.0.zip",
+      "sha256": "546cc6c4486deacb12f9fddc37374dd5e3ff3f3d0b817ca41720b26d972b355d"
+    },
+    {
+      "id": "nova",
+      "name": "Nova",
+      "names": {
+        "de": "Nova",
+        "en": "Nova"
+      },
+      "type": "skin",
+      "version": "1.0.0",
+      "minCouchHud": "0.6.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Futuristisch: Glas, Aurora-Licht und holografischer Fokus.",
+        "en": "Futuristic: glass, aurora light and a holographic focus."
+      },
+      "homepage": "https://github.com/kewe87/CouchHUD-Catalog/tree/main/skins/nova",
+      "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/nova.png",
+      "iconSha256": "9de6a3dd420b6fc5a5d119d4c7fd39d5314d5b4cd0c9fb8382c4ac53e0d95068",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/nova-1.0.0/nova-1.0.0.zip",
+      "sha256": "c6189550b6da9c5e0d47222a55f02772a626b0277c07981533229212097ef86d"
     }
   ]
 }

@@ -23,11 +23,26 @@ public static class PackageInstaller
     /// the package must come out under exactly that folder name (catalog installs).
     /// Everything is validated before the old version is touched.
     /// </summary>
-    public static string Install(string zipPath, string targetRoot, Kind kind, string? expectedName = null)
+    public static string Install(string zipPath, string targetRoot, Kind kind, string? expectedName = null) =>
+        Install(zipPath, targetRoot, kind, expectedName, out _);
+
+    /// <param name="folderHash">The <see cref="PluginTrust.HashFolder"/> of exactly the files that were unpacked, taken before they moved into place.</param>
+    public static string Install(string zipPath, string targetRoot, Kind kind, string? expectedName, out string folderHash)
     {
         if (!File.Exists(zipPath) || !zipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException(Strings.Get("package.pickZip"));
+        // Nobody may write to the file while it is unpacked.
+        using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return Install(stream, Path.GetFileNameWithoutExtension(zipPath), targetRoot, kind, expectedName, out folderHash);
+    }
 
-        using var archive = ZipFile.OpenRead(zipPath);
+    /// <summary>
+    /// The same from an open stream: the caller can hash the package and unpack it from one handle that keeps writers out
+    /// (<see cref="PendingPackages.ApplyAll"/>), so what is unpacked is what was checked.
+    /// </summary>
+    internal static string Install(Stream zip, string zipName, string targetRoot, Kind kind, string? expectedName, out string folderHash)
+    {
+        folderHash = "";
+        using var archive = new ZipArchive(zip, ZipArchiveMode.Read, leaveOpen: true);
         var files = archive.Entries.Where(e => !string.IsNullOrEmpty(e.Name)).ToList();
         if (files.Count == 0) throw new InvalidOperationException(Strings.Get("package.empty"));
 
@@ -36,7 +51,7 @@ public static class PackageInstaller
         // One top folder for everything? Then that folder is the package.
         var tops = files.Select(e => e.FullName.Replace('\\', '/').Split('/')).Select(p => p.Length > 1 ? p[0] : "").Distinct().ToList();
         var prefix = tops.Count == 1 && tops[0].Length > 0 ? tops[0] + "/" : "";
-        var name = expectedName ?? Sanitize(prefix.Length > 0 ? prefix.TrimEnd('/') : Path.GetFileNameWithoutExtension(zipPath));
+        var name = expectedName ?? Sanitize(prefix.Length > 0 ? prefix.TrimEnd('/') : zipName);
         if (name.Length == 0 || name != Sanitize(name)) throw new InvalidOperationException(Strings.Get("package.badName"));
         // A catalog package that brings its own top folder must agree with the catalog.
         if (expectedName is not null && prefix.Length > 0 && !prefix.TrimEnd('/').Equals(expectedName, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException(Strings.Get("package.folderMismatch"));
@@ -81,6 +96,8 @@ public static class PackageInstaller
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                 total += Extract(entry, destination, MaxUnpackedBytes - total);
             }
+            // The files as unpacked, before they move into the plugins folder (where any program of the user could change them).
+            folderHash = PluginTrust.HashFolder(staging);
 
             if (Directory.Exists(target))
             {

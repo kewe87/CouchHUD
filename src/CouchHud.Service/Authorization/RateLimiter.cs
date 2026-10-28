@@ -101,7 +101,7 @@ public sealed class RateLimiter(IMonotonicClock clock)
         Operation.ApplyLockPolicies or Operation.ReleaseLockPolicies or Operation.CleanupPolicyKeys => RateBucket.Policies,
         Operation.PauseServices or Operation.ResumeServices or Operation.AutoLogonOff => RateBucket.Services,
         Operation.SetRemoteFirewall or Operation.RemoveRemoteFirewall or Operation.RemoveLegacyFirewallRules => RateBucket.Firewall,
-        Operation.InstallCouchHudUpdate or Operation.InstallCaseHud => RateBucket.Setups,
+        Operation.InstallCouchHudUpdate => RateBucket.Setups,
         Operation.InstallWindowsUpdates => RateBucket.WindowsUpdates,
         Operation.SearchWindowsUpdates => RateBucket.UpdateSearch,
         Operation.RequestWindowsGrant => RateBucket.Grants,

@@ -9,7 +9,7 @@
 #   2. The setup is downloaded and hashed here. The hash must equal the digest GitHub computed for the upload
 #      (mandatory) and the one line of the .sha256 file (<64 hex>, two spaces, setup name; nothing else).
 #   3. The setup has a build provenance attestation from this repository's workflow (gh attestation verify).
-#      Older gh without that command: a warning, no check.
+#      A gh without that command stops the release; only -SkipAttestation (explicit, loud) goes on without the check.
 #
 #   Push the tag v0.4.0: CI builds the setup and attaches the setup and its .sha256 to the release.
 #   .\scripts\sign-release.ps1 -Tag v0.4.0   # checks, signs the .sha256 (context "release") and uploads the .sha256.sig
@@ -18,12 +18,27 @@
 param(
     [Parameter(Mandatory)] [string] $Tag,
     [string] $Repo = 'kewe87/CouchHUD',
+    # Default: a release without a verified build attestation is not signed. Only for a gh that cannot check one (and a setup you built yourself).
+    [switch] $SkipAttestation,
     [string] $KeyFile = (Join-Path $env:USERPROFILE '.couchhud\catalog-signing.key')
 )
 
 $ErrorActionPreference = 'Stop'
 if ($Tag -notmatch '^v\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') { throw "Tag '$Tag' does not look like v1.2.3" }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI (gh) not found.' }
+
+# First step: a release never ships with a catalog index whose signature is still to be renewed (catalog/index.json.unsigned).
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if (Test-Path (Join-Path $repoRoot 'catalog\index.json.unsigned')) { throw 'catalog/index.json.unsigned exists: sign catalog/index.json (scripts/catalog-sign.ps1) and delete the marker before a release.' }
+& git -C $repoRoot cat-file -e "${Tag}:catalog/index.json.unsigned" 2>$null
+if ($LASTEXITCODE -eq 0) { throw "The commit of $Tag still carries catalog/index.json.unsigned: renew the catalog signature, delete the marker and tag again." }
+
+# The signature must match the index (checked with the public key pinned in the code): a stale one never ships.
+$env:RELEASE = '1'
+& dotnet test (Join-Path $repoRoot 'tests\CouchHud.Core.Tests') -c Release --nologo -v quiet --filter 'FullyQualifiedName~The_example_index_in_the_repository_parses'
+$catalogCheck = $LASTEXITCODE
+Remove-Item Env:\RELEASE
+if ($catalogCheck -ne 0) { throw 'catalog/index.json.sig does not match catalog/index.json: sign it again (scripts/catalog-sign.ps1).' }
 
 function Invoke-Gh {
     $output = & gh @args
@@ -71,8 +86,11 @@ try {
         & gh attestation verify $setup --repo $Repo --signer-workflow "$Repo/.github/workflows/build.yml"
         if ($LASTEXITCODE -ne 0) { throw 'The setup has no valid build attestation from this repository workflow: refusing to sign.' }
     }
+    elseif ($SkipAttestation) {
+        Write-Warning 'This gh has no "attestation" command and -SkipAttestation was given: the build provenance of the setup is NOT checked.'
+    }
     else {
-        Write-Warning 'This gh has no "attestation" command: the build provenance of the setup was NOT checked. Update gh (https://cli.github.com).'
+        throw 'This gh has no "attestation" command, so the build provenance of the setup cannot be checked: refusing to sign. Update gh (https://cli.github.com), or pass -SkipAttestation to sign without that check.'
     }
 
     & (Join-Path $PSScriptRoot 'sign-file.ps1') -File $file -Context release -KeyFile $KeyFile

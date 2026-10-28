@@ -1,0 +1,26 @@
+{
+  "id": "homeassistant",
+  "folder": "CouchHud.Plugin.HomeAssistant",
+  "version": "1.0.0",
+  "sha256": "",
+  "sdk": 3,
+  "minCouchHud": "0.6.0",
+  "capabilities": [
+    "pages",
+    "tabs",
+    "quickActions",
+    "assistant",
+    "notify",
+    "browser.signin",
+    "network:internet"
+  ],
+  "publisherKey": "",
+  "license": "GPL-3.0-only",
+  "author": "kewe87",
+  "name": "Home Assistant",
+  "summary": "Lights, scenes and sensors from Home Assistant on the TV, with sign-in through Home Assistant, guide menu entries and assistant tools",
+  "icon": {
+    "sha256": "758e6b2c5377dde4520697e33bd424bc3f6ebd2972731824e4ed211208404eeb",
+    "bytes": 39322
+  }
+}

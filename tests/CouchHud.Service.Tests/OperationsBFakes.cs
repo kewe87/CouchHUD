@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using CouchHud.Core.Integrations.CaseHud;
 using CouchHud.Core.Plugins;
 using CouchHud.Privileged;
 using CouchHud.Service.Contracts;
@@ -22,21 +21,14 @@ internal sealed class TestKey : IDisposable
     public string SignCouchHud(byte[] data, string context = CatalogSignature.ReleaseContext) =>
         Convert.ToBase64String(_key.SignData(CatalogSignature.WithContext(context, data), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
 
-    /// <summary>CaseHUD releases: ASN.1 DER over "casehud-release-v1\n" + file.</summary>
-    public string SignCaseHud(byte[] data) =>
-        Convert.ToBase64String(_key.SignData(CatalogSignature.WithContext(CaseHudInfo.ReleaseContext, data), HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence));
-
     public void Dispose() => _key.Dispose();
 }
 
 internal sealed class FakeInstalled : IInstalledVersions
 {
     public SemVer? CouchHudVersion { get; set; } = new SemVer(0, 4, 1, "");
-    public SemVer? CaseHudVersion { get; set; } = new SemVer(1, 0, 0, "");
 
     public SemVer? CouchHud() => CouchHudVersion;
-
-    public SemVer? CaseHud() => CaseHudVersion;
 }
 
 internal sealed class FakeFolderSecurity : IFolderSecurity
@@ -158,7 +150,6 @@ internal sealed class OperationsB : IDisposable
 {
     public string Root { get; } = Path.Combine(Path.GetTempPath(), "p6-" + Guid.NewGuid().ToString("N")[..8]);
     public TestKey CouchHudKey { get; } = new();
-    public TestKey CaseHudKey { get; } = new();
     public FakeInstalled Installed { get; } = new();
     public FakeFolderSecurity Security { get; } = new();
     public FakeStarter Starter { get; } = new();
@@ -205,7 +196,7 @@ internal sealed class OperationsB : IDisposable
 
     /// <summary>A pipeline on the same folders (also: the next instance of the service after a restart).</summary>
     public SignedSetupPipeline NewPipeline(JobStore jobs, StagingArea? staging = null) =>
-        new(new SignedSetupVerifier(CouchHudKey.PublicPem, CaseHudKey.PublicPem), Installed, staging ?? new StagingArea(ServiceDirectory, Security, Log), Starter, jobs, Log,
+        new(new SignedSetupVerifier(CouchHudKey.PublicPem), Installed, staging ?? new StagingArea(ServiceDirectory, Security, Log), Starter, jobs, Log,
             new Logging.RecentEvents(Clock, () => 1), setupTimeout: SetupTimeout, streamInactivity: TimeSpan.FromSeconds(5), journal: Journal,
             keepSession: KeepSession);
 
@@ -229,19 +220,10 @@ internal sealed class OperationsB : IDisposable
 
     public static byte[] CouchHudSums(string name, byte[] setup) => Encoding.UTF8.GetBytes($"{Sha(setup)}  {name}\n");
 
-    public static byte[] CaseHudSums(string name, byte[] setup) =>
-        Encoding.UTF8.GetBytes($"{Sha(setup)}  {name}\n{Sha([1, 2, 3])}  CaseHUD-portable.zip\n");
-
     public SetupStreamArgs CouchHudArgs(string signedName, byte[] setup, string? clientName = null, string? signature = null)
     {
         var sums = CouchHudSums(signedName, setup);
         return new SetupStreamArgs(clientName ?? signedName, setup.Length, Convert.ToBase64String(sums), signature ?? CouchHudKey.SignCouchHud(sums));
-    }
-
-    public SetupStreamArgs CaseHudArgs(string signedName, byte[] setup)
-    {
-        var sums = CaseHudSums(signedName, setup);
-        return new SetupStreamArgs(signedName, setup.Length, Convert.ToBase64String(sums), CaseHudKey.SignCaseHud(sums));
     }
 
     /// <summary>The header frame followed by the bytes as <see cref="StreamCodec"/> sends them.</summary>
@@ -287,7 +269,6 @@ internal sealed class OperationsB : IDisposable
     public void Dispose()
     {
         CouchHudKey.Dispose();
-        CaseHudKey.Dispose();
         for (var i = 0; i < 20; i++)
         {
             try

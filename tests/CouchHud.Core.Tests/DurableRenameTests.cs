@@ -224,10 +224,10 @@ public sealed class DurableRenameTests : IDisposable
         // Our own readers share reading, writing and deleting (ConfigStore.ReadShared).
         using (new FileStream(ConfigFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
         {
-            store.UpdateOrThrow(c => c.Skin = "deepsea");
+            store.UpdateOrThrow(c => c.Skin = "user:deepsea");
         }
-        Assert.Equal("deepsea", ConfigStore.ParseUsable(File.ReadAllText(ConfigFile)).Skin);
-        Assert.Equal("deepsea", ConfigStore.ParseUsable(File.ReadAllText(Backup)).Skin);
+        Assert.Equal("user:deepsea", ConfigStore.ParseUsable(File.ReadAllText(ConfigFile)).Skin);
+        Assert.Equal("user:deepsea", ConfigStore.ParseUsable(File.ReadAllText(Backup)).Skin);
         Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
     }
 
@@ -238,7 +238,7 @@ public sealed class DurableRenameTests : IDisposable
         var store = Store();
         Assert.Equal(ConfigFault.Invalid, store.Fault);
 
-        var ex = Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.Skin = "deepsea"));
+        var ex = Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.Skin = "user:deepsea"));
 
         Assert.Equal(CouchHud.Core.Localization.Strings.Get("config.notSavedFault"), ex.Message);
         Assert.Equal("{ broken", File.ReadAllText(ConfigFile));
@@ -294,11 +294,11 @@ public sealed class DurableRenameTests : IDisposable
         store.UpdateOrThrow(c => c.Skin = "first");
         using (new FileStream(Backup, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
         {
-            store.UpdateOrThrow(c => c.Skin = "deepsea");
+            store.UpdateOrThrow(c => c.Skin = "user:deepsea");
         }
-        Assert.Equal("deepsea", ConfigStore.ParseUsable(File.ReadAllText(ConfigFile)).Skin);
+        Assert.Equal("user:deepsea", ConfigStore.ParseUsable(File.ReadAllText(ConfigFile)).Skin);
         // RefreshBackup replaces the open .bak itself (that works with delete sharing).
-        Assert.Equal("deepsea", ConfigStore.ParseUsable(File.ReadAllText(Backup)).Skin);
+        Assert.Equal("user:deepsea", ConfigStore.ParseUsable(File.ReadAllText(Backup)).Skin);
     }
 
     [Fact]

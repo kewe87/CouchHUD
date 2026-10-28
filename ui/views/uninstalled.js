@@ -186,7 +186,7 @@ export async function installGame(game) {
     message: game.source === 'epic' ? t('uninstalled.confirmEpic', { client }) : t('uninstalled.confirmSteam', { client })
   });
   if (!sure) return;
-  // First the couch, then the parents: the parents' code alone does not open a locked couch (as for the VPN).
+  // First the couch, then the parents: the parents' code alone does not open a locked couch.
   if (!(await ensureUnlocked(t('uninstalled.unlock')))) return;
   if (parental.status?.enabled && !(await ensureParentGrant(t('uninstalled.guard'), { action: 'installGame', item: game.id }))) return;
   const result = await attempt(() => api.installGame(game.id), t('uninstalled.installFailed'));

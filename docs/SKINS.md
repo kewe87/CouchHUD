@@ -17,14 +17,17 @@ Ein Skin ist ein Stylesheet plus optional eigene Button-Symbole. Er ändert Farb
 
 ```json
 {
-  "name": "Synthwave",
-  "description": "Neon, Sonnenuntergang, 1986",
-  "glyphs": { "A": "✕", "B": "○", "X": "□", "Y": "△", "LB": "L1", "RB": "R1" },
+  "name": { "de": "Synthwave", "en": "Synthwave" },
+  "description": { "de": "Neon, Sonnenuntergang, 1986", "en": "Neon, sunset, 1986" },
+  "glyphs": { "A": "✕", "B": "○", "X": "□", "Y": "△", "LB": "L1", "RB": "R1", "≡": "MENU" },
+  "soundSet": "nova",
   "sounds": { "move": "move.ogg", "select": "select.ogg", "back": "back.ogg", "notify": "notify.ogg" }
 }
 ```
 
-`glyphs` ist optional und nur Gestaltung: Welche Symbole erscheinen, bestimmt der Controller (bzw. *Einstellungen › Controller › Tastensymbole*). Ein Eintrag wie `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` oder `PS` gilt nur mit PlayStation-Symbolen, jeder andere nur mit Xbox-Symbolen; sonst zeigt CouchHUD das Standardsymbol der Controller-Art. Die Farben der Tasten bei PlayStation-Symbolen hängen an `:root[data-pad="playstation"]`.
+`name` und `description` sind entweder einfacher Text oder ein Objekt mit `de` und `en`; CouchHUD zeigt den Text der aktuellen Sprache (fehlt er, den anderen). Namen haben höchstens 40 Zeichen, Beschreibungen 300; Steuerzeichen, unsichtbare Formatzeichen (etwa Umkehr der Schreibrichtung oder Zeichen ohne Breite) und `<` `>` werden entfernt, ein Name ist also immer einfacher Text. Ein Skin ohne Namen trägt seinen Ordnernamen. `soundSet` ist optional: eines der Klangsets der App (`default`, `deepsea`, `greenlight`, `neoncity`, `nova`), das spielt, solange der Skin aktiv ist; alles andere wird ignoriert.
+
+`glyphs` ist optional (höchstens 32 Einträge, jede Beschriftung höchstens 12 Zeichen) und nur Gestaltung. Der Schlüssel `≡` ist die Beschriftung der Menütaste (zum Beispiel `☰` oder `MENU`): Welche Symbole erscheinen, bestimmt der Controller (bzw. *Einstellungen › Controller › Tastensymbole*). Ein Eintrag wie `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` oder `PS` gilt nur mit PlayStation-Symbolen, jeder andere nur mit Xbox-Symbolen; sonst zeigt CouchHUD das Standardsymbol der Controller-Art. Die Farben der Tasten bei PlayStation-Symbolen hängen an `:root[data-pad="playstation"]`.
 
 `sounds` ist optional. Mögliche Ereignisse: `move`, `tab`, `select`, `back`, `bump`, `open`, `close`, `notify`, `toggle`, `boot` und `music`. `music` ist ein Hintergrund-Track, der in Schleife läuft, wenn der Nutzer „UI-Sounds und Musik“ gewählt hat; ohne ihn spielt die eingebaute Musik des Skins. Erlaubt sind `.wav`, `.ogg` und `.mp3` aus dem Skin-Ordner. Für fehlende Ereignisse spielt CouchHUD das eingebaute Klangset.
 
@@ -73,7 +76,7 @@ Eigene Schriften und Bilder legst du in den Skin-Ordner und bindest sie relativ 
 | `--font` | Schriftfamilie |
 | `--tile-radius`, `--shelf-tile`, `--focus-scale` | Ecken, Kachelgröße auf Home, Zoom des Fokus |
 
-Für alles andere kannst du die Selektoren aus `ui/styles.css` überschreiben. Die eingebauten Skins in `ui/skins/` (Tiefsee, Grünlicht, Neonstadt, Nova) zeigen, wie weit das geht: Tiefsee (`deepsea.css`) dreht z.B. das ganze Home-Layout um.
+Für alles andere kannst du die Selektoren aus `ui/styles.css` überschreiben. Die Skins im Katalog (Tiefsee, Grünlicht, Neonstadt, Nova, Sternenstaub) zeigen, wie weit das geht: Tiefsee dreht z.B. das ganze Home-Layout um. Nur der CouchHUD-Skin gehört zum Programm (`ui/skins/`); alle anderen sind Skins wie deiner, im Skin-Ordner installiert, und ihre Regeln beginnen mit `:root[data-skin="user:<Ordner>"]`.
 
 ## Mauszeiger
 
@@ -101,7 +104,7 @@ Das ist nur der Zeiger innerhalb von CouchHUD. In anderen Fenstern bleibt es der
 
 CouchHUD mit `--dev` starten, unter *Einstellungen › Darstellung › Skin* deinen Skin wählen. Änderungen an der CSS siehst du nach erneutem Auswählen.
 
-Ohne Windows geht es auch: `node scripts/preview-server.js` startet die Oberfläche mit Beispieldaten im Browser. Eigene Skins dort einfach als weitere Datei in `ui/skins/` anlegen und in `ui/skins/index.js` eintragen.
+Ohne Windows geht es auch: `node scripts/preview-server.js` startet die Oberfläche mit Beispieldaten im Browser. Eigene Skin-Ordner dort mit `CATALOG_SKINS=<Ordner mit deinen Skin-Ordnern> node scripts/preview-server.js` ausliefern und einen Skin mit `node scripts/ui-shot.mjs --catalog <Ordner> skin:user:<Ordnername> shot:home` ansehen. Das Stylesheet wird dort von Internet-Adressen befreit, genau wie in der App.
 
 ## Teilen
 

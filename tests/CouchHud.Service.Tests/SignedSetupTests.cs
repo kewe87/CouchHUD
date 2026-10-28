@@ -23,7 +23,6 @@ public class SignedSetupTests
         Assert.Equal(ErrorCodes.StreamReady, OperationsB.Code(answers[0]));
         var job = await ops.WaitForJobAsync(OperationsB.JobId(answers[1]));
         Assert.Equal("done", job.State);
-        Assert.False(job.RestartCaseHud);
 
         var start = Assert.Single(ops.Starter.Started);
         Assert.Equal(Next, Path.GetFileName(start.Path));
@@ -47,36 +46,6 @@ public class SignedSetupTests
         Assert.Contains(ops.Log.Lines, l => l.Contains($"sha256={OperationsB.Sha(setup)}"));
         Assert.Empty(ops.StagedFolders());   // removed after the setup ended
         Assert.False(ops.Parts.Setups.Busy);
-    }
-
-    [Fact]
-    public async Task An_update_over_an_installed_CaseHud_runs_with_its_fixed_tasks_and_asks_for_a_restart_of_CaseHud()
-    {
-        using var ops = new OperationsB();
-        ops.Installed.CaseHudVersion = new SemVer(1, 0, 0, "");
-        var setup = OperationsB.FakeSetup();
-        var answers = await ops.SendSetupAsync(Operation.InstallCaseHud, ops.CaseHudArgs("CaseHUD-Setup-1.1.0.exe", setup), setup);
-
-        Assert.Equal(ErrorCodes.StreamReady, OperationsB.Code(answers[0]));
-        var job = await ops.WaitForJobAsync(OperationsB.JobId(answers[1]));
-        Assert.Equal("done", job.State);
-        Assert.True(job.RestartCaseHud);
-        var start = Assert.Single(ops.Starter.Started);
-        Assert.Equal("CaseHUD-Setup-1.1.0.exe", Path.GetFileName(start.Path));
-        Assert.Equal("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS=\"!autostart,!fps\"", start.Arguments);
-    }
-
-    [Fact]
-    public async Task A_failed_CaseHud_setup_still_asks_for_a_restart_of_CaseHud()
-    {
-        using var ops = new OperationsB();
-        ops.Starter.ExitCode = 5;
-        var setup = OperationsB.FakeSetup();
-        var answers = await ops.SendSetupAsync(Operation.InstallCaseHud, ops.CaseHudArgs("CaseHUD-Setup-1.1.0.exe", setup), setup);
-        var job = await ops.WaitForJobAsync(OperationsB.JobId(answers[1]));
-        Assert.Equal("failed", job.State);
-        Assert.Equal("exitCode:5", job.Message);
-        Assert.True(job.RestartCaseHud);
     }
 
     private static readonly string Grant = Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());
@@ -223,21 +192,6 @@ public class SignedSetupTests
     }
 
     [Fact]
-    public async Task A_first_installation_of_CaseHud_is_denied_also_for_an_administrator()
-    {
-        using var ops = new OperationsB();
-        ops.Installed.CaseHudVersion = null;
-        var setup = OperationsB.FakeSetup();
-        foreach (var caller in new[] { Callers.User(), Callers.ElevatedAdmin() })
-        {
-            var answer = await ops.SendHeaderAsync(Operation.InstallCaseHud, ops.CaseHudArgs("CaseHUD-Setup-1.1.0.exe", setup), setup, caller);
-            Assert.Equal(ErrorCodes.Denied, OperationsB.Code(answer));
-        }
-        Assert.Empty(ops.Starter.Started);
-        Assert.Empty(ops.StagedFolders());
-    }
-
-    [Fact]
     public async Task A_tampered_setup_is_refused_after_the_stream_and_never_started()
     {
         using var ops = new OperationsB();
@@ -293,8 +247,8 @@ public class SignedSetupTests
         using var ops = new OperationsB();
         var setup = OperationsB.FakeSetup();
         var sums = OperationsB.CouchHudSums(Next, setup);
-        // Signed as a catalog index (domain separation), and with the CaseHUD key for a CouchHUD setup.
-        foreach (var signature in new[] { ops.CouchHudKey.SignCouchHud(sums, CatalogSignature.CatalogContext), ops.CaseHudKey.SignCouchHud(sums) })
+        // Signed as a catalog index (domain separation).
+        foreach (var signature in new[] { ops.CouchHudKey.SignCouchHud(sums, CatalogSignature.CatalogContext) })
         {
             var answer = await ops.SendHeaderAsync(Operation.InstallCouchHudUpdate, ops.CouchHudArgs(Next, setup, signature: signature), setup);
             Assert.Equal(ErrorCodes.VerificationFailed, OperationsB.Code(answer));
@@ -335,36 +289,14 @@ public class SignedSetupTests
     }
 
     [Fact]
-    public async Task A_CaseHud_release_below_the_signed_line_is_denied_and_a_downgrade_too()
-    {
-        using var ops = new OperationsB();
-        var setup = OperationsB.FakeSetup();
-        ops.Installed.CaseHudVersion = new SemVer(0, 5, 0, "");
-        Assert.Equal(ErrorCodes.Denied, OperationsB.Code(await ops.SendHeaderAsync(Operation.InstallCaseHud, ops.CaseHudArgs("CaseHUD-Setup-0.9.0.exe", setup), setup)));
-        ops.Installed.CaseHudVersion = new SemVer(1, 2, 0, "");
-        Assert.Equal(ErrorCodes.Denied, OperationsB.Code(await ops.SendHeaderAsync(Operation.InstallCaseHud, ops.CaseHudArgs("CaseHUD-Setup-1.1.0.exe", setup), setup)));
-    }
-
-    [Fact]
     public void A_checksum_file_that_names_two_different_setups_names_none()
     {
         using var key = new TestKey();
         var setup = OperationsB.FakeSetup(1000);
-        var sums = Encoding.UTF8.GetBytes($"{OperationsB.Sha(setup)}  CaseHUD-Setup-1.1.0.exe\n{OperationsB.Sha(setup)}  CaseHUD-Setup-1.2.0.exe\n");
-        var verifier = new SignedSetupVerifier(key.PublicPem, key.PublicPem);
-        var verdict = verifier.Verify(SetupKind.CaseHud, new SetupStreamArgs("CaseHUD-Setup-1.2.0.exe", setup.Length, Convert.ToBase64String(sums), key.SignCaseHud(sums)), new SemVer(1, 0, 0, ""));
+        var sums = Encoding.UTF8.GetBytes($"{OperationsB.Sha(setup)}  CouchHud-Setup-0.5.0.exe\n{OperationsB.Sha(setup)}  CouchHud-Setup-0.6.0.exe\n");
+        var verifier = new SignedSetupVerifier(key.PublicPem);
+        var verdict = verifier.Verify(SetupKind.CouchHud, new SetupStreamArgs("CouchHud-Setup-0.6.0.exe", setup.Length, Convert.ToBase64String(sums), key.SignCouchHud(sums)), new SemVer(0, 4, 1, ""));
         Assert.False(verdict.Ok);
-        Assert.Equal(ErrorCodes.VerificationFailed, verdict.Code);
-    }
-
-    [Fact]
-    public void Without_a_CaseHud_key_nothing_is_installed()
-    {
-        using var key = new TestKey();
-        var setup = OperationsB.FakeSetup(1000);
-        var sums = OperationsB.CaseHudSums("CaseHUD-Setup-1.1.0.exe", setup);
-        var verdict = new SignedSetupVerifier(key.PublicPem, caseHudKeyPem: "").Verify(SetupKind.CaseHud,
-            new SetupStreamArgs("CaseHUD-Setup-1.1.0.exe", setup.Length, Convert.ToBase64String(sums), key.SignCaseHud(sums)), new SemVer(1, 0, 0, ""));
         Assert.Equal(ErrorCodes.VerificationFailed, verdict.Code);
     }
 
@@ -431,14 +363,14 @@ public class SignedSetupTests
         Assert.Equal(ErrorCodes.Ok, OperationsB.Code(first[1]));
 
         // The stream is taken into its own folder; the one setup slot is only needed for seal and start, and it is taken.
-        var second = await ops.SendSetupAsync(Operation.InstallCaseHud, ops.CaseHudArgs("CaseHUD-Setup-1.1.0.exe", setup), setup, Callers.User(Callers.OtherSid));
+        var second = await ops.SendSetupAsync(Operation.InstallCouchHudUpdate, ops.CouchHudArgs(Next, setup), setup, Callers.User(Callers.OtherSid));
         Assert.Equal(ErrorCodes.StreamReady, OperationsB.Code(second[0]));
         Assert.Equal(ErrorCodes.Busy, OperationsB.Code(second[1]));
         Assert.Single(ops.StagedFolders());   // the second one's folder is gone again
 
         gate.Set();
         Assert.Equal("done", (await ops.WaitForJobAsync(OperationsB.JobId(first[1]))).State);
-        var third = await ops.SendSetupAsync(Operation.InstallCaseHud, ops.CaseHudArgs("CaseHUD-Setup-1.1.0.exe", setup), setup, Callers.User(Callers.OtherSid));
+        var third = await ops.SendSetupAsync(Operation.InstallCouchHudUpdate, ops.CouchHudArgs(Next, setup), setup, Callers.User(Callers.OtherSid));
         Assert.Equal(ErrorCodes.Ok, OperationsB.Code(third[1]));
     }
 
@@ -465,7 +397,6 @@ public class SignedSetupTests
         var sums = OperationsB.CouchHudSums(Next, setup);
         var big = new SetupStreamArgs(Next, SignedSetupVerifier.MaxCouchHudSetupBytes + 1, Convert.ToBase64String(sums), ops.CouchHudKey.SignCouchHud(sums));
         Assert.Equal(ErrorCodes.StreamTooLarge, OperationsB.Code(await ops.SendHeaderAsync(Operation.InstallCouchHudUpdate, big, setup)));
-        Assert.Equal(200L * 1024 * 1024, SignedSetupVerifier.MaxCaseHudSetupBytes);
         Assert.Empty(ops.StagedFolders());
     }
 
@@ -530,7 +461,7 @@ public class SignedSetupTests
         using var ops = new OperationsB();
         var journal = ops.Journal;
         Directory.CreateDirectory(ops.JournalFolder);
-        journal.Write(new Jobs.JournaledJob(new string('e', 32), Callers.UserSid, SignedSetupPipeline.CaseHudJob, "1.1.0", ops.WallMs, null));
+        journal.Write(new Jobs.JournaledJob(new string('e', 32), Callers.UserSid, "caseHudSetup", "1.1.0", ops.WallMs, null));
         journal.Write(new Jobs.JournaledJob(new string('f', 32), Callers.UserSid, "windowsUpdateInstall", "1.1.0", ops.WallMs, null));
         var jobs = new Jobs.JobStore(new FakeClock());
         Assert.Equal(0, ops.NewPipeline(jobs).RecoverJobs());

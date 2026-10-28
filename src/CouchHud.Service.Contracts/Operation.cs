@@ -21,7 +21,6 @@ public enum Operation
     RemoveRemoteFirewall,
     RemoveLegacyFirewallRules,
     InstallCouchHudUpdate,
-    InstallCaseHud,
     EnrollPasscode,
     ChangePasscode,
     VerifyCode,

@@ -17,20 +17,21 @@ import { refreshMotion, setMotionActive, startMotion } from './core/motion.js';
 import { hideLaunch, launchFocus, launchInput, launchSession, launchTimedOut } from './components/launch-overlay.js';
 import { closeQuickMenu, handleQuick, openQuickMenu, quick, renderQuick } from './components/quick-menu.js';
 import { BUILTIN_SKINS } from './skins/index.js';
-import { migrateSkinId } from './core/skin-rules.js';
+import { migrateSkinId, movedSkinCatalogId } from './core/skin-rules.js';
+import { reloadSkins } from './components/skin-menu.js';
 import { homeView } from './views/home.js';
 import { browserView } from './views/browser.js';
 import { startFirstRun } from './views/setup-wizard.js';
 import { powerMenu } from './core/power.js';
 import { configureScreensaver, screensaverInput, setScreensaverFocus, startScreensaverWatch } from './core/screensaver.js';
 import { gridView } from './views/grid.js';
-import { homeAssistantSignInDone, settingsView } from './views/settings.js';
-import { preloadSmartHome, smartHomeView } from './views/smarthome.js';
+import { settingsView } from './views/settings.js';
 import { newsView } from './views/news.js';
+import { loadPluginTabs } from './views/plugin-tab.js';
+import { arrangeTabs } from './core/plugin-tabs.js';
 import { downloadsView, onDownloadsChanged, startDownloads } from './views/downloads.js';
 import { startUpdates } from './views/updates.js';
-import { startCaseHud } from './views/casehud.js';
-import { startVpn } from './views/vpn.js';
+import { offerPluginSuggestions } from './views/plugins.js';
 import { startTv } from './views/tv.js';
 import { detailPage } from './views/detail.js';
 import { startParental } from './components/parental.js';
@@ -72,13 +73,43 @@ const appsView = gridView(t('app.apps.title'), () => [...(areaOn('browser') ? [B
 });
 appsView.id = 'apps';
 
-/** Smart Home only shows up once Home Assistant is connected. */
 export function updateTabs() {
   setTabs(tabList());
 }
 
 // Tabs of switched off areas (Settings › Console › Areas) are left out (core/areas.js).
-const tabList = () => shownTabs([homeView, gamesView, appsView, downloadsView, newsView, browserView, ...(state.info.homeAssistant ? [smartHomeView] : []), ...(state.info.assistant ? [assistantView] : []), settingsView]);
+// Tabs of plugins (capability "tabs") come after the content tabs and before the closing ones, so Settings stays last; the host has
+// already left out those of areas that are off, the child's profile and plugins that are not loaded, and the page checks the area once more.
+let pluginTabViews = [];
+const tabList = () => arrangeTabs(
+  shownTabs([homeView, gamesView, appsView, downloadsView, newsView, browserView]),
+  pluginTabViews.filter((v) => areaOn(v.tabArea)),
+  [...(state.info.assistant ? [assistantView] : []), settingsView]);
+
+const tabSignature = () => tabList().map((v) => `${v.id}:${v.name}:${v.tabImage ?? v.tabGlyph ?? ''}`).join('|');
+
+/** Asks the host which plugin tabs exist now (at start, when plugins finished loading, after an area, profile or plugin change). */
+let tabsLoading = false;
+let tabsAgain = false;
+export async function refreshPluginTabs() {
+  if (tabsLoading) {
+    tabsAgain = true;
+    return;
+  }
+  tabsLoading = true;
+  try {
+    do {
+      tabsAgain = false;
+      const before = tabSignature();
+      pluginTabViews = await loadPluginTabs();
+      updateTabs();
+      // Only a changed tab bar is drawn again (a page that is open keeps its place).
+      if (tabSignature() !== before) render();
+    } while (tabsAgain);
+  } finally {
+    tabsLoading = false;
+  }
+}
 const tabsIndexOf = (view) => tabList().indexOf(view);
 
 updateTabs();
@@ -93,6 +124,7 @@ window.addEventListener('couchhud:open-tab', (e) => {
 function applyAreas(list) {
   state.info.areas = setAreas(list);
   updateTabs();
+  refreshPluginTabs().catch(console.error);
   render();
   reloadLibrary().catch(console.error);
 }
@@ -168,6 +200,23 @@ function tickClock() {
   $('#clock').textContent = fmtTime();
 }
 
+/** The skin the settings ask for was one of the four that moved to the catalog and is not there: say where to get it. */
+function missingSkinNotice(id) {
+  const catalogId = movedSkinCatalogId(id);
+  if (!catalogId) return;
+  // Once per page session and skin: not at every profile reload after the host has given up.
+  const seenKey = `couchhud.skinMissingShown.${catalogId}`;
+  try {
+    if (sessionStorage.getItem(seenKey)) return;
+    sessionStorage.setItem(seenKey, '1');
+  } catch {
+    // No session storage (a private window, blocked): the notice may then come again, which only errs on the side of telling.
+  }
+  // i18n-used: skins.name.deepsea skins.name.greenlight skins.name.neoncity skins.name.nova
+  const nameKey = `skins.name.${catalogId}`;
+  toast(t(nameKey) + ': ' + t('skins.missing'), 12000, { long: true });
+}
+
 async function init() {
   state.info = (await attempt(() => api.systemInfo(), t('app.systemInfoFailed'))) || {};
   state.info.areas = setAreas(state.info.areas);
@@ -179,7 +228,12 @@ async function init() {
   startHdr();
   startMotion();
   state.skins = [...BUILTIN_SKINS, ...((await attempt(() => api.listSkins(), t('app.skinsFailed'))) || [])];
-  applySkin(state.skins.find((s) => s.id === migrateSkinId(state.info.skin)) || BUILTIN_SKINS[0]);
+  const wantedSkin = migrateSkinId(state.info.skin);
+  const foundSkin = state.skins.find((s) => s.id === wantedSkin);
+  applySkin(foundSkin || BUILTIN_SKINS[0]);
+  // A skin that moved to the catalog and is not installed (yet): the Couch skin meanwhile. While the host still installs it nothing is
+  // said; when it is clear it is not coming (offline, refused, tried enough times) the person is told once.
+  if (!foundSkin && state.info.skinRestore?.state === 'missing') missingSkinNotice(wantedSkin);
   updateTabs();
   startWeather();
   startUpdates();
@@ -195,17 +249,29 @@ async function init() {
   startBattery();
   // First start: the setup assistant, with the disclaimer and privacy notice as its second step (on a locked couch only the notice).
   startFirstRun().catch(console.error);
-  // Settings that add or remove a tab (assistant, smart home) ask for a refresh.
-  window.addEventListener('couchhud:tabs', updateTabs);
+  // Settings that add or remove a tab (assistant) ask for a refresh.
+  window.addEventListener('couchhud:tabs', () => {
+    updateTabs();
+    refreshPluginTabs().catch(console.error);
+  });
   api.onAreas?.((list) => applyAreas(list));
+  // Plugins register tabs while they load; a profile change can hide them (a child's profile), a failed page can drop its tab.
+  api.onPluginTabs?.(() => refreshPluginTabs().catch(console.error));
+  api.onProfiles?.(() => refreshPluginTabs().catch(console.error));
+  refreshPluginTabs().catch(console.error);
   window.addEventListener('couchhud:areas', (e) => applyAreas(e.detail));
   // The assistant can change the design and settings from the host side.
+  api.onSkinRestore?.(async (restore) => {
+    await reloadSkins();
+    const id = migrateSkinId(restore?.skin);
+    const skin = state.skins.find((s) => s.id === id);
+    if (skin) applySkin(skin);
+    else if (restore?.state === 'missing') missingSkinNotice(id);
+  });
   api.onSkin?.((id) => {
     const skin = state.skins.find((s) => s.id === migrateSkinId(id));
     if (skin) applySkin(skin);
   });
-  // "Sign in with Home Assistant" finished in the couch browser (or failed).
-  api.onHomeAssistantSignIn?.((result) => homeAssistantSignInDone(result).catch(console.error));
   api.onSettings?.(async () => {
     const s = await attempt(() => api.getSettings());
     if (!s) return;
@@ -221,9 +287,6 @@ async function init() {
     refreshMotion();
     setPadGlyphs({ padGlyphs: s.padGlyphs });
   });
-  attempt(() => api.getSettings()).then((s) => preloadSmartHome(s));
-  startCaseHud();
-  startVpn();
   startTv();
 
   // Controller or keyboard input hides the mouse pointer right away.
@@ -351,6 +414,42 @@ async function init() {
   setTimeout(hideBoot, 2500);
   await reloadLibrary();
   loadCollections();
+  // A matching program is installed and the catalog has a plugin for it: asked once per Windows user, a while after the start, and only when the
+  // HUD is in front with nothing open (no page, question or menu, no game or app running); if that is not so it is tried once more later (the
+  // host also says nothing while the couch is locked).
+  const canPrompt = () => !state.stack.length && !state.overlay && !state.panel && !state.session && !document.hidden && document.hasFocus();
+  // The host says when the catalog's entries become available (event), so a look that found nothing because the catalog was still loading
+  // is repeated then; no polling. The host keeps "once per Windows user" and "nothing on the locked couch".
+  let offered = false;
+  let offering = false;
+  let askAgain = false;
+  let armed = false;
+  const offer = async (retries) => {
+    if (offered) return;
+    if (offering) {
+      askAgain = true;
+      return;
+    }
+    offering = true;
+    try {
+      const result = canPrompt() ? await offerPluginSuggestions(canPrompt) : 'skipped';
+      if (result === 'shown') offered = true;
+      else if (result === 'skipped' && retries > 0) setTimeout(() => offer(retries - 1).catch(console.error), 120_000);
+    } finally {
+      offering = false;
+    }
+    if (askAgain && !offered) {
+      askAgain = false;
+      await offer(retries);
+    }
+  };
+  api.onPluginSuggestionsReady?.(() => {
+    if (armed) offer(1).catch(console.error);
+  });
+  setTimeout(() => {
+    armed = true;
+    offer(1).catch(console.error);
+  }, 8000);
   setTimeout(hideBoot, Math.max(0, 900 - (performance.now() - bootStarted)));
 }
 

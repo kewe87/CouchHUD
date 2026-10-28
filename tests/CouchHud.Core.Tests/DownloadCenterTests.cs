@@ -182,7 +182,7 @@ public class DownloadCenterTests
     [Fact]
     public void Running_lines_are_not_dismissed()
     {
-        _center.Begin("a", DownloadKind.CaseHud, "casehud", "CaseHUD");
+        _center.Begin("a", DownloadKind.Plugin, "plugin", "Plugin");
         Assert.False(_center.Dismiss("a"));
         Assert.Single(_center.Entries());
     }

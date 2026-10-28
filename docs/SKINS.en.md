@@ -17,14 +17,17 @@ A skin is a stylesheet plus optional button glyphs of its own. It changes colors
 
 ```json
 {
-  "name": "Synthwave",
-  "description": "Neon, sunset, 1986",
-  "glyphs": { "A": "✕", "B": "○", "X": "□", "Y": "△", "LB": "L1", "RB": "R1" },
+  "name": { "de": "Synthwave", "en": "Synthwave" },
+  "description": { "de": "Neon, Sonnenuntergang, 1986", "en": "Neon, sunset, 1986" },
+  "glyphs": { "A": "✕", "B": "○", "X": "□", "Y": "△", "LB": "L1", "RB": "R1", "≡": "MENU" },
+  "soundSet": "nova",
   "sounds": { "move": "move.ogg", "select": "select.ogg", "back": "back.ogg", "notify": "notify.ogg" }
 }
 ```
 
-`glyphs` is optional and only styling: which symbols appear is decided by the controller (or *Settings › Controller › Button symbols*). An entry such as `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` or `PS` only applies with PlayStation symbols, any other only with Xbox symbols; otherwise CouchHUD shows the default symbol of that kind of controller. The button colors with PlayStation symbols hang on `:root[data-pad="playstation"]`.
+`name` and `description` are either plain text or an object with `de` and `en`; CouchHUD shows the one for the current language (the other one if it is missing). Names have at most 40 characters, descriptions 300; control characters, invisible format characters (such as text-direction overrides or zero-width characters) and `<` `>` are removed, so a name is always plain text. A skin without a name carries its folder name. `soundSet` is optional: one of the sound sets of the app (`default`, `deepsea`, `greenlight`, `neoncity`, `nova`) that plays while the skin is active; anything else is ignored.
+
+`glyphs` is optional (at most 32 entries, each label at most 12 characters) and only styling. The key `≡` is the label of the menu button (for example `☰` or `MENU`): which symbols appear is decided by the controller (or *Settings › Controller › Button symbols*). An entry such as `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` or `PS` only applies with PlayStation symbols, any other only with Xbox symbols; otherwise CouchHUD shows the default symbol of that kind of controller. The button colors with PlayStation symbols hang on `:root[data-pad="playstation"]`.
 
 `sounds` is optional. Possible events: `move`, `tab`, `select`, `back`, `bump`, `open`, `close`, `notify`, `toggle`, `boot` and `music`. `music` is a background track that loops when the user has chosen "Menu sounds and music"; without it, the skin's built-in music plays. Allowed are `.wav`, `.ogg` and `.mp3` from the skin folder. For missing events CouchHUD plays the built-in sound set.
 
@@ -73,7 +76,7 @@ Put your own fonts and images in the skin folder and reference them relatively (
 | `--font` | Font family |
 | `--tile-radius`, `--shelf-tile`, `--focus-scale` | Corners, tile size on Home, zoom of the focus |
 
-For everything else you can override the selectors from `ui/styles.css`. The built-in skins in `ui/skins/` (Deep Sea, Greenlight, Neon City, Nova) show how far that goes: Deep Sea (`deepsea.css`), for example, turns the whole Home layout around.
+For everything else you can override the selectors from `ui/styles.css`. The skins in the catalog (Deep Sea, Greenlight, Neon City, Nova, Stardust) show how far that goes: Deep Sea, for example, turns the whole Home layout around. Only the CouchHUD skin is part of the app (`ui/skins/`); all others are skins like yours, installed into the skins folder, and their rules begin with `:root[data-skin="user:<folder>"]`.
 
 ## Mouse pointer
 
@@ -101,7 +104,7 @@ This is only the pointer inside CouchHUD. In other windows it stays the Windows 
 
 Start CouchHUD with `--dev` and pick your skin under *Settings › Look › Skin*. You see changes to the CSS after selecting it again.
 
-It also works without Windows: `node scripts/preview-server.js` starts the interface with sample data in the browser. There, simply add your skin as another file in `ui/skins/` and register it in `ui/skins/index.js`.
+It also works without Windows: `node scripts/preview-server.js` starts the interface with sample data in the browser. There, serve your skin folders with `CATALOG_SKINS=<folder with your skin folders> node scripts/preview-server.js` and look at a skin with `node scripts/ui-shot.mjs --catalog <folder> skin:user:<folder name> shot:home`. The stylesheet is cleaned of web addresses there just as the app does it.
 
 ## Sharing
 

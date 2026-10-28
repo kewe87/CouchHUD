@@ -1,0 +1,24 @@
+{
+  "id": "vpn",
+  "folder": "CouchHud.Plugin.Vpn",
+  "version": "1.0.0",
+  "sha256": "",
+  "sdk": 3,
+  "minCouchHud": "0.6.0",
+  "capabilities": [
+    "pages",
+    "quickActions",
+    "process",
+    "registry",
+    "native"
+  ],
+  "publisherKey": "",
+  "license": "GPL-3.0-only",
+  "author": "kewe87",
+  "name": "VPN",
+  "summary": "Switch the VPN from the couch: see the status, connect, disconnect and choose a country (NordVPN), with guide menu entries",
+  "icon": {
+    "sha256": "b45fc57b12231f7f9a998f187f5a9263c6a567c053f6851d02e62e45d97da54a",
+    "bytes": 41540
+  }
+}

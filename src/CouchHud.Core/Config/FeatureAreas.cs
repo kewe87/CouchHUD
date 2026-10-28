@@ -43,19 +43,21 @@ public static class FeatureAreas
         // Browser.
         ["maximizeBrowser"] = Browser,
         ["browserHistory"] = Browser,
+        // Favorites tab (formerly Home): websites belong to the browser, the arrangement to everything.
+        ["favoritesSites"] = Browser,
+        ["favoritesMode"] = Always,
         // Everything else is shared by all areas.
         ["audioMode"] = Always, ["screensaverMinutes"] = Always, ["screensaverStyle"] = Always, ["displayOffMinutes"] = Always,
-        ["caseHudInstallAutostart"] = Always, ["caseHudInstallFps"] = Always, ["caseHudInstallApi"] = Always, ["caseHudGamingLease"] = Always,
-        ["tvInGuide"] = Always, ["tvOnWithCouchHud"] = Always, ["tvOffWithPc"] = Always, ["vpnInGuide"] = Always,
+        ["tvInGuide"] = Always, ["tvOnWithCouchHud"] = Always, ["tvOffWithPc"] = Always,
         ["bluetoothAutoOn"] = Always, ["selfUpdateCheck"] = Always, ["pixelShift"] = Always, ["reduceMotion"] = Always,
         ["pointer"] = Always, ["mouseUnlocked"] = Always, ["closeExplorerInLight"] = Always, ["acceptedTerms"] = Always,
-        ["setupWizardDone"] = Always, ["guideTapInGame"] = Always, ["suppressCompetitors"] = Always, ["gameBarButton"] = Always,
+        ["setupWizardDone"] = Always, ["autoLogonDeclined"] = Always, ["guideTapInGame"] = Always, ["suppressCompetitors"] = Always, ["gameBarButton"] = Always,
         ["musicVolume"] = Always, ["soundVolume"] = Always, ["soundSet"] = Always, ["uiHdr"] = Always, ["sounds"] = Always,
         ["expertMode"] = Always, ["language"] = Always, ["rumble"] = Always, ["padGlyphs"] = Always, ["runStartupApps"] = Always,
         ["killExplorerOnReturn"] = Always, ["nightMode"] = Always, ["nightModeStrength"] = Always,
         ["closePcAppsOnReturn"] = Always, ["onlineArtwork"] = Always, ["clearArtworkCache"] = Always,
         ["autoSwitchHeadphones"] = Always, ["returnHoldMs"] = Always, ["weatherLocation"] = Always,
-        ["homeAssistantUrl"] = Always, ["homeAssistantToken"] = Always, ["aiProvider"] = Always, ["aiModel"] = Always,
+        ["aiProvider"] = Always, ["aiModel"] = Always,
         ["anthropicApiKey"] = Always, ["openAiApiKey"] = Always, ["mcpEnabled"] = Always, ["mirrorNotifications"] = Always,
         ["remoteEnabled"] = Always, ["mcpLan"] = Always, ["mcpToken"] = Always, ["screenshotCombo"] = Always,
     };
@@ -104,7 +106,7 @@ public static class FeatureAreas
     public static readonly IReadOnlySet<string> AlwaysMethods = new HashSet<string>(StringComparer.Ordinal)
     {
         // Library and entries (checked per entry or per added entry).
-        "getLibrary", "launch", "toggleFavorite", "getStoreInfo", "getDetails", "uninstall", "browse", "addEntries", "editLaunch",
+        "getLibrary", "getFavorites", "launch", "toggleFavorite", "toggleFavoriteSite", "getStoreInfo", "getDetails", "uninstall", "browse", "addEntries", "editLaunch",
         "getLaunchOptions", "setLaunchOverride", "getItemInfo", "setItemInfo", "editItem", "getArtworkChoices", "setArtwork",
         "getCollections", "createCollection", "renameCollection", "deleteCollection", "setCollectionMember", "setCollectionOnHome",
         "removeEntry", "getSession", "resumeGame", "quitGame",
@@ -124,8 +126,9 @@ public static class FeatureAreas
         // Downloads tab (CouchHUD's and Windows' own downloads; game lines go with Gaming inside the center).
         "getDownloadCenter", "dismissDownload", "cancelDownload",
         // Plugins and skins.
-        "getPlugins", "setPluginEnabled", "setPluginSetting", "getPluginPage", "activatePluginRow", "getQuickActions", "approvePlugin",
-        "runQuickAction", "installPackage", "getCatalog", "getCatalogUpdates", "installCatalogEntry", "listSkins", "setSkin",
+        "getPlugins", "setPluginEnabled", "setPluginSetting", "setPluginFunctionLevel", "endPluginVisit", "getPluginPage", "getPluginTabs", "getPluginGate", "activatePluginRow", "getQuickActions", "approvePlugin",
+        "runQuickAction", "installPackage", "getCatalog", "getCatalogUpdates", "installCatalogEntry", "updateCatalogEntry", "getCatalogDetail", "getCatalogSources", "addCatalogSource", "removeCatalogSource", "uninstallPlugin", "acceptRevokedPlugin",
+        "confirmPluginExe", "getPluginSuggestions", "dismissPluginSuggestion", "changePluginRow", "listSkins", "setSkin",
         // Notifications, Bluetooth, Wi-Fi, phone remote, firewall.
         "getNotifications", "markNotificationsRead", "clearNotifications", "getBluetooth", "scanBluetooth", "pairBluetooth",
         "unpairBluetooth", "getWifi", "scanWifi", "connectWifi", "disconnectWifi", "answerBluetoothRecovery", "setBluetooth", "getRemote",
@@ -134,9 +137,8 @@ public static class FeatureAreas
         "getStartup", "setStartupMode", "applyStartupSuggestions", "getServices", "toggleCouchService", "setupServiceTask",
         "releaseLockPolicies", "cleanupStuckPolicies", "getProcesses", "switchProcess", "killProcess", "getUpdates", "checkUpdates",
         "getSelfUpdate", "checkSelfUpdate", "startSelfUpdate", "startUpdate",
-        // Weather and smart home (signing in through Home Assistant's web page needs the browser: Hud checks that itself).
-        "getWeather", "searchPlaces", "getHomeEntities", "activateHomeEntity", "pinHomeEntity", "getHomeCatalog", "setHomeSelection",
-        "testHomeAssistant", "signInHomeAssistant", "signOutHomeAssistant",
+        // Weather.
+        "getWeather", "searchPlaces",
     };
 
     /// <summary>Bridge calls whose first argument is a library entry: refused for an entry of an area that is off.</summary>

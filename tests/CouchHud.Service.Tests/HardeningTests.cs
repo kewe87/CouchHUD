@@ -65,7 +65,6 @@ public class HardeningTests
         Assert.Equal(ErrorCodes.BadArgument, Check($$$"""{"v":1,"op":"ReleaseLockPolicies","grant":"{{{Grant}}}\n","args":{"groups":["lock"]}}""").Code);
         Assert.Equal(ErrorCodes.BadArgument, Check("""{"v":1,"op":"GetJob","args":{"jobId":"0123456789abcdef0123456789abcdef\n"}}""").Code);
         Assert.Equal(ErrorCodes.BadArgument, Check($$$"""{"v":1,"op":"InstallCouchHudUpdate","args":{{{Setup("CouchHud-Setup-0.4.1.exe\\n")}}}}""").Code);
-        Assert.Equal(ErrorCodes.BadArgument, Check($$$"""{"v":1,"op":"InstallCaseHud","args":{{{Setup("CaseHUD-Setup-1.2.3.exe\\n")}}}}""").Code);
         Assert.Equal(ErrorCodes.BadArgument, Check($$$"""{"v":1,"op":"EnrollPasscode","args":{"hash":"{{{Hash}}}\n"}}""").Code);
         Assert.Equal(ErrorCodes.BadArgument, Check("""{"v":1,"op":"PauseServices","args":{"names":["WSearch\n"]}}""").Code);
         // ... and the same without the newline passes.
@@ -78,7 +77,6 @@ public class HardeningTests
     {
         // U+0660 ARABIC-INDIC DIGIT ZERO, U+FF11 FULLWIDTH DIGIT ONE
         Assert.Equal(ErrorCodes.BadArgument, Check($$$"""{"v":1,"op":"InstallCouchHudUpdate","args":{{{Setup("CouchHud-Setup-\\u0660.4.1.exe")}}}}""").Code);
-        Assert.Equal(ErrorCodes.BadArgument, Check($$$"""{"v":1,"op":"InstallCaseHud","args":{{{Setup("CaseHUD-Setup-1.\\uff11.3.exe")}}}}""").Code);
         Assert.Equal(ErrorCodes.BadArgument, Check("""{"v":1,"op":"EnrollPasscode","args":{"hash":"pbkdf2-sha256$١٠٠٠٠٠$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}}""").Code);
         Assert.Equal(ErrorCodes.BadArgument, Check("""{"v":1,"op":"GetJob","args":{"jobId":"٠123456789abcdef0123456789abcdef"}}""").Code);
         Assert.True(Check($$$"""{"v":1,"op":"InstallCouchHudUpdate","args":{{{Setup("CouchHud-Setup-0.4.1.exe")}}}}""").Ok);

@@ -146,13 +146,36 @@ public class CatalogTests : IDisposable
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "catalog", "index.json"))) dir = dir.Parent;
-        if (dir is null) return;   // built outside the repository
+        var release = Environment.GetEnvironmentVariable("RELEASE") == "1";   // scripts/check.sh with RELEASE=1: a stale signature must never ship
+        if (dir is null) { Assert.False(release, "RELEASE=1 but catalog/index.json was not found"); return; }   // built outside the repository
         var file = Path.Combine(dir.FullName, "catalog", "index.json");
         // Signed with the maintainer's key; a changed byte (or line ending) would break this.
-        Assert.True(CatalogSignature.Verify(File.ReadAllBytes(file), File.ReadAllText(file + ".sig")));
+        var signed = CatalogSignature.Verify(File.ReadAllBytes(file), File.ReadAllText(file + ".sig"));
+        // A change of the index that waits for the maintainer's signature is marked by catalog/index.json.unsigned; once the
+        // signature is renewed the marker has to go, so a stale signature can never pass for long.
+        var marker = Path.Combine(dir.FullName, "catalog", "index.json.unsigned");
+        if (release) { Assert.False(File.Exists(marker), "RELEASE=1: catalog/index.json.unsigned exists"); Assert.True(signed, "RELEASE=1: catalog/index.json.sig does not match catalog/index.json (checked with the key pinned in the code)"); }
+        else if (File.Exists(marker)) Assert.False(signed, "index.json is signed again: delete catalog/index.json.unsigned");
+        else Assert.True(signed);
         var entries = Parse(File.ReadAllText(file));
-        Assert.Equal(["wand", "synthwave", "stardust"], entries.Select(e => e.Id));
-        Assert.All(entries, e => Assert.Null(e.Problem));
+        Assert.Equal(["wand", "homeassistant", "casehud", "vpn", "synthwave", "stardust", "deepsea", "greenlight", "neoncity", "nova"], entries.Select(e => e.Id));
+        // Every entry works with this build: the skins and plugins that ask for 0.6.0 are installable now that the product is 0.6.0.
+        Assert.All(entries, e => Assert.True(CatalogRules.IsCompatible(e, CatalogRules.AppVersion), $"{e.Id} needs {e.MinCouchHud}"));
+        // An icon is shown only with a hash: an entry with a statement takes it from the signed statement (never from the index), every
+        // other entry with an icon names it in the index.
+        Assert.All(entries.Where(e => e.IconUrl is not null && e.Statement is null),
+            e => Assert.True(e.IconSha256 is { Length: 64 }, $"{e.Id} has an icon but no iconSha256, so the catalog would not show it"));
+        Assert.All(entries.Where(e => e.Statement is not null), e => SignedCatalogEntry.AssertOwnSigned(e));
+        // New entries use one spelling for the project's repositories (CatalogUrl.CanonicalRepositories); the host accepts any case, the index does not.
+        foreach (var url in System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(file), "\"(https://[^\"]+)\"").Select(m => m.Groups[1].Value))
+            Assert.True(CatalogUrl.NonCanonicalReason(url) is null, $"{url}: {CatalogUrl.NonCanonicalReason(url)}");
+        // The Home Assistant plugin waits for the owner's signed statement (catalog/statements/homeassistant.json): until the entry has one it
+        // is listed but cannot be installed, which is what a missing package hash means.
+        Assert.All(entries, e =>
+        {
+            if (e.Id is "homeassistant" or "casehud" or "vpn" && e.Statement is null) Assert.NotNull(e.Problem);
+            else Assert.Null(e.Problem);
+        });
         Assert.Equal("CouchHud.Plugin.Wand", entries[0].Folder);
     }
 

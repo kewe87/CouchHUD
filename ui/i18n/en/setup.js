@@ -61,6 +61,8 @@ export default {
   'consoleSetup.step.autostart.adopted': 'Recommendation applied',
   'consoleSetup.step.services.title': 'Pause services, lock without prompts',
   'consoleSetup.step.services.detail': 'Only harmless services (search, printing …), they run again in PC mode. Plus small scheduled tasks that let the couch lock set its Windows policies without asking each time. Needs a confirmation',
+  'consoleSetup.step.servicesTasks.title': 'Prepare the lock without prompts',
+  'consoleSetup.step.servicesTasks.detail': 'Small scheduled tasks that let the lock set its Windows policies without asking each time. No services are paused. Needs a confirmation',
   'consoleSetup.step.services.unprotected': 'CouchHUD is not in a protected folder (e.g. C:\\Program Files\\CouchHud). Set it up afterwards in Expert mode under Startup & services',
   'consoleSetup.windowsPromptFailed': 'This step did not work: {error}. “Try again” runs it once more',
   'consoleSetup.step.services.done': 'Services are paused in couch mode',

@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 using CouchHud.Core.Platform;
 using CouchHud.Core.Plugins;
 using CouchHud.Core.Updates;
@@ -7,13 +9,31 @@ using CouchHud.Core.Updates;
 namespace CouchHud.Shell.Services;
 
 /// <summary>
-/// Running the command line of an installed program from the user's session (CaseHUD's API switch, the VPN apps), shared so every caller
+/// Running the command line of an installed program from the user's session (the plugins' programs), shared so every caller
 /// gets the same checks: the exe comes from an administrator-written source (HKLM uninstall or App Paths entry, Program Files), its
 /// real path is read through an open handle, no reparse point may be on the way and it has to lie below Program Files. Never a path from
 /// PATH, from a user-writable folder or from a file the program itself wrote. No shell, arguments only through ArgumentList.
 /// </summary>
 internal static class TrustedCliRunner
 {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeProcessHandle OpenProcess(uint access, bool inherit, int pid);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageNameW(SafeProcessHandle process, uint flags, StringBuilder name, ref uint size);
+
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+
+    /// <summary>The image of a process; the limited right also works for a program that runs elevated (Process.SafeHandle would be refused).</summary>
+    public static string? ProcessImage(int pid)
+    {
+        using var handle = OpenProcess(ProcessQueryLimitedInformation, false, pid);
+        if (handle.IsInvalid) return null;
+        var buffer = new StringBuilder(1024);
+        var size = (uint)buffer.Capacity;
+        return QueryFullProcessImageNameW(handle, 0, buffer, ref size) ? buffer.ToString(0, (int)size) : null;
+    }
+
     /// <summary>The real path of a file through an open handle (links and short names resolved); the text itself if it cannot be opened.</summary>
     public static string CanonicalPath(string path)
     {

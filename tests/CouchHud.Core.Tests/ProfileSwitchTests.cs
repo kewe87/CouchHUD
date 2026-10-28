@@ -420,19 +420,19 @@ public sealed class ProfileSwitchTests : IDisposable
     {
         var (c, papa, _, _) = Household();
         c.Language = "de";
-        c.Skin = "greenlight";
+        c.Skin = "user:greenlight";
         c.SwitchActiveProfile(papa);
         c.ActiveProfile.Language = "en";
-        c.ActiveProfile.Skin = "deepsea";
+        c.ActiveProfile.Skin = "user:deepsea";
 
         Assert.True(ProfileSwitch.HeldAtStart(c));
         var look = ProfileSwitch.Look(c, held: true);
         Assert.True(look.IsDefault);
         Assert.Equal("de", look.Language);
-        Assert.Equal("greenlight", look.Skin);
+        Assert.Equal("user:greenlight", look.Skin);
         // Chosen: the person's own look.
         Assert.Equal("en", ProfileSwitch.Look(c, held: false).Language);
-        Assert.Equal("deepsea", ProfileSwitch.Look(c, held: false).Skin);
+        Assert.Equal("user:deepsea", ProfileSwitch.Look(c, held: false).Skin);
     }
 
     [Fact]

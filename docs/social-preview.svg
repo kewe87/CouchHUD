@@ -40,9 +40,9 @@
   <text x="304" y="298" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="26" font-weight="600" fill="#7f8cff">Controller first · All your launchers in one library · Open source</text>
 
   <g filter="url(#shadow)">
-    <image href="screenshot-home.png" x="64" y="384" width="356" height="200" preserveAspectRatio="xMidYMid slice" clip-path="url(#r1)"/>
-    <image href="screenshot-library.png" x="462" y="384" width="356" height="200" preserveAspectRatio="xMidYMid slice" clip-path="url(#r2)"/>
-    <image href="screenshot-casehud.png" x="860" y="384" width="356" height="200" preserveAspectRatio="xMidYMid slice" clip-path="url(#r3)"/>
+    <image href="screenshot-home.en.png" x="64" y="384" width="356" height="200" preserveAspectRatio="xMidYMid slice" clip-path="url(#r1)"/>
+    <image href="screenshot-library.en.png" x="462" y="384" width="356" height="200" preserveAspectRatio="xMidYMid slice" clip-path="url(#r2)"/>
+    <image href="screenshot-guide.en.png" x="860" y="384" width="356" height="200" preserveAspectRatio="xMidYMid slice" clip-path="url(#r3)"/>
   </g>
   <g fill="none" stroke="#ffffff" stroke-opacity=".12" stroke-width="2">
     <rect x="64" y="384" width="356" height="200" rx="14"/>

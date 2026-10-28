@@ -49,7 +49,7 @@ public sealed class ProfileTests : IDisposable
         p.PlaytimeMinutes["steam:9"] = 7;
         p.Rules.WeekdayMinutes = 30;
         p.Rules.MaxAge = 6;
-        p.Skin = "nova";
+        p.Skin = "user:nova";
         return p;
     }
 
@@ -77,7 +77,7 @@ public sealed class ProfileTests : IDisposable
         Assert.Equal(12, p.Rules.MaxAge);
         Assert.True(p.Rules.Enabled);
         Assert.True(c.ParentalEnabled);
-        Assert.Equal("deepsea", p.Skin); // 0.4 called it "ps4"
+        Assert.Equal("user:deepsea", p.Skin); // 0.4 called it "ps4"
         Assert.Equal("en", p.Language);
         Assert.True(p.ReduceMotion);
     }
@@ -87,7 +87,7 @@ public sealed class ProfileTests : IDisposable
     {
         var c = Parse(OldConfig);
         c.ActiveProfile.Favorites.Add("steam:3");
-        c.ActiveProfile.Skin = "greenlight";
+        c.ActiveProfile.Skin = "user:greenlight";
         var json = JsonNode.Parse(Serialize(c))!.AsObject();
 
         Assert.False(json.ContainsKey("profiles"));
@@ -96,7 +96,7 @@ public sealed class ProfileTests : IDisposable
         Assert.False(json.ContainsKey("allProfiles"));
         Assert.False(json.ContainsKey("parentalEnabled"));
         Assert.Contains("steam:3", json["favorites"]!.AsArray().Select(n => n!.GetValue<string>()));
-        Assert.Equal("greenlight", json["skin"]!.GetValue<string>());
+        Assert.Equal("user:greenlight", json["skin"]!.GetValue<string>());
     }
 
     // --- Roundtrip and downgrade -------------------------------------------------------------------------------------------
@@ -122,7 +122,7 @@ public sealed class ProfileTests : IDisposable
         Assert.Equal(7, p.PlaytimeMinutes["steam:9"]);
         Assert.Equal(30, p.Rules.WeekdayMinutes);
         Assert.Equal(6, p.Rules.MaxAge);
-        Assert.Equal("nova", p.Skin);
+        Assert.Equal("user:nova", p.Skin);
         // Not set for the child: follows the household.
         Assert.Equal(again.SoundVolume, p.SoundVolume);
         Assert.Equal(2, again.AllProfiles.Count);
@@ -161,7 +161,7 @@ public sealed class ProfileTests : IDisposable
         Assert.Equal(["epic:2"], old.Parental.LockedItems);
         Assert.True(old.Parental.Enabled);
         Assert.True(old.Parental.LedgerStarted);
-        Assert.Equal("deepsea", old.Skin);
+        Assert.Equal("user:deepsea", old.Skin);
         Assert.Equal("en", old.Language);
     }
 
@@ -194,7 +194,7 @@ public sealed class ProfileTests : IDisposable
         Assert.Equal("W. Europe Standard Time", p.Rules.TimeZoneId);
         Assert.False(p.Rules.LedgerStarted);
         Assert.Empty(p.Favorites);
-        Assert.Equal("deepsea", p.Skin); // follows the household until changed
+        Assert.Equal("user:deepsea", p.Skin); // follows the household until changed
     }
 
     [Fact]
@@ -207,7 +207,7 @@ public sealed class ProfileTests : IDisposable
 
         Assert.True(c.ReduceMotion);
         Assert.Equal(0, c.Parental.PerGameMinutes);
-        Assert.Equal("deepsea", c.Skin);
+        Assert.Equal("user:deepsea", c.Skin);
         Assert.DoesNotContain("steam:9", c.Favorites);
         Assert.True(c.ActiveProfile.ReduceMotion);
     }

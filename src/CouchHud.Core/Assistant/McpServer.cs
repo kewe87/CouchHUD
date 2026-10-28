@@ -54,7 +54,7 @@ public sealed class McpServer(IToolHost host, string version, Func<IReadOnlyList
                     ["protocolVersion"] = requested is "2025-03-26" or "2024-11-05" ? requested : ProtocolVersion,
                     ["capabilities"] = new JsonObject { ["tools"] = new JsonObject { ["listChanged"] = false } },
                     ["serverInfo"] = new JsonObject { ["name"] = "CouchHUD", ["version"] = version },
-                    ["instructions"] = "Controls the CouchHUD living-room PC: library, launching games, settings, smart home, audio and power."
+                    ["instructions"] = "Controls the CouchHUD living-room PC: library, launching games, settings, audio and power."
                 });
             case "ping":
                 return Result(id, new JsonObject());

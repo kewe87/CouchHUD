@@ -77,14 +77,76 @@ public interface IPluginContext
     /// Needs the unlocked couch. Returns false when refused. Older hosts answer false (the default implementation).
     /// </summary>
     bool OpenUrl(string url) => false;
+
+    // ---- SDK v3 ----
+    // Every member below needs its capability (see PluginCapabilities); without it the host throws PluginCapabilityException.
+    // Older hosts answer with the default implementations: nothing happens, false or null.
+
+    /// <summary>
+    /// A main tab that shows one of this plugin's pages (<see cref="PluginTab"/>). Capability "tabs". The host allows at most two tabs per
+    /// plugin and six plugin tabs in all, refuses ids, titles and pictures that do not pass its checks (and titles that look like a
+    /// built-in tab), and registering an id again replaces the earlier one. Older hosts do nothing (the default implementation).
+    /// </summary>
+    void RegisterTab(PluginTab tab) { }
+
+    /// <summary>A page's rows changed (pushed state): the host asks <see cref="PluginPage.Rows"/> again and updates an open page. Capability "pages".</summary>
+    void Invalidate(string pageId) { }
+
+    /// <summary>Lines on the downloads page. Capability "downloads"; null on older hosts.</summary>
+    IPluginDownloads? Downloads => null;
+
+    /// <summary>Read-only network state. Capability "network.state"; null on older hosts.</summary>
+    IPluginNetwork? Network => null;
+
+    /// <summary>
+    /// Runs the command line of a program below Program Files that the user confirmed for this plugin: no shell, no window, a hard
+    /// timeout (at most one minute), stdout not read, stderr capped. Capability "process". Refused (see <see cref="PluginCliResult.Refused"/>)
+    /// for an exe that is not confirmed, not below Program Files, or on a locked couch for a plugin that is not CouchHUD's own.
+    /// </summary>
+    Task<PluginCliResult> RunTrustedCliAsync(string exePath, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken) =>
+        Task.FromResult(new PluginCliResult(null, "", false, "unsupported"));
+
+    /// <summary>Takes an entry out of the guide menu again (the id of <see cref="RegisterQuickAction"/>). Capability "quickActions".</summary>
+    void RemoveQuickAction(string id) { }
+
+    /// <summary>
+    /// First-party only, capability "browser.signin": a web sign-in in the couch browser whose redirect the host catches without loading
+    /// it (see <see cref="IPluginSignIn"/>). Null on hosts without it.
+    /// </summary>
+    IPluginSignIn? SignIn => null;
+
+    /// <summary>
+    /// First-party only, capability "setup.run": hands a downloaded setup to Windows with the admin prompt (runas), so Windows always asks. The host
+    /// needs the unlocked couch, a press of the plugin's own row or entry that asks for the parents' code (one use, short-lived), a file in this plugin's own
+    /// data folder and hashes it again against <paramref name="sha256"/>.
+    /// </summary>
+    Task<bool> RunSetupAsync(string path, string sha256, CancellationToken cancellationToken) => Task.FromResult(false);
+
+    /// <summary>First-party only, capability "lock.restrict": windows of this program (canonical, below Program Files) are minimized on the locked couch.</summary>
+    bool RestrictWhileLocked(string exePath) => false;
+
+    /// <summary>
+    /// First-party only, capability "startup.args": when CouchHUD runs the autostart entries as the shell, the arguments of the entry
+    /// that starts this program (canonical, below Program Files) go through <paramref name="adapt"/> (null keeps them).
+    /// </summary>
+    bool AdaptStartupArgs(string exePath, Func<string, string?> adapt) => false;
+
+    // ---- functions (additive; no capability and no contract change: an older host ignores them and the old flags apply) ----
+
+    /// <summary>
+    /// Declares the plugin's functions (<see cref="PluginFunction"/>), at most twelve; declaring an id again replaces it. Pages, rows, guide
+    /// entries, tabs and tools name one with their <c>Function</c> property. Older hosts do nothing (the default implementation).
+    /// </summary>
+    void RegisterFunctions(params PluginFunction[] functions) { }
 }
 
 /// <summary>
 /// The SDK version this build of CouchHud implements. Plugins can declare the version
 /// they need in plugin.json ("sdk": 1); newer ones are not loaded.
 /// Version 2 adds <see cref="IPluginContext.Locked"/> and <see cref="IPluginEvents.LockChanged"/>; plugins for version 1 keep working unchanged.
+/// Version 3 adds capabilities, richer pages (sections, images, steppers, choices, links), pushed state and the host services.
 /// </summary>
 public static class SdkVersion
 {
-    public const int Current = 2;
+    public const int Current = 3;
 }

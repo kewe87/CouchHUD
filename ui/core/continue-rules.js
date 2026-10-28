@@ -9,10 +9,10 @@ export const CONTINUE_LIMIT = 6;
  * one (Home puts that first anyway). Hidden entries and apps stay out, like in the library. Games locked by the parental controls
  * are shown exactly as the library shows them: the gate at the start decides, the row invents no rule of its own.
  */
-export function continuePlaying(library, { runningId = null, limit = CONTINUE_LIMIT } = {}) {
+export function continuePlaying(library, { runningId = null, limit = CONTINUE_LIMIT, blocked = null } = {}) {
   const room = Math.max(0, limit - (runningId ? 1 : 0));
   return library
-    .filter((i) => !i.hidden && i.type === 'game' && i.lastPlayed > 0 && i.id !== runningId)
+    .filter((i) => !i.hidden && i.type === 'game' && i.lastPlayed > 0 && i.id !== runningId && !blocked?.has(i.id))
     .sort((a, b) => b.lastPlayed - a.lastPlayed)
     .slice(0, room);
 }
@@ -28,12 +28,13 @@ export function continueFacts(item) {
 }
 
 /**
- * The Home shelf in order: the running game, the rest of "Continue playing", then the other recent games and favorites without
- * repeating one, then the extra tiles (collections, "All games"). The first card of "Continue playing" is the big one (hero).
+ * The Favorites shelf (the home view) in order: the running game, the rest of "Continue playing", then the other recent games and favorites without
+ * repeating one (`recent` is the host's arrangement of favorites and recent entries; `blocked` are entries the person's rules keep
+ * out of sight, also here), then the extra tiles (collections, "All games"). The first card of "Continue playing" is the big one (hero).
  * Returns { list, continueIds, heroId }.
  */
-export function homeShelf({ running = null, library = [], recent = [], extras = [], limit = CONTINUE_LIMIT }) {
-  const cont = continuePlaying(library, { runningId: running?.id ?? null, limit });
+export function homeShelf({ running = null, library = [], recent = [], extras = [], limit = CONTINUE_LIMIT, blocked = null }) {
+  const cont = continuePlaying(library, { runningId: running?.id ?? null, limit, blocked });
   const first = [...(running ? [running] : []), ...cont];
   const continueIds = new Set(first.map((i) => i.id));
   const rest = recent.filter((i) => !continueIds.has(i.id));

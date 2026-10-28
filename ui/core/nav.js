@@ -10,15 +10,15 @@ import { state } from './state.js';
 import { sound } from '../sound.js';
 import { glyph } from './skins.js';
 import { stopTrailer } from './media.js';
+import { activeAfter, isPinnedTab } from './plugin-tabs.js';
 
 let tabs = [];
 
 /** Sets the tab views; the active tab stays active even when tabs are added before it. */
 export function setTabs(views) {
-  const active = tabs[state.tab];
+  // The active tab is gone (a plugin was switched off or failed, its area went off): back to the first tab.
+  state.tab = activeAfter(tabs, state.tab, views);
   tabs = views;
-  const index = views.indexOf(active);
-  state.tab = index >= 0 ? index : Math.min(state.tab, views.length - 1);
 }
 
 export const tabViews = () => tabs;
@@ -48,16 +48,29 @@ export function render() {
     void root.offsetWidth;
     root.classList.add(`enter-${direction}`);
   }
+  // Leaving a tab for another tab: it may finish what it still holds (a plugin tab sends a value that is settling).
+  if (lastRendered && lastRendered !== view && tabs.includes(lastRendered) && tabs.includes(view)) lastRendered.onLeave?.();
   lastRendered = view;
   lastTab = state.tab;
 }
 
+/** One entry of the tab bar; a tab may carry a small icon before its name (`tabIcon()`, plugin tabs). */
+function tabItem(view, active, index) {
+  const li = el('li', { className: active ? 'active' : '', textContent: view.name });
+  li.dataset.tab = String(index);
+  const icon = view.tabIcon?.();
+  if (icon) li.prepend(icon);
+  return li;
+}
+
 export function renderTabs() {
   const list = $('#tab-list');
-  list.replaceChildren(...tabs.map((v, i) =>
-    el('li', { className: i === state.tab ? 'active' : '', textContent: v.name })));
+  // Assistant and Settings stand apart at the end and never scroll out of sight; the others scroll (with many plugin tabs).
+  const items = tabs.map((v, i) => ({ v, i, pinned: isPinnedTab(v) }));
+  list.replaceChildren(...items.filter((x) => !x.pinned).map((x) => tabItem(x.v, x.i === state.tab, x.i)));
+  $('#tab-pinned').replaceChildren(...items.filter((x) => x.pinned).map((x) => tabItem(x.v, x.i === state.tab, x.i)));
   // Many tabs and a full status on the right: the list is cut and fades at its edges; the active tab is always scrolled into it.
-  const active = list.children[state.tab];
+  const active = [...list.children].find((li) => Number(li.dataset.tab) === state.tab);
   if (active) {
     const left = active.offsetLeft - list.offsetLeft;
     if (left < list.scrollLeft) list.scrollLeft = left - 16;

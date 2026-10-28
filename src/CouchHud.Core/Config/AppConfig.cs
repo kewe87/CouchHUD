@@ -180,14 +180,16 @@ public sealed class AppConfig
     /// <summary>Place for the weather in the header; null hides it.</summary>
     public CouchHud.Core.Integrations.Place? WeatherLocation { get; set; }
 
-    /// <summary>e.g. http://homeassistant.local:8123</summary>
+    // LEGACY (Home Assistant is a plugin now): HomeAssistantUrl, HomeAssistantToken, HomeAssistantRefreshToken, HomeAssistantPinned and
+    // HomeAssistantEntities are only read, once, to hand them to the Home Assistant plugin (PluginSettingSeeds). Nothing writes them any more.
+    /// <summary>LEGACY, read only for the plugin's first settings. e.g. http://homeassistant.local:8123</summary>
     public string HomeAssistantUrl { get; set; } = "";
 
-    /// <summary>Long-lived access token, encrypted for the Windows user (DPAPI).</summary>
+    /// <summary>LEGACY, read only for the plugin's first settings. Long-lived access token, encrypted for the Windows user (DPAPI).</summary>
     public string HomeAssistantToken { get; set; } = "";
 
     /// <summary>
-    /// "Sign in with Home Assistant": the refresh token for <see cref="HomeAssistantUrl"/>, encrypted for the Windows user (DPAPI) like the
+    /// LEGACY, read only for the plugin's first settings. "Sign in with Home Assistant": the refresh token for <see cref="HomeAssistantUrl"/>, encrypted for the Windows user (DPAPI) like the
     /// long-lived token. At most one of the two is set; another address drops both.
     /// </summary>
     public string HomeAssistantRefreshToken { get; set; } = "";
@@ -196,12 +198,12 @@ public sealed class AppConfig
     public List<CouchHud.Core.Integrations.NewsFeed> NewsFeeds { get; set; } =
         CouchHud.Core.Integrations.NewsService.Defaults.Select(f => new CouchHud.Core.Integrations.NewsFeed { Name = f.Name, Url = f.Url }).ToList();
 
-    /// <summary>Entities shown in the guide menu for quick access.</summary>
+    /// <summary>LEGACY, read only for the plugin's first settings. Entities shown in the guide menu for quick access.</summary>
     public List<string> HomeAssistantPinned { get; set; } = [];
 
     /// <summary>
-    /// Entities chosen for the Smart Home tab, in their order (ids like "light.sofa"). Empty: the tab offers the picker.
-    /// Untrusted when read: always through <see cref="CouchHud.Core.Integrations.HomeAssistantSelection.Sanitize(IEnumerable{string?})"/>.
+    /// LEGACY, read only for the plugin's first settings. Entities chosen for the Smart Home tab, in their order (ids like "light.sofa").
+    /// Untrusted when read: the seed sanitizes it (well-formed ids only).
     /// </summary>
     public List<string> HomeAssistantEntities { get; set; } = [];
 
@@ -220,6 +222,9 @@ public sealed class AppConfig
     /// <summary>A tap on the Xbox button in a game brings up the HUD, like on a console (holding opens the guide menu).</summary>
     public bool GuideTapInGame { get; set; } = true;
 
+    /// <summary>The setup assistant was told no to the automatic sign-in: its mode question then counts the shell setup as complete without it. Only decides what the assistant offers; the sign-in itself is set up or removed elsewhere.</summary>
+    public bool AutoLogonDeclined { get; set; }
+
     /// <summary>Guide held + Y takes a screenshot (also over a game); the Guide button's own tap then waits for its release.</summary>
     public bool ScreenshotCombo { get; set; } = true;
 
@@ -234,6 +239,13 @@ public sealed class AppConfig
     /// when read (<see cref="ConfigStore"/>, Parse); a new file starts decimal.
     /// </summary>
     public bool SaveLimitsDecimal { get; set; } = true;
+
+    /// <summary>
+    /// The plugins an install written by 0.5.x or older had in its user folder were taken over once into the list of approved plugins
+    /// (PluginTrust.AdoptExisting). A file without this field was written by 0.5.x or older and reads as false; a new file and the
+    /// stand-in for a broken one start true, so a missing list later adopts nothing and unknown folders stay unknown.
+    /// </summary>
+    public bool PluginTrustAdopted { get; set; } = true;
 
     /// <summary>The one-time upgrade from the blind Game Bar change to the snapshot has run.</summary>
     public bool GameBarMigrated { get; set; }
@@ -569,13 +581,32 @@ public sealed class AppConfig
     public List<string> DisabledPlugins { get; set; } = [];
 
     /// <summary>
+    /// The owner's choice per plugin function: plugin id → function id → "admin", "restricted" or "off" (PluginFunctionRules). Missing: the
+    /// plugin's suggestion applies (CouchHUD's own plugins may suggest restricted, every other plugin starts at admin). Unknown ids and values are
+    /// ignored (fail closed), a plugin's entry goes when the plugin is uninstalled. Changed only through Hud.SetPluginFunctionLevel.
+    /// </summary>
+    public Dictionary<string, Dictionary<string, string>> PluginFunctionLevels { get; set; } = new();
+
+    /// <summary>
     /// Feature areas switched off for this install (<see cref="FeatureAreas"/>): "games", "apps", "browser", "news".
     /// Empty or missing means everything is on; unknown names are ignored.
     /// </summary>
     public List<string> DisabledAreas { get; set; } = [];
 
     /// <summary>Plugin/skin catalog indexes (https). Several allowed; the first source wins for a duplicate id.</summary>
+    /// <remarks>
+    /// Since 0.6 only for developers: with the developer switch (<see cref="CatalogAllowLocal"/>) the entries besides the official one are
+    /// read as well (local files, a test server). The official catalog is built in whatever this says, and never needs to be listed.
+    /// Catalogs of other developers go into <see cref="ExtraCatalogSources"/>.
+    /// </remarks>
     public List<string> CatalogSources { get; set; } = [CouchHud.Core.Plugins.CatalogDefaults.IndexUrl];
+
+    /// <summary>
+    /// Catalogs of other developers, added from the HUD itself (expert mode, the parents' code, never on the locked couch or in a child's
+    /// profile, after the warning that the developer must be trusted). At most <see cref="CouchHud.Core.Plugins.CatalogSourceRules.MaxSources"/>.
+    /// The official catalog is not in this list; it cannot be removed or switched off.
+    /// </summary>
+    public List<CouchHud.Core.Plugins.CatalogSourceEntry> ExtraCatalogSources { get; set; } = [];
 
     /// <summary>Check the catalogs in the background for updates of installed plugins and skins (never while a game runs).</summary>
     public bool CatalogUpdateCheck { get; set; } = true;
@@ -583,32 +614,21 @@ public sealed class AppConfig
     /// <summary>Look on GitHub for a newer CouchHUD in the background (never while a game runs). Installing always needs a confirmation.</summary>
     public bool SelfUpdateCheck { get; set; } = true;
 
-    /// <summary>Install CaseHUD with its autostart entry (setup task "autostart").</summary>
-    public bool CaseHudInstallAutostart { get; set; } = true;
-
-    /// <summary>Install CaseHUD with the FPS task: the user joins "Performance Log Users" (setup task "fps"; takes effect after the next sign-in).</summary>
-    public bool CaseHudInstallFps { get; set; }
-
-    /// <summary>
-    /// After CouchHUD installed CaseHUD for the first time (full integration only): switch CaseHUD's API on for this user
-    /// (<c>CaseHUD.exe --set-api=on</c> in the user's session). CaseHUD's own default is off; the choice is shown on the install page and
-    /// named in the confirmation, so it stays the user's decision. An existing installation is never switched without a press.
-    /// </summary>
-    public bool CaseHudInstallApi { get; set; } = true;
-
-    /// <summary>Tell CaseHUD while a game runs (its displays can switch to the gaming scene).</summary>
+    // LEGACY (CaseHUD is a plugin now): CaseHudGamingLease is only read, once, for the plugin's first settings (PluginSettingSeeds). Nothing writes it any more.
+    /// <summary>LEGACY, read only for the plugin's first settings. Tell CaseHUD while a game runs (its displays can switch to the gaming scene).</summary>
     public bool CaseHudGamingLease { get; set; } = true;
 
     /// <summary>The paired TV (TV control, Settings › TV). The pairing key inside is DPAPI-protected.</summary>
     public CouchHud.Core.Integrations.Tv.TvConfig Tv { get; set; } = new();
 
+    // LEGACY (the VPN is a plugin now): VpnLastCountry and VpnInGuide are only read, once, for the plugin's first settings (PluginSettingSeeds). Nothing writes them any more.
     /// <summary>
-    /// The VPN country chosen last in CouchHUD (an id of the provider's fixed list, e.g. "de"), offered again in the Guide menu.
+    /// LEGACY, read only for the plugin's first settings. The VPN country chosen last in CouchHUD (an id of the provider's fixed list, e.g. "de"), offered again in the Guide menu.
     /// Only a remembered choice: anything that is not on the list is ignored when it is read.
     /// </summary>
     public string? VpnLastCountry { get; set; }
 
-    /// <summary>Show the VPN in the Guide menu (when a VPN app is installed). Expert setting.</summary>
+    /// <summary>LEGACY, read only for the plugin's first settings. Showed the VPN in the Guide menu.</summary>
     public bool VpnInGuide { get; set; } = true;
 
     /// <summary>
@@ -628,6 +648,15 @@ public sealed class AppConfig
 
     /// <summary>The built-in browser keeps a list of recently visited sites on its start page; off keeps none (and clears it).</summary>
     public bool BrowserHistory { get; set; } = true;
+
+    /// <summary>
+    /// What the Favorites tab (formerly Home) shows: "favorites", "recent" or "combined" (favorites first, then the entries used last).
+    /// Existing installs have no value and land on the combined view, which is what Home showed before.
+    /// </summary>
+    public string FavoritesMode { get; set; } = Library.FavoritesShelf.ModeCombined;
+
+    /// <summary>Websites (bookmarks marked as favorite) show in the Favorites tab. Off by default: a website is added on purpose.</summary>
+    public bool FavoritesSites { get; set; }
 
     /// <summary>End the PC-mode autostart programs again when returning to the couch.</summary>
     public bool ClosePcAppsOnReturn { get; set; }
@@ -1391,21 +1420,40 @@ public sealed class ConfigStore
         MigrateSaveLimits(config, json);
         MigrateSkinIds(config);
         MigrateAgeRatingSystem(config, json);
+        MigrateFavorites(config);
+        if (!HasProperty(json, nameof(AppConfig.PluginTrustAdopted))) config.PluginTrustAdopted = false;
         return config;
     }
 
+    /// <summary>The skin of the household and the one each profile has set for itself (null where it follows the household).</summary>
+    public static IEnumerable<string?> AskedSkins(AppConfig config) => (config.Profiles ?? []).Select(p => p?.Data?.Settings?.Skin).Append(config.Skin);
+
     /// <summary>
-    /// Skins renamed in 0.5 (<see cref="Skins.SkinCatalog.MigrateId"/>): the skin and sound set of the household and of every profile
+    /// Home became the Favorites tab (0.6): an unknown mode counts as the combined view, and every favorites list is cleaned (valid ids,
+    /// no duplicates; a long list is not cut). Favorites and the collections pinned to Home stay as they were; nothing else was pinned on Home.
+    /// </summary>
+    internal static void MigrateFavorites(AppConfig config)
+    {
+        config.FavoritesMode = Library.FavoritesShelf.NormalizeMode(config.FavoritesMode);
+        if (config.Favorites is not null) config.Favorites = Library.FavoritesShelf.Clean(config.Favorites);
+        foreach (var profile in config.Profiles ?? [])
+        {
+            if (profile?.Data is { Favorites: not null } data) data.Favorites = Library.FavoritesShelf.Clean(data.Favorites);
+        }
+    }
+
+    /// <summary>
+    /// Skins renamed in 0.5 and moved to the catalog in 0.6 (<see cref="Skins.SkinCatalog.MigrateSkinId"/>, <see cref="Skins.SkinCatalog.MigrateId"/>): the skin and sound set of the household and of every profile
     /// move to the new id. The next save writes the new ids; until then every read comes to the same result.
     /// </summary>
     internal static void MigrateSkinIds(AppConfig config)
     {
-        config.Skin = Skins.SkinCatalog.MigrateId(config.Skin)!;
+        config.Skin = Skins.SkinCatalog.MigrateSkinId(config.Skin)!;
         config.SoundSet = Skins.SkinCatalog.MigrateId(config.SoundSet)!;
         foreach (var profile in config.Profiles ?? [])
         {
             if (profile?.Data?.Settings is not { } settings) continue;
-            settings.Skin = Skins.SkinCatalog.MigrateId(settings.Skin);
+            settings.Skin = Skins.SkinCatalog.MigrateSkinId(settings.Skin);
             settings.SoundSet = Skins.SkinCatalog.MigrateId(settings.SoundSet);
         }
     }

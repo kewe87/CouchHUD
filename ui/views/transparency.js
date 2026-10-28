@@ -76,18 +76,6 @@ const entries = () => [
     state: () => t('transparency.state.see')
   },
   {
-    title: t('transparency.casehud.title'),
-    level: 'both',
-    admin: true,
-    what: t('transparency.casehud.what'),
-    where: t('transparency.casehud.where'),
-    undo: t('transparency.casehud.undo'),
-    state: () => (!state.caseHud?.installed ? t('transparency.state.off')
-      : state.caseHud.state === 'apiOn' ? t('transparency.casehud.apiOn')
-        : state.caseHud.state === 'apiOff' ? t('transparency.casehud.apiOff')
-          : t('transparency.casehud.installed'))
-  },
-  {
     title: t('transparency.adminService.title'),
     level: 'both',
     admin: true,
@@ -235,7 +223,7 @@ const entries = () => [
     undo: t('transparency.awake.undo'),
     state: () => t('transparency.state.always')
   }
-];
+].filter((e) => !e.hidden?.());
 
 /** Blue only when something is really switched on; "Aus" and "nur auf Wunsch" stay grey. */
 function statePill(text, active) {

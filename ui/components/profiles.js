@@ -7,6 +7,7 @@ import { api } from '../core/api.js';
 import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
 import { move, push, removePage, render } from '../core/nav.js';
+import { refreshFavorites, resetFavorites } from '../core/favorites.js';
 import { state } from '../core/state.js';
 import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
@@ -58,6 +59,9 @@ export async function startProfiles() {
     run: () => showPicker({ required: false })
   }] : []));
   api.onProfiles?.(async (event) => {
+    // Whoever is on the couch changed: the Favorites arrangement is asked for again, none of the earlier one stays.
+    resetFavorites();
+    refreshFavorites();
     const data = await refresh();
     if (!event?.picker || !data?.picker) return;
     // A protected profile went back to the picker: the page still has that person's skin, language and sounds. It starts again with the
@@ -140,7 +144,7 @@ export async function showPicker({ required = false } = {}) {
       this.tiles = this.list.map((p) => el('li', { className: 'profile-tile' },
         avatarEl(p, true),
         el('strong', { className: 'profile-name', textContent: nameOf(p) }),
-        el('small', { className: 'profile-lock', textContent: p.hasCode ? '🔒' : p.child ? '⏳' : '' })));
+        el('small', { className: 'profile-lock', textContent: p.hasCode ? '🔒' : kidProfile(p) ? '⏳' : '' })));
       const d = profiles.data;
       root.append(el('div', { className: 'profile-picker' },
         el('h2', { textContent: t('profiles.pickerTitle') }),
@@ -315,7 +319,7 @@ async function addProfile() {
   const created = profiles.data?.profiles.find((x) => !before.has(x.id));
   if (!created) return;
   const fallback = profiles.data.profiles.find((x) => x.isDefault);
-  if (fallback && !fallback.child) toast(t('profiles.noLimitsYet', { name }), 8000);
+  if (fallback && !fallback.limits) toast(t('profiles.noLimitsYet', { name }), 8000);
   push(rulesPage(created));
 }
 
@@ -440,11 +444,17 @@ export async function openProfilesPage(open) {
   open(profilesPage());
 }
 
+/**
+ * The badge: a profile marked restricted, or the default profile with limits, whatever parental controls say (the host's `child` flag is
+ * only true while they are on, because it decides the gates; the badge still shows how the profile is set up).
+ */
+const kidProfile = (p) => !!(p.restricted || (p.isDefault && p.limits));
+
 function describe(p) {
   const parts = [];
   if (p.active) parts.push(t('profiles.active'));
   if (p.isDefault) parts.push(t('profiles.default'));
-  parts.push(p.child ? t('profiles.child') : t('profiles.adult'));
+  parts.push(kidProfile(p) ? t('profiles.child') : t('profiles.adult'));
   if (p.hasCode) parts.push(t('profiles.withCode'));
   // Without its own code, brothers and sisters can use a child's profile too (and its play time).
   else if (p.restricted) parts.push(t('profiles.noCodeHint'));

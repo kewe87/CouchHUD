@@ -119,14 +119,18 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
 
     public bool ToggleFavorite(string id)
     {
+        // Taking a favorite off always works (also for an entry that is gone, e.g. uninstalled); only a library entry can become one.
+        if (Find(id) is null && !config.Current.ActiveProfile.Favorites.Contains(id)) throw new KeyNotFoundException($"unknown item {id}");
         var favorite = false;
+        var full = false;
         config.Update(c =>
         {
             var favorites = c.ActiveProfile.Favorites;
             favorite = !favorites.Remove(id);
-            if (favorite) favorites.Add(id);
+            if (favorite && !FavoritesShelf.TryAdd(favorites, id)) (favorite, full) = (false, true);
         });
-        Replace(id, i => i with { Favorite = favorite });
+        if (full) throw new InvalidOperationException(Strings.Get("favorites.full", FavoritesShelf.MaxFavorites));
+        if (Find(id) is not null) Replace(id, i => i with { Favorite = favorite });
         return favorite;
     }
 

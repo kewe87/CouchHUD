@@ -217,19 +217,17 @@ public class CatalogSecurityTests : IDisposable
         return dir;
     }
 
-    [Theory]
-    [InlineData("1.1.0", true, true)]
-    [InlineData("1.0.0", true, true)]
-    [InlineData("0.9.0", true, false)]
-    [InlineData(null, true, false)]
-    [InlineData("2.0.0", false, false)]
-    public void A_user_copy_replaces_the_bundled_plugin_only_with_a_dll_and_a_version_not_older(string? userVersion, bool userHasDll, bool replaces)
+    [Fact]
+    public void A_bundled_plugins_folder_is_no_longer_loaded_even_when_its_files_are_trusted()
     {
-        PluginDir("bundled", "Wand", "1.0.0");
-        PluginDir("user", "Wand", userVersion, userHasDll);
-        var dirs = new List<(string, bool)> { (Path.Combine(_dir, "bundled"), false), (Path.Combine(_dir, "user"), true) };
+        var dir = PluginDir("bundled", "Wand", "1.0.0");
+        var trust = new PluginTrust(_dir);
+        trust.Trust("Wand", dir);
+        var manager = new PluginManager([(Path.Combine(_dir, "bundled"), false)], _dir, _ => true) { Trust = trust };
 
-        Assert.Equal(replaces, PluginManager.OverriddenBundledFolders(dirs).Contains("Wand"));
+        manager.LoadAll();
+
+        Assert.Empty(manager.Plugins);
     }
 
     // ---- atomic install

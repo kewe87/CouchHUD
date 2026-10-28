@@ -12,6 +12,7 @@ import { el, entriesLabel, formatSize, keepInView, setFocused } from '../core/do
 import { setBackground } from '../core/art.js';
 import { attempt, toast } from '../core/feedback.js';
 import { reloadLibrary } from '../core/library.js';
+import { refreshFavorites } from '../core/favorites.js';
 import { currentView, move, push, render, renderHints } from '../core/nav.js';
 import { state } from '../core/state.js';
 import { glyph, setPadGlyphs } from '../core/skins.js';
@@ -26,10 +27,7 @@ import { skinMenu } from '../components/skin-menu.js';
 import { choosePasscode, ensureParentCode, ensureUnlocked, ensureWindowsSignIn, guarded, isLocked } from '../components/passcode.js';
 import { addEntryFlow, gameFoldersPage, hiddenItemsPage, scanFolderFlow } from '../components/library-tools.js';
 import { refreshWeather } from '../core/weather.js';
-import { preloadSmartHome, smartHomeView } from './smarthome.js';
-import { setTabs, tabViews } from '../core/nav.js';
 import { updateCount, updatesPage } from './updates.js';
-import { caseHudApiOff, caseHudPage, caseHudUpdateAvailable } from './casehud.js';
 import { cleanupStuckPoliciesDialog, launchersPage, servicesPage, startupPage } from './system-tools.js';
 import { transparencyPage } from './transparency.js';
 import { disclaimerPage, privacyPage } from './legal.js';
@@ -37,7 +35,6 @@ import { openSetupWizard } from './setup-wizard.js';
 import { pairingPage } from './phone.js';
 import { pluginsPage } from './plugins.js';
 import { networkPage } from './network.js';
-import { setVpnInGuide, vpnHint, vpnLine, vpnPage } from './vpn.js';
 import { setTvInGuide, tvHint, tvLine, tvPage } from './tv.js';
 import { chooseSleepTimer, powerEntries, sleepTimerDetail } from '../core/power.js';
 import { displayItems } from './display.js';
@@ -49,7 +46,7 @@ import { ensureParentGrant, formatRemaining, lockedGamesPage, parental, refreshP
 import { openProfilesPage } from '../components/profiles.js';
 import { refreshMotion } from '../core/motion.js';
 import { admitProtectedChange, codeLockHeld } from '../core/lock-rules.js';
-import { HISTORY_OFF_ACTION, historyOffNeedsParent, host } from '../core/browser-logic.js';
+import { HISTORY_OFF_ACTION, historyOffNeedsParent } from '../core/browser-logic.js';
 import { AREAS, AREA_DESC_KEYS, AREA_ICONS, AREA_NAME_KEYS, areaOfSetting, areaOn, enabledAreas, setAreas, shownRows, toggleArea } from '../core/areas.js';
 import { RATING_CHOICES, activeSystem, ageChoices, ageLabels, limitText, shownLimit } from '../core/age-rating-rules.js';
 
@@ -747,6 +744,34 @@ const browserHistoryToggle = () => ({
   }
 });
 
+/** The three arrangements of the Favorites tab: label and explanation each. */
+const favoritesModes = () => [
+  { value: 'favorites', label: t('settings.favorites.mode.favorites'), detail: t('settings.favorites.mode.favoritesDesc') },
+  { value: 'recent', label: t('settings.favorites.mode.recent'), detail: t('settings.favorites.mode.recentDesc') },
+  { value: 'combined', label: t('settings.favorites.mode.combined'), detail: t('settings.favorites.mode.combinedDesc') }
+];
+
+/**
+ * What the Favorites tab shows: only favorites, only recently used, or both (the default). Games and apps alike; websites have their
+ * own switch (a Browser setting, hidden with the browser area). The host arranges the tab and applies the child's rules.
+ */
+const favoritesModeRow = () => {
+  const current = () => favoritesModes().find((m) => m.value === settings.favoritesMode) ?? favoritesModes()[2];
+  return {
+    kind: 'choice',
+    area: areaOfSetting('favoritesMode'),
+    label: t('settings.favorites.mode'),
+    desc: t('settings.favorites.modeDesc'),
+    value: () => current().label,
+    run: async () => {
+      const v = await chooseDialog(t('settings.favorites.modeTitle'), favoritesModes(), current().value);
+      if (v === undefined) return;
+      await change('favoritesMode', v);
+      refreshFavorites();
+    }
+  };
+};
+
 const action = (label, desc, run, icon = '›', hint) => ({ kind: 'action', label, desc, icon, run, hint });
 const info = (label, value) => ({ kind: 'info', label, value });
 
@@ -1178,6 +1203,8 @@ function categories() {
         ...inArea('games',
           action(t('settings.library.folders'), t('settings.library.foldersDesc'), () => openPage(gameFoldersPage(), t('settings.cat.library'))),
           action(t('settings.library.clients'), t('settings.library.clientsDesc'), () => openPage(launchersPage(), t('settings.cat.library')))),
+        favoritesModeRow(),
+        toggle('favoritesSites', t('settings.favorites.sites'), t('settings.favorites.sitesDesc'), () => refreshFavorites()),
         toggle('maximizeBrowser', t('settings.library.maximizeBrowser'), t('settings.library.maximizeBrowserDesc')),
         browserHistoryToggle(),
         action(t('settings.library.hidden'), t('settings.library.hiddenCount', { count: state.library.filter((i) => i.hidden).length }), () => openPage(hiddenItemsPage(), t('settings.cat.library'))),
@@ -1218,7 +1245,7 @@ function categories() {
       items: [
         { kind: 'choice', label: t('settings.appearance.skin'), desc: state.skin.description, value: () => state.skin.name, run: async () => openOverlay(await skinMenu()) },
         { kind: 'choice', label: t('settings.pointer.title'), desc: t('settings.pointer.desc'), value: () => pointerModes(s.mouseUnlocked).find((m) => m.value === pointerMode(s))?.label, run: choosePointer },
-        action(t('settings.appearance.install'), t('settings.appearance.installDesc'), () => openPage(pluginsPage(1), t('settings.cat.appearance'))),
+        action(t('settings.appearance.install'), t('settings.appearance.installDesc'), () => openPage(pluginsPage(1, { expert: !!settings?.expertMode }), t('settings.cat.appearance'))),
         toggle('trailerPreviews', t('settings.appearance.trailers'), t('settings.appearance.trailersDesc'), (on) => (state.info.trailerPreviews = on)),
         toggle('reduceMotion', t('settings.appearance.motion'), t('settings.appearance.motionDesc'), (on) => {
           state.info.reduceMotion = on;
@@ -1315,7 +1342,7 @@ function categories() {
     },
     {
       id: 'home',
-      icon: 'home',
+      icon: 'weather',
       name: t('settings.cat.home'),
       items: [
         {
@@ -1324,49 +1351,7 @@ function categories() {
           desc: t('settings.home.placeDesc'),
           value: () => s.weatherPlace?.name ?? t('settings.home.placeNone'),
           run: chooseWeatherPlace
-        },
-        // Simple mode: only this (it asks for the address itself). Expert mode adds address, long-lived token and the test below.
-        // Home Assistant refused the sign-in (the host sends nothing more): sign in again, which replaces it once it worked.
-        s.homeAssistantSignedIn && s.homeAssistantHttpsRequired
-          ? action(t('settings.home.signIn'), t('settings.home.signInHttps', { host: host(s.homeAssistantUrl) }), signInHomeAssistant)
-          : s.homeAssistantSignedIn && s.homeAssistantSignInExpired
-          ? action(t('settings.home.signIn'), t('settings.home.signInExpired', { host: host(s.homeAssistantUrl) }), signInHomeAssistant)
-          : s.homeAssistantSignedIn
-          ? action(t('settings.home.signOut'), t('settings.home.signedInAt', { host: host(s.homeAssistantUrl) }), signOutHomeAssistant)
-          : action(t('settings.home.signIn'), t('settings.home.signInDesc'), signInHomeAssistant),
-        ...expert(
-          {
-            kind: 'text',
-            label: t('settings.home.haUrl'),
-            desc: t('settings.home.haUrlDesc'),
-            value: () => s.homeAssistantUrl || t('settings.common.notSet'),
-            run: async () => {
-              const url = await openKeyboard({ title: t('settings.home.haUrl'), value: s.homeAssistantUrl || 'http://homeassistant.local:8123', hint: t('settings.home.haUrlHint'), paste: true });
-              if (url === undefined) return;
-              // Another address asks for the token again (the host drops the old one).
-              const norm = (u) => (u || '').trim().replace(/\/+$/, '').toLowerCase();
-              const moved = norm(url) !== norm(s.homeAssistantUrl);
-              await change('homeAssistantUrl', url, moved && (s.homeAssistantTokenSet || s.homeAssistantSignedIn) ? t('settings.home.tokenAgain') : undefined);
-              if (moved) Object.assign(settings, { homeAssistantTokenSet: false, homeAssistantSignedIn: false });
-            }
-          },
-          {
-            kind: 'text',
-            label: t('settings.home.haToken'),
-            desc: t('settings.home.haTokenDesc'),
-            value: () => (s.homeAssistantTokenSet ? t('settings.common.set') : t('settings.common.notSet')),
-            run: async () => {
-              // A long-lived token replaces the sign-in (the host revokes it): asked first.
-              if (s.homeAssistantSignedIn && !(await confirmDialog(t('settings.home.tokenReplacesSignIn'), t('settings.common.continue')))) return;
-              const token = await openKeyboard({ title: t('settings.home.haToken'), secret: true, hint: t('settings.home.haTokenHint'), paste: true });
-              if (token === undefined) return;
-              await change('homeAssistantToken', token, token ? t('settings.home.tokenSaved') : t('settings.home.tokenRemoved'));
-              settings.homeAssistantTokenSet = !!token;
-              if (token) settings.homeAssistantSignedIn = false;
-            }
-          },
-          action(t('settings.home.test'), t('settings.home.testDesc'), () => testHomeAssistant())
-        )
+        }
       ]
     },
     // TV control (LG webOS first): pairing and everything else on its own page; the Guide menu option and "TV follows CouchHUD" here.
@@ -1390,10 +1375,7 @@ function categories() {
       name: t('settings.cat.network'),
       items: [
         action(t('settings.network.wifi'), t('settings.network.wifiDesc'), guarded(t('settings.network.wifi'), () => openPage(networkPage(), t('settings.cat.network')))),
-        // The VPN page reads on a locked couch too; every change on it asks for the unlock (with parental controls the parents' code).
-        ...(api.vpnStatus ? [action(t('vpn.settings.open'), state.vpn ? vpnHint() || vpnLine() : t('vpn.settings.openDesc'), () => openPage(vpnPage(), t('settings.cat.network')))] : []),
         ...expert(
-          ...(api.vpnStatus ? [toggle('vpnInGuide', t('vpn.settings.guide'), t('vpn.settings.guideDesc'), (on) => setVpnInGuide(on))] : []),
           action(t('settings.network.firewall'), t('settings.network.firewallDesc'), async () => {
             toast(t('settings.common.confirmWindowsPrompt'), 4000);
             const result = await attempt(() => api.allowFirewall(), t('settings.network.firewallFailed'));
@@ -1406,22 +1388,6 @@ function categories() {
         )
       ]
     },
-    // CaseHUD (LCDs in fans and pumps): everything lives on its own page; only the install options are settings.
-    ...(api.caseHudStatus ? [{
-      id: 'casehud',
-      icon: 'display',
-      name: t('settings.cat.casehud'),
-      badge: caseHudUpdateAvailable() || caseHudApiOff() ? 1 : 0,
-      items: [
-        action(t('settings.casehud.open'), caseHudUpdateAvailable() ? t('settings.casehud.update', { version: state.caseHud.update.version }) : caseHudApiOff() ? t('casehud.api.hint') : t('settings.casehud.openDesc'), () => openPage(caseHudPage(), t('settings.cat.casehud'))),
-        ...expert(
-          toggle('caseHudInstallAutostart', t('settings.casehud.autostart'), t('settings.casehud.autostartDesc')),
-          toggle('caseHudInstallFps', t('settings.casehud.fps'), t('settings.casehud.fpsDesc')),
-          toggle('caseHudInstallApi', t('settings.casehud.api'), t('settings.casehud.apiDesc')),
-          toggle('caseHudGamingLease', t('settings.casehud.lease'), t('settings.casehud.leaseDesc'))
-        )
-      ]
-    }] : []),
     {
       id: 'notifications',
       icon: 'bell',
@@ -1511,7 +1477,7 @@ function categories() {
       name: t('settings.cat.plugins'),
       expertOnly: true,
       items: [
-        action(t('settings.plugins.manage'), t('settings.plugins.manageDesc'), () => openPage(pluginsPage(), t('settings.cat.plugins'))),
+        action(t('settings.plugins.manage'), t('settings.plugins.manageDesc'), () => openPage(pluginsPage(0, { expert: !!settings?.expertMode }), t('settings.cat.plugins'))),
         info(t('settings.plugins.own'), t('settings.plugins.ownDesc'))
       ]
     }
@@ -1645,62 +1611,6 @@ async function chooseWeatherPlace() {
   await change('weatherLocation', chosen, chosen ? t('settings.weather.setFor', { name: chosen.name }) : t('settings.weather.hidden'));
   settings.weatherPlace = chosen;
   await refreshWeather();
-}
-
-/**
- * "Sign in with Home Assistant": the host opens Home Assistant's sign-in page in the couch browser and gets the access itself
- * (the answer comes as the homeAssistantSignIn event, see homeAssistantSignInDone). Simple mode has no address row, so the address is
- * asked here (prefilled); experts set it in its own row.
- */
-async function signInHomeAssistant() {
-  let url = settings?.homeAssistantUrl || '';
-  if (!settings?.expertMode || !url || settings?.homeAssistantHttpsRequired) {
-    url = await openKeyboard({ title: t('settings.home.haUrl'), value: url || 'http://homeassistant.local:8123', hint: t('settings.home.haUrlHint'), paste: true });
-    if (!url) return;
-  }
-  const opened = await attempt(() => api.signInHomeAssistant(url), t('settings.home.signInFailed'));
-  if (!opened) return;
-  // The old connection stays until the new sign-in is saved; the page is reloaded when the answer comes.
-  settings = null;
-  toast(t('settings.home.signInOpened'), 5000);
-}
-
-async function signOutHomeAssistant() {
-  if (!(await confirmDialog(t('settings.home.signOutConfirm'), t('settings.home.signOut'), { danger: true }))) return;
-  const result = await attempt(() => api.signOutHomeAssistant(), t('settings.home.signOutFailed'));
-  if (!result) return;
-  if (settings) settings.homeAssistantSignedIn = false;
-  toast(result.revoked ? t('settings.home.signedOut') : t('settings.home.signedOutLocal'), 6000);
-  if (!settings?.homeAssistantTokenSet) {
-    state.info.homeAssistant = false;
-    window.dispatchEvent(new Event('couchhud:tabs'));
-  }
-  render();
-}
-
-/** The host's answer to a sign-in (event homeAssistantSignIn): connected (the Smart Home tab appears) or why not. */
-export async function homeAssistantSignInDone(result) {
-  if (!result?.ok) {
-    toast(result?.error || t('settings.home.signInFailed'), 6000);
-    return;
-  }
-  // Fresh from the host: the sign-in may have brought another address along.
-  await loadSettings();
-  Object.assign(settings, { homeAssistantSignedIn: true, homeAssistantSignInExpired: false, homeAssistantTokenSet: false });
-  await testHomeAssistant('settings.home.signedInConnected');
-}
-
-// i18n-used: settings.home.connected settings.home.signedInConnected
-async function testHomeAssistant(message = 'settings.home.connected') {
-  // One light call (the states), not the picker's catalog: the test says how much Home Assistant offers.
-  const count = await attempt(() => api.testHomeAssistant(), t('settings.home.noConnection'));
-  if (count === undefined || count === null) return;
-  toast(t(message, { count }), 4000);
-  state.info.homeAssistant = true;
-  await preloadSmartHome(settings);
-  const tabs = tabViews();
-  if (!tabs.includes(smartHomeView)) setTabs([...tabs.slice(0, -1), smartHomeView, tabs.at(-1)]);
-  render();
 }
 
 function valueLabel(item) {

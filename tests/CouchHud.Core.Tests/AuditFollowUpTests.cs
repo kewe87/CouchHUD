@@ -305,7 +305,8 @@ public class AuditFollowUpTests : IDisposable
         var text = File.ReadAllText(file);
         // A program that only writes files adds its own plugin with the right hash, but cannot sign it.
         var hash = PluginTrust.HashFolder(planted);
-        File.WriteAllText(file, text.Replace("\"Entries\":{", $"\"Entries\":{{\"Planted\":\"{hash}\","));
+        File.WriteAllText(file, text.Replace("\"Plugins\":{", $"\"Plugins\":{{\"Planted\":{{\"Hash\":\"{hash}\"}},"));
+        Assert.NotEqual(text, File.ReadAllText(file));
         var edited = File.ReadAllText(file);
 
         var trust = new PluginTrust(_dir, key);

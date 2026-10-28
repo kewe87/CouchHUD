@@ -4,9 +4,11 @@
 //   node scripts/ui-shot.mjs --out DIR [--size 1920x1080] [--dpr 1] [--port 5199] STEP...
 //
 // Steps:  skin:deepsea   key:ArrowDown   key:Enter   keys:ArrowDown*3   wait:300
+//         (skin:user:<folder> shows a skin from the folder given with --catalog, see below)
 //         mouse:x,y (move the mouse: shows the pointer)  shot:name  eval:<js>       contrast:label   text:abc (type into page)
 // Keys: Arrow*, Enter=A, Escape=B, q/e=LB/RB, x, y, m=Start, Home=Guide.
-// Options: --query lang=en (URL query of the preview page).
+// Options: --query lang=en (URL query of the preview page), --catalog DIR (a folder with skin folders, served like installed skins,
+//          for skins from the catalog: skin:user:<folder>).
 // Env: EDGE (path to msedge.exe).
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -27,7 +29,7 @@ const [W, H] = opt.size.split('x').map(Number);
 mkdirSync(opt.out, { recursive: true });
 
 const edge = process.env.EDGE || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
-const server = spawn(process.execPath, [join(here, 'preview-server.js')], { env: { ...process.env, PORT: opt.port }, stdio: 'ignore' });
+const server = spawn(process.execPath, [join(here, 'preview-server.js')], { env: { ...process.env, PORT: opt.port, ...(opt.catalog ? { CATALOG_SKINS: opt.catalog } : {}) }, stdio: 'ignore' });
 const profile = mkdtempSync(join(tmpdir(), 'couchhud-edge-'));
 const browser = spawn(edge, [`--remote-debugging-port=${opt.debug}`, '--headless=new', '--mute-audio', '--disable-gpu', '--disable-extensions', '--force-color-profile=srgb', `--user-data-dir=${profile}`,
   `--window-size=${W},${H}`, '--hide-scrollbars', 'about:blank'], { stdio: 'ignore' });
@@ -115,7 +117,7 @@ try {
     else if (cmd === 'wait') await sleep(+arg);
     else if (cmd === 'eval') console.log('eval ->', JSON.stringify(await evaluate(arg)));
     else if (cmd === 'skin') {
-      await evaluate(`(async()=>{const {applySkin}=await import('/core/skins.js');const {BUILTIN_SKINS}=await import('/skins/index.js');applySkin(BUILTIN_SKINS.find(s=>s.id==='${arg}'));})()`);
+      await evaluate(`(async()=>{const {applySkin}=await import('/core/skins.js');const {state}=await import('/core/state.js');const {reloadSkins}=await import('/components/skin-menu.js');await reloadSkins();const skin=state.skins.find(s=>s.id==='${arg}');if(!skin)throw new Error('no skin ${arg}');applySkin(skin);})()`);
       await sleep(500);
     } else if (cmd === 'shot') {
       await sleep(450);

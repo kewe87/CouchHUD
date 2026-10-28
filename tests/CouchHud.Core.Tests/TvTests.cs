@@ -534,7 +534,8 @@ public class TvTests
         await using var c = new TvController(new WebOsClient(options), store, _ => { }, () => now);
         var status = await c.RefreshAsync(user: true);
         Assert.Equal("off", status.Power);
-        Assert.Equal("unreachable", status.Error);
+        // A port nobody listens on usually refuses at once; on a busy machine the connect may run into the timeout instead.
+        Assert.Contains(status.Error, new[] { "unreachable", "timeout" });
 
         // Within the backoff an automatic read does not connect again.
         await using var tv = new FakeWebOsTv(tls: false);

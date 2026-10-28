@@ -7,6 +7,7 @@ using CouchHud.Core.Library;
 using CouchHud.Core.Platform;
 using CouchHud.Core.Integrations;
 using System.Net.Http;
+using CouchHud.Core.Plugins;
 using CouchHud.Core.Skins;
 using CouchHud.Core.Startup;
 using CouchHud.Core.Remote;
@@ -32,13 +33,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
 {
     private readonly WeatherService _weather = new(http);
     private readonly NewsService _news = new(http);
-    private readonly HomeAssistantClient _home = new(HaHttp)
-    {
-        BaseUrl = config.Current.HomeAssistantUrl,
-        Token = Secrets.Unprotect(config.Current.HomeAssistantToken),
-        Session = RestoreHaSession(config.Current)
-    };
-
     private MainWindow? _window;
     private System.Windows.Forms.NotifyIcon? _tray;
     private CancellationTokenSource? _homeHold;
@@ -247,12 +241,26 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         // Asked once in the background (the answer is cached): never on the UI thread, never as a failed sign-in if the flags can tell.
         _ = Task.Run(AccountPassword.Refresh);
         plugins.IsLocked = () => Locked;
+        plugins.IsChildProfile = () => ChildNow;
+        // The owner's choice per plugin function, read fresh on every decision (PluginFunctionRules.Effective ignores a damaged value).
+        plugins.StoredLevel = (plugin, function) => PluginFunctionRules.Stored(config.Current.PluginFunctionLevels, plugin, function);
+        // A first-party plugin hands a setup it downloaded and verified to Windows (setup.run): HudPluginSetup.cs re-checks everything.
+        plugins.SetupRunner = RunPluginSetupAsync;
+        plugins.DownloadCenter = _downloads;
+        plugins.PageInvalidated += (plugin, page) => Ui(() => Emit("pluginPageChanged", new { plugin, page }));
+        StartPluginSignIn();
+        plugins.TabsChanged += () => Ui(() =>
+        {
+            Emit("pluginTabs", null);
+        });
+        _ = plugins.Loaded.ContinueWith(_ => Ui(PruneFunctionLevels), TaskScheduler.Default);
         optional.Run("session tracking", StartSessionTracking);
         _sessions.Library = () => config.Current.ParentalEnabled ? library.Items : null;
         optional.Run("parental controls", () => _ = Parental);
         StartAudio();
         optional.Run("update checks", StartUpdateChecks);
         optional.Run("downloads", StartDownloads);
+        optional.Run("skin restore", StartSkinRestore);
         optional.Run("catalog checks", Catalog.StartBackgroundChecks);
         optional.Run("self update checks", SelfUpdate.StartBackgroundChecks);
         optional.Run("notifications", StartNotifications);
@@ -387,7 +395,10 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         if (TvConfigured) optional.Run("tv on with CouchHUD", () => Tv.FollowWake());
         optional.Run("foreground guard", () =>
         {
-            _foreground = new ForegroundGuard(ForegroundNow, _fgState, () => _window?.BringToFront(), OnClientNeedsAttention, Console.Error.WriteLine, GamePids, EndMouseModeWhenLocked);
+            _foreground = new ForegroundGuard(ForegroundNow, _fgState, () => _window?.BringToFront(), OnClientNeedsAttention, Console.Error.WriteLine, GamePids, EndMouseModeWhenLocked)
+            {
+                PluginRestrictions = plugins.Host.IsRestrictedProcess
+            };
             _foreground.Start();
         });
         // Without explorer nobody answers the volume keys.
@@ -410,9 +421,10 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 {
                     try
                     {
-                        // CaseHUD's own entry ("--minimized") becomes the background start, without tray icon as there is no taskbar.
-                        var adapt = CouchHud.Core.Integrations.CaseHud.CaseHudAutostart.ForShell(new WindowsRegistry(), noTray: !ShellManager.IsDesktopShellRunning(), canonicalPath: CaseHudManager.CanonicalPath, capabilities: CaseHudManager.SharedCapabilities(dataDir));
-                        _startup.RunCouch(modes, adapt);
+                        // First-party plugins (startup.args) adapt their program's entry on top, arguments only: they load on a worker
+                        // thread, so wait for them (bounded) before the adapters are read; a plugin that never finishes loading costs its adapter.
+                        if (!plugins.Loaded.Wait(TimeSpan.FromSeconds(20))) Console.Error.WriteLine("[startup] plugins still loading after 20 s, autostart without their adjustments");
+                        _startup.RunCouch(modes, plugins.Host.ComposeStartup(null, TrustedCliRunner.CanonicalPath));
                         _startup.RunOnce();
                     }
                     catch (Exception ex)
@@ -657,8 +669,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         {
             Launcher.SessionStarted(s.Item.Id);
             PrepareFreezeCheck(s);
-            plugins.Events.RaiseGameStarted(new GameEvent(s.Item.Id, s.Item.Name, s.Item.InstallDir, 0));
-            CaseHud.GameStarted(s.Item.Name, s.Pids.Cast<int?>().FirstOrDefault());
+            plugins.Events.RaiseGameStarted(new GameEvent(s.Item.Id, s.Item.Name, s.Item.InstallDir, 0) { ProcessId = s.Pids.Cast<int?>().FirstOrDefault() });
             Ui(() => Emit("session", SessionDto()));
             if (s.External) Ui(() => CheckExternalStart(s));
         };
@@ -675,9 +686,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         {
             Launcher.SessionEnded(s.Item.Id, s.Started);
             _freezeGuard.Forget(s.Item);
-            plugins.Events.RaiseGameEnded(new GameEvent(s.Item.Id, s.Item.Name, s.Item.InstallDir, minutes));
-            // Only tells CaseHUD when there is a CaseHUD manager at all (a lease only exists if it was started).
-            if (_caseHudLazy is { IsValueCreated: true } caseHud) caseHud.Value.GameEnded();
+            plugins.Events.RaiseGameEnded(new GameEvent(s.Item.Id, s.Item.Name, s.Item.InstallDir, minutes) { ProcessId = s.Pids.Cast<int?>().FirstOrDefault() });
             GamePause.ResumeAll();
             // After a game the idle threshold back to the profile picker starts again (review NEU-1).
             ProfileActivity();
@@ -717,6 +726,9 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             ProfileIdleTick();
             // A Steam change that had to wait for the end of a game.
             if (_steamGuardService is { RetryDue: true } && !GameBusy) ApplySteamSettings(release: false);
+            // The skin restore that waited for the end of a game (or for the update check to be switched on).
+            // Only when one of its two inputs changed since the last look: no disk access while it just waits.
+            if (_skinRestoreWaiting && _skinRestoreSeen != (config.Current.CatalogUpdateCheck, GameBusy)) StartSkinRestore();
             // A profile whose game was never seen running (launcher closed, start failed) is undone after a while.
             if (_profileRestore is { } pending && _sessions.Current is null && DateTimeOffset.UtcNow - pending.Applied > TimeSpan.FromMinutes(4)) RestoreProfile();
             // Process snapshots take a moment; never on the UI thread, never twice at once.
@@ -979,12 +991,26 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         else if (!_grant.TryConsume(action, item)) throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
     }
 
+    private ParentGate? _parentGate;
+
+    private ParentGate Gate => _parentGate ??= new ParentGate(_grant, () => HasParentCode, RequireUnlocked);
+
+    /// <summary>
+    /// The check half of <see cref="RequireParentGrant"/>: the grant must fit now, but a refused or failed change does not use it up. Null when
+    /// there is no parents' code (then the unlocked couch is enough).
+    /// </summary>
+    private ParentTicket? CheckParentGrant(string action, string? item, string? reason = null) => Gate.Check(action, item, reason);
+
+    /// <summary>Uses the grant up; refuses when it is gone (run out, or used by a call in between): one code never pays for two executions.</summary>
+    private void UseUp(ParentTicket? ticket) => Gate.Use(ticket);
+
     /// <summary>The unlock and the release do not survive a game start or a trip back to the HUD.</summary>
     private void ForgetUnlock()
     {
         _unlockedUntil = DateTimeOffset.MinValue;
         _parentCodeChainUntil = DateTimeOffset.MinValue;
         _grant.Clear();
+        EndPluginVisits();
         _browserRecentShown = false;
         AdminService.Ops.Cache.Clear();
         SyncLockState();
@@ -1017,7 +1043,13 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             // No buttons: the fallback, an administrator's credential in Windows' own prompt (a locked-out or planted parents' code never
             // shuts the parents out, review M1).
             if (sequence is null) return await ParentByAdminAsync(action, item, ops);
-            var check = await AdminService.Ops.VerifyCodeAsync(CodeKinds.Parent, sequence, ops);
+            // Parental controls off: the couch code is the parents' code (SECURITY.md) for a closed list of the HUD's own actions, and only while
+            // the service is known to hold no parents' code. Anything else (no action, an unknown one, one with service operations) is the parents' code.
+            // The cached state can be a minute old: ask the service now (bounded); no answer counts as unknown, so the parents' code applies.
+            var fresh = ops is null && !config.Current.ParentalEnabled ? await FreshServiceCodesAsync() : null;
+            var kind = ops is null && ParentCodeKind.For(config.Current.ParentalEnabled, action, fresh is { Parent: false }) == ParentCheckKind.Couch
+                ? CodeKinds.Couch : CodeKinds.Parent;
+            var check = await AdminService.Ops.VerifyCodeAsync(kind, sequence, kind == CodeKinds.Parent ? ops : null);
             // No parents' code in the service yet (it is set as "both" with the next new code, or by a parent or an administrator, review
             // M-b): the UI offers the administrator's way.
             if (check.Result.Ok && check.Outcome == CodeCheckResults.NoCode) return new { ok = false, blocked = Strings.Get("codes.noParentCode"), admin = "noCode" };
@@ -1042,6 +1074,20 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         }
         _parentLockout.Failed();
         return new { ok = false, waitSeconds = (int)Math.Ceiling(_parentLockout.Wait.TotalSeconds) };
+    }
+
+    /// <summary>The service's codes right now (not the cached value); null when it does not answer in time or fails (fail closed).</summary>
+    private static async Task<CouchHud.ServiceClient.HeldCodes?> FreshServiceCodesAsync()
+    {
+        try
+        {
+            var ask = ServiceCodes.RefreshAsync();
+            return await Task.WhenAny(ask, Task.Delay(TimeSpan.FromSeconds(5))) == ask ? await ask : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -1869,6 +1915,61 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
 
     public bool ToggleFavorite(string id) => library.ToggleFavorite(id);
 
+    /// <summary>
+    /// Marks a bookmark as a favorite website or takes it off again. Only a bookmark of the household's list qualifies, and only while
+    /// websites are switched on for Favorites and the browser area is on (taking one off always works). Harmless on the locked couch.
+    /// </summary>
+    public bool ToggleFavoriteSite(string url)
+    {
+        var address = (url ?? "").Trim();
+        if (!WebLinks.IsWebUrl(address)) throw new ArgumentException(Strings.Get("favorites.notBookmark"));
+        var id = FavoritesShelf.SiteId(address);
+        var favorite = false;
+        var full = false;
+        config.UpdateOrThrow(c =>
+        {
+            var favorites = c.ActiveProfile.Favorites;
+            if (favorites.Remove(id)) return;
+            if (!c.Bookmarks.Any(b => b.Url == address)) throw new ArgumentException(Strings.Get("favorites.notBookmark"));
+            if (!c.FavoritesSites || !FeatureAreas.From(c).Browser) throw new InvalidOperationException(Strings.Get("favorites.sitesOff"));
+            if (!FavoritesShelf.TryAdd(favorites, id)) { full = true; return; }
+            favorite = true;
+        });
+        if (full) throw new InvalidOperationException(Strings.Get("favorites.full", FavoritesShelf.MaxFavorites));
+        return favorite;
+    }
+
+    /// <summary>
+    /// The Favorites shelf for the active person, in order: what the library shows (switched off areas and hidden entries are out) and,
+    /// for a child, only what the parental rules let through without the parents' code (their list, the age limit; an unknown age
+    /// counts as too young to know). Never reveals more than the library does.
+    /// </summary>
+    public object GetFavorites()
+    {
+        var c = config.Current;
+        var areas = FeatureAreas.From(c);
+        var rules = c.Profile(Parental.ProfileId).Rules;
+        var all = library.Items;
+        // One verdict per entry (the age lookup is not free); the shelf and the blocked list both read it.
+        var verdict = new Dictionary<string, bool>(StringComparer.Ordinal);
+        bool Allowed(LibraryItem item)
+        {
+            if (!verdict.TryGetValue(item.Id, out var ok))
+                verdict[item.Id] = ok = FavoritesShelf.ChildAllows(rules, item, all, rules.Enabled && item.Type == ItemType.Game ? VerdictAge(item) : null);
+            return ok;
+        }
+        var mode = FavoritesShelf.NormalizeMode(c.FavoritesMode);
+        var entries = FavoritesShelf.Build(all, c.ActiveProfile.Favorites, c.Bookmarks, mode, c.FavoritesSites, areas, Allowed);
+        return new
+        {
+            mode,
+            sites = c.FavoritesSites && areas.Browser,
+            // What the person may not see (their rules): the page keeps these out of "Continue playing" as well.
+            blocked = rules.Enabled ? all.Where(areas.Shows).Where(i => !Allowed(i)).Select(i => i.Id).ToList() : [],
+            entries = entries.Select(e => new { kind = e.Kind, id = e.Id, name = e.Name, url = e.Url, favorite = e.Favorite })
+        };
+    }
+
     /// <summary>Everything the detail page shows; store info may be missing when offline.</summary>
     public async Task<object> GetDetailsAsync(string id)
     {
@@ -2052,10 +2153,10 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         uiHdr = config.Current.UiHdr,
         hdrOn = SafeHdrOn(),
         trailerPreviews = config.Current.TrailerPreviews,
-        homeAssistant = _home.Configured,
         weather = config.Current.WeatherLocation is not null,
         assistant = AssistantConfigured,
         skin = LookProfile.Skin,
+        skinRestore = SkinRestoreState(),
         language = CouchHud.Core.Localization.Strings.Language,
         languageSetting = LookProfile.Language
     };
@@ -2084,6 +2185,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             audioMode = c.ActiveProfile.AudioMode,
             musicVolume = c.ActiveProfile.MusicVolume,
             guideTapInGame = c.GuideTapInGame,
+            autoLogonDeclined = c.AutoLogonDeclined,
             suppressCompetitors = c.SuppressCompetitors,
             integrationMode = c.IntegrationMode,
             expertMode = c.ExpertMode,
@@ -2092,11 +2194,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             language = c.ActiveProfile.Language,
             closeExplorerInLight = c.CloseExplorerInLight,
             selfUpdateCheck = c.SelfUpdateCheck,
-            caseHudInstallAutostart = c.CaseHudInstallAutostart,
-            caseHudInstallFps = c.CaseHudInstallFps,
-            caseHudInstallApi = c.CaseHudInstallApi,
-            caseHudGamingLease = c.CaseHudGamingLease,
-            vpnInGuide = c.VpnInGuide,
             // TV: the options only; the pairing (never its key) comes through tvStatus.
             tvInGuide = c.Tv?.InGuide ?? true,
             tvOnWithCouchHud = c.Tv?.OnWithCouchHud ?? false,
@@ -2124,6 +2221,8 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             closePcAppsOnReturn = c.ClosePcAppsOnReturn,
             maximizeBrowser = c.MaximizeBrowser,
             browserHistory = c.BrowserHistory,
+            favoritesMode = FavoritesShelf.NormalizeMode(c.FavoritesMode),
+            favoritesSites = c.FavoritesSites,
             nightMode = c.NightMode,
             nightModeStrength = c.NightModeStrength,
             // Never send secrets back to the UI, only whether one is set.
@@ -2131,14 +2230,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             onlineArtwork = c.OnlineArtwork,
             artworkCacheBytes = artwork.Images?.TotalBytes ?? 0,
             weatherPlace = c.WeatherLocation,
-            homeAssistantUrl = c.HomeAssistantUrl,
-            homeAssistantTokenSet = !string.IsNullOrWhiteSpace(c.HomeAssistantToken),
-            homeAssistantSignedIn = !string.IsNullOrWhiteSpace(c.HomeAssistantRefreshToken),
-            // Home Assistant refused the sign-in (revoked, user removed): no more requests, the settings offer to sign in again.
-            homeAssistantSignInExpired = _home.Session?.Dead == true,
-            // A sign-in over http to an address outside the home network is never refreshed: the settings say to sign in again with https.
-            homeAssistantHttpsRequired = !string.IsNullOrWhiteSpace(c.HomeAssistantRefreshToken) && !HomeAssistantLogin.SignInAllowed(c.HomeAssistantUrl),
-            homeAssistantPinned = c.HomeAssistantPinned,
             aiProvider = c.AiProvider,
             aiModel = c.AiModel,
             aiModels = ChatProviders.Models,
@@ -2198,18 +2289,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 var off = Math.Clamp(value.GetInt32(), 0, 480);
                 config.UpdateOrThrow(c => c.DisplayOffMinutes = off);
                 break;
-            case "caseHudInstallAutostart":
-                var chAutostart = Bool();
-                config.UpdateOrThrow(c => c.CaseHudInstallAutostart = chAutostart);
-                break;
-            case "caseHudInstallFps":
-                var chFps = Bool();
-                config.UpdateOrThrow(c => c.CaseHudInstallFps = chFps);
-                break;
-            case "caseHudInstallApi":
-                var chApi = Bool();
-                config.UpdateOrThrow(c => c.CaseHudInstallApi = chApi);
-                break;
             case "tvInGuide":
                 var tvGuide = Bool();
                 config.UpdateOrThrow(c => (c.Tv ??= new()).InGuide = tvGuide);
@@ -2221,14 +2300,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             case "tvOffWithPc":
                 var tvOff = Bool();
                 config.UpdateOrThrow(c => (c.Tv ??= new()).OffWithPc = tvOff);
-                break;
-            case "caseHudGamingLease":
-                var chLease = Bool();
-                config.UpdateOrThrow(c => c.CaseHudGamingLease = chLease);
-                break;
-            case "vpnInGuide":
-                var vpnGuide = Bool();
-                config.UpdateOrThrow(c => c.VpnInGuide = vpnGuide);
                 break;
             case "bluetoothAutoOn":
                 var btAuto = Bool();
@@ -2278,6 +2349,10 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 var wizard = Math.Clamp(value.GetInt32(), 0, 1000);
                 config.UpdateOrThrow(c => c.SetupWizardDone = wizard);
                 break;
+            case "autoLogonDeclined":
+                var declined = Bool();
+                config.UpdateOrThrow(c => c.AutoLogonDeclined = declined);
+                break;
             case "guideTapInGame":
                 var tap = Bool();
                 config.UpdateOrThrow(c => c.GuideTapInGame = tap);
@@ -2318,7 +2393,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 break;
             case "soundSet":
                 var set = SkinCatalog.MigrateId(value.GetString()) ?? "";
-                if (set.Length > 0 && !SkinCatalog.BuiltinIds.Contains(set)) throw new ArgumentException(Strings.Get("hud.unknownSoundSet", set));
+                if (set.Length > 0 && !SkinCatalog.SoundSetIds.Contains(set)) throw new ArgumentException(Strings.Get("hud.unknownSoundSet", set));
                 config.UpdateOrThrow(c => c.ActiveProfile.SoundSet = set);
                 break;
             case "uiHdr":
@@ -2395,6 +2470,16 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 if (!history) ClearBrowserHistory();
                 Emit("browser", BrowserState());
                 break;
+            case "favoritesMode":
+                // The Favorites tab only shows what the library already shows; its mode is a look, so a guest may change it as well.
+                var favMode = value.GetString();
+                if (favMode is not (FavoritesShelf.ModeFavorites or FavoritesShelf.ModeRecent or FavoritesShelf.ModeCombined))
+                    throw new ArgumentException(Strings.Get("favorites.modeInvalid"));
+                config.UpdateOrThrow(c => c.FavoritesMode = favMode);
+                break;
+            case "favoritesSites":
+                config.UpdateOrThrow(c => c.FavoritesSites = Bool());
+                break;
             case "closePcAppsOnReturn":
                 config.UpdateOrThrow(c => c.ClosePcAppsOnReturn = Bool());
                 break;
@@ -2422,17 +2507,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                     ? System.Text.Json.JsonSerializer.Deserialize<Place>(value.GetRawText(), UiBridge.Json)
                     : null;
                 config.UpdateOrThrow(c => c.WeatherLocation = place);
-                break;
-            case "homeAssistantUrl":
-                var url = value.GetString()?.Trim().TrimEnd('/') ?? "";
-                if (url.Length > 0 && !Uri.TryCreate(url, UriKind.Absolute, out _)) throw new ArgumentException(Strings.Get("hud.needFullAddress"));
-                // The token and the sign-in belong to the server they were made for: another address asks for a new one,
-                // otherwise a changed address would send the old token to whoever answers there (see SetHomeAssistantUrl).
-                SetHomeAssistantUrl(url);
-                break;
-            case "homeAssistantToken":
-                // The expert way; a long-lived token replaces a sign-in (SetHomeAssistantToken).
-                SetHomeAssistantToken(value.GetString()?.Trim() ?? "");
                 break;
             case "steamGridDbApiKey":
                 var apiKey = value.GetString()?.Trim() ?? "";
@@ -2707,7 +2781,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     }
 
     // -----------------------------------------------------------------------
-    // Weather and Home Assistant
+    // Weather
 
     public async Task<WeatherReport?> GetWeatherAsync()
     {
@@ -3445,6 +3519,10 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
 
     public CouchHud.Core.Plugins.PluginManager Plugins => plugins;
 
+    /// <summary>A locked couch: the built-in lookups, and a tool of CouchHUD's own plugin that is marked for it.</summary>
+    public bool ToolAllowedWhileLocked(string name) =>
+        ToolCatalog.AllowedWhileLocked(name) || plugins.ToolSpecs.Any(t => t.Name == name && t.AllowedWhileLocked);
+
     /// <summary>Built-in tools plus what plugins contribute.</summary>
     private IReadOnlyList<ToolSpec> AllTools
     {
@@ -3452,7 +3530,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         {
             IReadOnlyList<ToolSpec> all = [.. ToolCatalog.All, .. plugins.ToolSpecs];
             // A locked couch offers the model only what it may use anyway (and costs fewer tokens).
-            return Locked ? all.Where(t => ToolCatalog.AllowedWhileLocked(t.Name)).ToList() : all;
+            return Locked ? all.Where(t => ToolAllowedWhileLocked(t.Name)).ToList() : all;
         }
     }
 
@@ -3472,8 +3550,15 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         p.Error,
         p.NeedsApproval,
         p.ApprovalCode,
+        p.ApprovalHash,
         p.Changed,
         p.UserInstalled,
+        // SDK 3: where it comes from (the badge), the short code of the pinned key, what it may use, and a withdrawal by the signed catalog.
+        origin = p.Origin switch { PluginOrigin.FirstParty => "firstParty", PluginOrigin.ThirdParty => "thirdParty", _ => "local" },
+        publisher = p.KeyFingerprint is { Length: > 0 } fp ? CouchHud.Core.Plugins.PackageStatements.ShortFingerprint(fp) : null,
+        p.Capabilities,
+        p.Revoked,
+        p.RevokedReason,
         pages = plugins.Pages.Where(x => x.Plugin == p.Id).Select(x => new { x.Page.Id, x.Page.Title, x.Page.Icon, x.Page.Description }),
         settings = plugins.Settings.Where(x => x.Plugin == p.Id).Select(x => new
         {
@@ -3485,7 +3570,16 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             // Secrets only say whether they are set.
             value = x.Setting.Kind == SettingKind.Secret ? (string.IsNullOrEmpty(plugins.SettingsOf(p.Id).Get(x.Setting.Key)) ? "" : "•••") : plugins.SettingsOf(p.Id).Get(x.Setting.Key)
         }),
-        tools = plugins.ToolSpecs.Where(t => t.Name.StartsWith(p.Id + "_", StringComparison.OrdinalIgnoreCase)).Select(t => t.Name)
+        tools = plugins.ToolSpecs.Where(t => t.Name.StartsWith(p.Id + "_", StringComparison.OrdinalIgnoreCase)).Select(t => t.Name),
+        // What the owner can allow or forbid per function (PluginFunctionRules); level is the one that applies now, custom says it is the owner's choice.
+        functions = plugins.Functions.Where(f => f.Plugin.Equals(p.Id, StringComparison.OrdinalIgnoreCase)).Select(f => new
+        {
+            id = f.Function.Id,
+            label = Strings.Language == "en" ? f.Function.LabelEn : f.Function.LabelDe,
+            level = PluginFunctionRules.LevelId(plugins.LevelOf(p.Id, f.Function.Id) ?? PluginLevel.Admin),
+            custom = PluginFunctionRules.ParseLevel(PluginFunctionRules.Stored(config.Current.PluginFunctionLevels, p.Id, f.Function.Id)) is not null
+        }).ToList(),
+        restrictionsPossible = PluginFunctionRules.RestrictionsPossible(config.Current.CouchLock, config.Current.ParentalEnabled)
     }).ToList();
 
     /// <summary>
@@ -3533,32 +3627,371 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         return new { areas = now.Enabled };
     }
 
-    public void SetPluginEnabled(string folder, bool enabled) => config.Update(c =>
+    /// <summary>
+    /// The one gate for changing plugins (install, update, enable, disable, approve, uninstall, accept a withdrawn one, confirm a program):
+    /// only from the HUD itself (the bridge is the HUD's WebView; the remote, MCP, plugins and the assistant have no path here), never on
+    /// the locked couch or in a child's profile, third-party only in expert mode, and with the parents' code where PluginPolicy asks for it.
+    /// Refused first while config.json is broken. The parents' code is only checked here: the caller uses it up once the change succeeded.
+    /// </summary>
+    private ParentTicket? RequirePluginChange(PluginChange change, PluginOrigin origin, IReadOnlyCollection<string>? capabilities, string item, bool addsCapabilities = false)
     {
-        c.DisabledPlugins.RemoveAll(f => f.Equals(folder, StringComparison.OrdinalIgnoreCase));
-        if (!enabled) c.DisabledPlugins.Add(folder);
-    });
+        RefuseWhileConfigFaulted();
+        var c = config.Current;
+        var gate = new PluginPolicy.GateContext(PluginCaller.Hud, Locked, ProfileSwitch.IsChild(c, c.ActiveProfile.Id), c.ExpertMode, c.CatalogAllowLocal, c.ParentalEnabled);
+        var decision = PluginPolicy.Decide(gate, change, origin, capabilities, addsCapabilities);
+        if (decision.Refused is { } refused)
+        {
+            if (refused == "lock.unlockFirst") throw new LockedException(Strings.Get(refused));
+            throw new InvalidOperationException(Strings.Get(refused));
+        }
+        if (decision.ParentCode) return CheckParentGrant(decision.ParentAction, item);
+        RequireUnlocked();
+        return null;
+    }
+
+    private PluginPolicy.GateContext PluginGateContext()
+    {
+        var c = config.Current;
+        return new PluginPolicy.GateContext(PluginCaller.Hud, Locked, ProfileSwitch.IsChild(c, c.ActiveProfile.Id), c.ExpertMode, c.CatalogAllowLocal, c.ParentalEnabled);
+    }
+
+    /// <summary>
+    /// What the page asks before it shows any question or code prompt: may this change go ahead at all (locked couch, child's profile,
+    /// expert mode, developer switch)? The refusal text is localised, null when it may. Read only; the change itself checks again.
+    /// </summary>
+    public object GetPluginGate(string change, string? origin, string? plugin = null, string? function = null)
+    {
+        // "functionLevel": may the owner change a function's level now (locked couch, child's profile); "use": may this function be used now
+        // (off, locked couch, child's profile). Read only; the real calls check again.
+        if (change == "functionLevel")
+        {
+            var why = PluginPolicy.DecideLevelChange(PluginGateContext()).Refused;
+            return new { refused = why is null ? null : Strings.Get(why) };
+        }
+        if (change == "use")
+        {
+            var level = plugin is null ? null : plugins.LevelOf(plugin, function);
+            var access = level is { } lv ? PluginFunctionRules.Access(lv, Locked, ChildNow) : default;
+            // needsParentCode: an admin function in a child's profile is allowed with the parents' code, so the page asks instead of showing a refusal.
+            return new { refused = access.Refused is null ? null : Strings.Get(access.Refused), needsParentCode = access.Refused is null && access.ParentCode };
+        }
+        // Only a defined name (a number or a list of names parses too); the input is never echoed back.
+        if (!Enum.TryParse<PluginChange>(change, ignoreCase: true, out var ch) || !Enum.IsDefined(ch) || !string.Equals(ch.ToString(), change, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("change");
+        var org = origin switch { "thirdParty" => PluginOrigin.ThirdParty, "firstParty" => PluginOrigin.FirstParty, "skin" => PluginOrigin.FirstParty, _ => PluginOrigin.Local };
+        var gate = PluginGateContext();
+        var refused = origin == "skin" ? PluginPolicy.SkinChangeRefusal(gate) : PluginPolicy.Decide(gate, ch, org, null).Refused;
+        return new { refused = refused is null ? null : Strings.Get(refused) };
+    }
+
+    /// <summary>Skin install or update: the unlocked couch, not a child's profile (SECURITY.md).</summary>
+    private void RequireSkinChange()
+    {
+        if (PluginPolicy.SkinChangeRefusal(PluginGateContext()) is not { } refused) return;
+        if (refused == "lock.unlockFirst") throw new LockedException(Strings.Get(refused));
+        throw new InvalidOperationException(Strings.Get(refused));
+    }
+
+    private PluginOrigin OriginOfFolder(string folder) =>
+        plugins.Trust?.Entry(folder)?.Origin ?? PluginOrigin.Local;
+
+    public void SetPluginEnabled(string folder, bool enabled)
+    {
+        RefuseWhileConfigFaulted();
+        var entry = plugins.Trust?.Entry(folder);
+        var ticket = RequirePluginChange(enabled ? PluginChange.Enable : PluginChange.Disable, entry?.Origin ?? PluginOrigin.Local, entry?.Capabilities, folder);
+        config.UpdateOrThrow(c =>
+        {
+            c.DisabledPlugins.RemoveAll(f => f.Equals(folder, StringComparison.OrdinalIgnoreCase));
+            if (!enabled) c.DisabledPlugins.Add(folder);
+        });
+        UseUp(ticket);
+        // Its tab goes (or comes) at once, though the plugin itself loads or unloads at the next start.
+        plugins.RaiseTabsChanged();
+    }
 
     public void SetPluginSetting(string pluginId, string key, string? value)
     {
-        if (!plugins.Settings.Any(s => s.Plugin == pluginId && s.Setting.Key == key)) throw new ArgumentException(Strings.Get("hud.unknownSetting", key));
-        plugins.SettingsOf(pluginId).Set(key, value);
+        RefuseWhileConfigFaulted();
+        var found = plugins.Settings.FirstOrDefault(s => s.Plugin == pluginId && s.Setting.Key == key);
+        if (found.Setting is null) throw new ArgumentException(Strings.Get("hud.unknownSetting", key));
+        // The function that covers the setting (its own tag, else the plugin's "settings" function, else none = admin only), at the owner's level:
+        // the same rules as a page or row of that function. In a child's profile an admin setting needs a visit that the parents' code opened
+        // (a page of that function, or the plugin's settings page of the core, still on, same profile). Without one the first change asks for the
+        // parents' code once (after the value was checked) and opens the settings visit.
+        var function = PluginSettingRules.FunctionOf(found.Setting, id => plugins.HasFunction(pluginId, id));
+        var visit = function is not null && plugins.Pages.Any(p => p.Plugin.Equals(pluginId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(p.Page.Function, function, StringComparison.OrdinalIgnoreCase) && VisitActive(pluginId, p.Page.Id));
+        visit |= VisitActive(pluginId, PluginSettingRules.SettingsPageId);
+        var refused = PluginSettingRules.Refusal(plugins.LevelOf(pluginId, function), Locked, ChildNow, visit);
+        if (refused is not null && refused != PluginSettingRules.NeedVisit)
+            throw refused == "lock.unlockFirst" ? new LockedException(Strings.Get(refused)) : new InvalidOperationException(Strings.Get(refused));
+        var checkedValue = PluginSettingRules.Check(found.Setting, value) ?? throw new ArgumentException(Strings.Get("plugin.setting.valueRefused", found.Setting.Label));
+        if (refused is not null)
+        {
+            // Child's profile, admin setting, no visit yet: the parents' code through the same gate as opening an admin page, once; it opens the visit.
+            var ticket = CheckParentGrant("pluginPage", $"{pluginId}/{PluginSettingRules.SettingsPageId}", UseReason(pluginId, function) ?? Strings.Get("plugin.setting.needCode", found.Setting.Label));
+            UseUp(ticket);
+            BeginVisit(pluginId, PluginSettingRules.SettingsPageId);
+        }
+        plugins.SettingsOf(pluginId).Set(key, checkedValue);
+    }
+
+    /// <summary>
+    /// The main tabs plugins ask for, as far as they are allowed now (PluginTabRules.Resolve): the plugin loaded and holding the "tabs"
+    /// capability, its area on, not a child's profile. Only text, a glyph or a checked PNG data URI; the page itself is read with
+    /// <see cref="GetPluginPageAsync"/>, which applies the lock rules (on the locked couch a tab shows only what its page marks for it).
+    /// </summary>
+    public object GetPluginTabs()
+    {
+        var c = config.Current;
+        var tabs = plugins.ResolveTabs(Areas, ProfileSwitch.IsChild(c, c.ActiveProfile.Id));
+        return tabs.Select(t =>
+        {
+            var info = plugins.Plugins.FirstOrDefault(p => p.Id.Equals(t.Plugin, StringComparison.OrdinalIgnoreCase));
+            var page = plugins.FindPage(t.Plugin, t.PageId)?.Page;
+            return new
+            {
+                plugin = t.Plugin,
+                pluginName = info?.Name ?? t.Plugin,
+                t.Id,
+                page = t.PageId,
+                pageTitle = page?.Title ?? t.Title,
+                pageDescription = page?.Description,
+                t.Title,
+                t.Area,
+                glyph = t.Glyph,
+                image = t.Image,
+                origin = t.FirstParty ? "firstParty" : "other"
+            };
+        }).ToList();
+    }
+
+    private bool ChildNow
+    {
+        get
+        {
+            var c = config.Current;
+            return ProfileSwitch.IsChild(c, c.ActiveProfile.Id);
+        }
+    }
+
+    /// <summary>The page may be shown now: by its function's level when it has one, by its own flag otherwise. The refusal says why (off is not "unlock first").</summary>
+    /// <param name="withGrant">Opening the page (not a press on it): an admin function in a child's profile needs the parents' code for this page, once.</param>
+    private ParentTicket? RequirePageView(string pluginId, PluginPage page, bool withGrant = false)
+    {
+        var locked = Locked;
+        var child = ChildNow;
+        var level = plugins.LevelOf(pluginId, page.Function);
+        if (!PluginPolicy.MayView(locked, page, level, child))
+        {
+            var why = level is { } lv ? PluginFunctionRules.Access(lv, locked, child).Refused : null;
+            if (why is null or "lock.unlockFirst") throw new LockedException(Strings.Get("lock.unlockFirst"));
+            throw new InvalidOperationException(Strings.Get(why));
+        }
+        if (!withGrant || !PluginPolicy.ViewNeedsParentCode(locked, level, child)) return null;
+        RefuseWhileConfigFaulted();
+        // A visit the parents' code opened earlier and that is still on (same plugin, page and profile): a reload or a push needs no new code.
+        if (VisitActive(pluginId, page.Id)) return null;
+        return CheckParentGrant("pluginPage", $"{pluginId}/{page.Id}", UseReason(pluginId, page.Function));
+    }
+
+    // ---- Page visits: the parents' code for an admin page in a child's profile opens that page for a while ----
+
+    private readonly PluginVisits _visits = new(MonoNow);
+
+    /// <summary>
+    /// The page was opened with the parents' code: it and its rows stay allowed while the page stays open, at most five minutes. Host-side state
+    /// bound to plugin, page and profile (PluginVisits); the page can only end it early (EndPluginVisit), never start or extend it.
+    /// </summary>
+    private void BeginVisit(string pluginId, string pageId)
+    {
+        // Only a real plugin page, or the core's settings page of the plugin (one visit covers all its admin settings, across functions, while it lasts).
+        if (pageId != PluginSettingRules.SettingsPageId && PluginSettingRules.IsReservedPageId(pageId)) return;
+        _visits.Begin(pluginId, pageId, config.Current.ActiveProfile.Id);
+    }
+
+    private bool VisitActive(string pluginId, string pageId) => !Locked && ChildNow && _visits.Active(pluginId, pageId, config.Current.ActiveProfile.Id);
+
+    /// <summary>The visit ends: a profile switch, the lock, a game start or the way back to the HUD.</summary>
+    private void EndPluginVisits() => _visits.Clear();
+
+    /// <summary>The page was left (back, another tab): its visit ends. Ending is always allowed to the HUD's own page; it only makes things stricter.</summary>
+    public void EndPluginVisit(string pluginId, string pageId)
+    {
+        // Ending only: a real page id, or exactly the core's settings page id.
+        if (pageId != PluginSettingRules.SettingsPageId && PluginSettingRules.IsReservedPageId(pageId)) return;
+        _visits.End(pluginId, pageId);
+    }
+
+    /// <summary>A row of an admin function on a page that was opened with the parents' code in this child's profile needs no code of its own.</summary>
+    private bool CoveredByVisit(string pluginId, string pageId, PluginLevel? rowLevel) =>
+        rowLevel == PluginLevel.Admin && VisitActive(pluginId, pageId);
+
+    /// <summary>The prompt text for the parents' code: names the plugin and the function (in the language of the moment); null without a function.</summary>
+    private string? UseReason(string pluginId, string? functionId)
+    {
+        if (string.IsNullOrEmpty(functionId) || !plugins.TryCanonicalFunction(pluginId, functionId, out var plugin, out var function)) return null;
+        var fn = plugins.Functions.First(f => f.Plugin == plugin && f.Function.Id == function).Function;
+        var name = plugins.Plugins.FirstOrDefault(p => p.Id.Equals(plugin, StringComparison.OrdinalIgnoreCase))?.Name ?? plugin;
+        return Strings.Get("plugin.fn.needCode", name, Strings.Language == "en" ? fn.LabelEn : fn.LabelDe);
+    }
+
+    private IReadOnlyList<PluginRow> VisibleRows(string pluginId, PluginPage page, bool locked, IReadOnlyList<PluginRow> rows) =>
+        PluginPolicy.Visible(locked, ChildNow, rows, r => plugins.LevelOf(pluginId, r.Function ?? page.Function));
+
+    /// <summary>
+    /// The owner changes who may use a function of a plugin (admin only, restricted too, nobody). A change of protection: only the HUD's own page,
+    /// never on the locked couch or in a child's profile (PluginPolicy.DecideLevelChange), always with the parents' code when there is one
+    /// (otherwise the unlock), the grant fixed to this plugin and function. The plugin must be loaded and must have declared the function; the
+    /// level must be one of the three. The parents' code is used up only once the change is saved.
+    /// </summary>
+    public object SetPluginFunctionLevel(string pluginId, string functionId, string level)
+    {
+        RefuseWhileConfigFaulted();
+        var decision = PluginPolicy.DecideLevelChange(PluginGateContext());
+        if (decision.Refused is { } refused) throw refused == "lock.unlockFirst" ? new LockedException(Strings.Get(refused)) : new InvalidOperationException(Strings.Get(refused));
+        if (PluginFunctionRules.ParseLevel(level) is not { } chosen || !plugins.TryCanonicalFunction(pluginId, functionId, out var plugin, out var function)) throw new ArgumentException(Strings.Get("plugin.fn.unknown"));
+        var ticket = CheckParentGrant(decision.ParentAction, $"{plugin}/{function}");
+        // Under the ids the plugin declared, whatever case the page sent; a variant of the same key (a hand-edited file) goes.
+        config.UpdateOrThrow(c =>
+        {
+            c.PluginFunctionLevels ??= new();
+            PluginFunctionRules.Set(c.PluginFunctionLevels, plugin, function, chosen);
+        });
+        UseUp(ticket);
+        plugins.RaiseTabsChanged();
+        return GetPlugins();
+    }
+
+    /// <summary>
+    /// After the plugins loaded: what the owner chose for a plugin that is not there any more goes, so a later install with the same id does not
+    /// inherit a "restricted too" (a plugin can only start at its suggestion).
+    /// </summary>
+    private void PruneFunctionLevels()
+    {
+        try
+        {
+            if (config.Fault is not null) return;
+            // By what is on the disk, not by what loaded: a plugin that is switched off, waits for its approval, failed or is withdrawn keeps the
+            // owner's choices (PluginInfo.Id is only the folder name for those). Only a plugin that is really gone loses them.
+            var present = plugins.InstalledPluginIds();
+            var map = config.Current.PluginFunctionLevels;
+            if (map is null || map.Keys.All(present.Contains)) return;
+            config.UpdateOrThrow(c => PluginFunctionRules.Prune(c.PluginFunctionLevels, present));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[plugins] stored function levels not cleaned: {ex.GetType().Name}");
+        }
+    }
+
+    /// <summary>Forgets what the owner chose for a plugin's functions (the plugin is gone).</summary>
+    private void ForgetFunctionLevels(IEnumerable<string> pluginIds)
+    {
+        var ids = pluginIds.ToList();
+        if (ids.Count == 0) return;
+        config.UpdateOrThrow(c =>
+        {
+            if (c.PluginFunctionLevels is null) return;
+            foreach (var key in c.PluginFunctionLevels.Keys.Where(k => ids.Contains(k, StringComparer.OrdinalIgnoreCase)).ToList()) c.PluginFunctionLevels.Remove(key);
+        });
     }
 
     public async Task<object> GetPluginPageAsync(string pluginId, string pageId)
     {
         var (page, _) = plugins.FindPage(pluginId, pageId) ?? throw new ArgumentException(Strings.Get("plugin.pageNotFound"));
+        var locked = Locked;
+        // On the locked couch only a page the plugin marked for it, and only its rows marked for it.
+        var pageTicket = RequirePageView(pluginId, page, withGrant: true);
+        UseUp(pageTicket);
+        // The parents' code opened the page: that page stays open for this child for a while (rows need no new code).
+        if (pageTicket is not null) BeginVisit(pluginId, pageId);
         var rows = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", page.Rows);
-        return new { page.Title, page.Description, rows };
+        return new
+        {
+            page.Title,
+            page.Description,
+            rows = PluginRows.Filter(VisibleRows(pluginId, page, locked, rows ?? [])),
+            sections = page.Sections.Take(20).Where(x => !string.IsNullOrEmpty(x.Id) && x.Id.Length <= PluginRows.MaxId).Select(x => new { x.Id, Title = x.Title is { Length: > PluginRows.MaxLabel } longTitle ? longTitle[..PluginRows.MaxLabel] : x.Title, kind = x.Kind == PluginSectionKind.Tiles ? "tiles" : "list" }).ToList(),
+            origin = plugins.OriginOf(pluginId).ToString()
+        };
     }
 
+    /// <summary>
+    /// A row is pressed. The bridge lets this through on the locked couch: here only a row of CouchHUD's own plugins marked for it goes
+    /// ahead (PluginPolicy.MayPress); the parents' code where the row asks for it, and always (under parental controls) for a
+    /// third-party row that changes something. The row is looked up fresh, never taken from what the page sent. A link row is the host's
+    /// own business: it opens the named page of the same plugin (checked like opening it from the list), the plugin's code is not called.
+    /// </summary>
     public async Task<object> ActivatePluginRowAsync(string pluginId, string pageId, string rowId)
     {
         var (page, _) = plugins.FindPage(pluginId, pageId) ?? throw new ArgumentException(Strings.Get("plugin.pageNotFound"));
+        var locked = Locked;
+        RequirePageView(pluginId, page);
+        var current = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", page.Rows) ?? [];
+        var row = current.FirstOrDefault(r => r.Id == rowId);
+        if (row?.Kind is PluginRowKind.Link)
+        {
+            // Locked: only a link of CouchHUD's own plugins marked for it (the same rule as any row); never the parents' code (it changes nothing).
+            if (PluginPolicy.MayPress(locked, plugins.OriginOf(pluginId), row, config.Current.ParentalEnabled, pluginId, plugins.LevelOf(pluginId, row.Function ?? page.Function), ChildNow).Refused is { } linkRefused)
+                throw linkRefused == "lock.unlockFirst" ? new LockedException(Strings.Get(linkRefused)) : new InvalidOperationException(Strings.Get(linkRefused));
+            var target = PluginRows.LinkTarget(row, id => plugins.FindPage(pluginId, id) is not null) ?? throw new ArgumentException(Strings.Get("plugin.pageNotFound"));
+            var (next, _) = plugins.FindPage(pluginId, target)!.Value;
+            RequirePageView(pluginId, next);
+            return new { message = (string?)null, navigate = new { next.Id, next.Title, next.Description }, rows = PluginRows.Filter(VisibleRows(pluginId, page, locked, current)) };
+        }
+        var rowLevel = plugins.LevelOf(pluginId, row?.Function ?? page.Function);
+        var decision = PluginPolicy.MayPress(locked, plugins.OriginOf(pluginId), row, config.Current.ParentalEnabled, pluginId, rowLevel, ChildNow);
+        if (decision.Refused is { } refused) throw refused == "lock.unlockFirst" ? new LockedException(Strings.Get(refused)) : new ArgumentException(Strings.Get(refused));
+        if (decision.ParentCode)
+        {
+            RefuseWhileConfigFaulted();
+            // Checked, and used up right before the plugin's code runs (all of the host's checks passed): never for a refused press.
+            // On purpose BEFORE the plugin code: the host cannot see whether a plugin did what the parents allowed, and a grant that stayed
+            // after a press could be used for a second one (SECURITY.md, Plugins). A press that then fails costs the code; do not "fix" this
+            // by using the grant up after the call (ConfigFaultDriftContractTests pins the order).
+            if (!CoveredByVisit(pluginId, pageId, rowLevel)) UseUp(CheckParentGrant(decision.ParentAction, $"{pluginId}/{pageId}/{rowId}", UseReason(pluginId, row?.Function ?? page.Function)));
+        }
+        // The host's proof that a person pressed a row of CouchHUD's own plugin that asks for the parents' code: the only thing a setup hand-over accepts.
+        // (A row the owner made available to everyone never carries the token: it asked for no code, and a setup needs one.)
+        var pressed = row!.RequiresParentGrant && rowLevel != PluginLevel.Restricted && PressPaysForSetup(pluginId);
+        if (pressed) _setupPress.Issue(pluginId);
         string? message = null;
-        if (page.Activate is not null) message = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", ct => page.Activate(rowId, ct));
-        var rows = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", page.Rows);
-        return new { message, rows };
+        try
+        {
+            if (page.Activate is not null) message = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", ct => page.Activate(rowId, ct));
+        }
+        finally
+        {
+            // The token lives as long as the press: gone as soon as the plugin's call returns.
+            if (pressed) _setupPress.Clear(pluginId);
+        }
+        var rows = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", page.Rows) ?? [];
+        return new { message, navigate = (object?)null, rows = PluginRows.Filter(VisibleRows(pluginId, page, Locked, rows)) };
+    }
+
+    /// <summary>A stepper or choice row got a new value: the same gate as pressing it, and only a value the row offers (an option, or a step inside the range).</summary>
+    public async Task<object> ChangePluginRowAsync(string pluginId, string pageId, string rowId, string value)
+    {
+        var (page, _) = plugins.FindPage(pluginId, pageId) ?? throw new ArgumentException(Strings.Get("plugin.pageNotFound"));
+        if (page.Change is null || value is null || value.Length > PluginRows.MaxShort) throw new ArgumentException(Strings.Get("plugin.pageNotFound"));
+        var locked = Locked;
+        RequirePageView(pluginId, page);
+        var current = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", page.Rows) ?? [];
+        var row = current.FirstOrDefault(r => r.Id == rowId && r.Kind is PluginRowKind.Stepper or PluginRowKind.Choice);
+        var rowLevelChange = plugins.LevelOf(pluginId, row?.Function ?? page.Function);
+        var decision = PluginPolicy.MayPress(locked, plugins.OriginOf(pluginId), row, config.Current.ParentalEnabled, pluginId, rowLevelChange, ChildNow);
+        if (decision.Refused is { } refused) throw refused == "lock.unlockFirst" ? new LockedException(Strings.Get(refused)) : new ArgumentException(Strings.Get(refused));
+        var checkedValue = PluginRows.CheckValue(row!, value) ?? throw new ArgumentException(Strings.Get("plugin.valueRefused"));
+        if (decision.ParentCode)
+        {
+            RefuseWhileConfigFaulted();
+            // Used up before the plugin code runs, on purpose (see ActivatePluginRowAsync).
+            if (!CoveredByVisit(pluginId, pageId, rowLevelChange)) UseUp(CheckParentGrant(decision.ParentAction, $"{pluginId}/{pageId}/{rowId}", UseReason(pluginId, row?.Function ?? page.Function)));
+        }
+        var message = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", ct => page.Change(rowId, checkedValue, ct));
+        var rows = await CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", page.Rows) ?? [];
+        return new { message, rows = PluginRows.Filter(VisibleRows(pluginId, page, Locked, rows)) };
     }
 
     /// <summary>
@@ -3568,7 +4001,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     /// </summary>
     public async Task<object> GetQuickActionsAsync()
     {
-        var actions = plugins.QuickActions;
+        var actions = plugins.QuickActions.Where(a => PluginPolicy.Shown(Locked, plugins.OriginOf(a.Plugin), a.Action, plugins.LevelOf(a.Plugin, a.Action.Function), ChildNow)).ToList();
         var details = await Task.WhenAll(actions.Select(a => plugins.DetailAsync(a.Plugin, a.Action)));
         return actions.Select((a, i) => new { plugin = a.Plugin, a.Action.Id, a.Action.Label, a.Action.Icon, detail = details[i] }).ToList();
     }
@@ -3576,31 +4009,159 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     public Task<string?> RunQuickActionAsync(string pluginId, string actionId)
     {
         var action = plugins.FindAction(pluginId, actionId) ?? throw new ArgumentException(Strings.Get("plugin.actionNotFound"));
-        return CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", action.Run);
+        var actionLevel = plugins.LevelOf(pluginId, action.Function);
+        var decision = PluginPolicy.MayRun(Locked, plugins.OriginOf(pluginId), action, config.Current.ParentalEnabled, actionLevel, ChildNow);
+        if (decision.Refused is { } refused) throw refused == "lock.unlockFirst" ? new LockedException(Strings.Get(refused)) : new InvalidOperationException(Strings.Get(refused));
+        if (decision.ParentCode)
+        {
+            RefuseWhileConfigFaulted();
+            // Used up before the plugin code runs, on purpose (see ActivatePluginRowAsync).
+            UseUp(CheckParentGrant(decision.ParentAction, $"{pluginId}/{actionId}", UseReason(pluginId, action.Function)));
+        }
+        if (!(action.RequiresParentGrant && actionLevel != PluginLevel.Restricted && PressPaysForSetup(pluginId))) return CouchHud.Core.Plugins.PluginManager.SafeAsync($"Plugin {pluginId}", action.Run);
+        _setupPress.Issue(pluginId);
+        return RunPressedAsync(pluginId, action);
     }
 
-    /// <summary>Installs a plugin or skin .zip into the user's folder; plugins load at the next start.</summary>
+    /// <summary>
+    /// Installs a plugin or skin .zip into the user's folder; plugins load at the next start. A plugin from a file has no signature: it
+    /// is a local plugin (SDK 2 surface, its file types checked), only in expert mode with the developer switch and the parents' code.
+    /// </summary>
     public string InstallPackage(string zipPath, string kind)
     {
+        RefuseWhileConfigFaulted();
         var isSkin = kind == "skin";
+        ParentTicket? ticket = null;
+        if (isSkin) RequireSkinChange();
+        else
+        {
+            ticket = RequirePluginChange(PluginChange.Install, PluginOrigin.Local, null, Path.GetFileName(zipPath));
+            CouchHud.Core.Plugins.PluginLint.CheckZip(zipPath, PluginOrigin.Local, [], legacy: true);
+        }
+        // All gates passed: the code pays for exactly this install and is used up before the work starts (a grant lives 90 seconds, an install can take longer).
+        UseUp(ticket);
         var target = CouchHud.Core.Plugins.PackageInstaller.Install(
             zipPath,
             Path.Combine(dataDir, isSkin ? "skins" : "plugins"),
-            isSkin ? CouchHud.Core.Plugins.PackageInstaller.Kind.Skin : CouchHud.Core.Plugins.PackageInstaller.Kind.Plugin);
-        // Installed on purpose, by the user, through this very call: these files are the approved ones.
-        if (!isSkin) plugins.Trust?.Trust(Path.GetFileName(target), target);
+            isSkin ? CouchHud.Core.Plugins.PackageInstaller.Kind.Skin : CouchHud.Core.Plugins.PackageInstaller.Kind.Plugin,
+            null, out var folderHash);
+        // Installed on purpose, by the user, through this very call: the files as they were unpacked are the approved ones (as a local plugin, never more).
+        if (!isSkin) plugins.ApproveInstalled(Path.GetFileName(target), folderHash);
         return Path.GetFileName(target);
     }
 
     /// <summary>
-    /// The user approves a plugin folder that nobody installed through CouchHud, or whose files changed. Needs the couch
-    /// unlocked; the plugin loads at the next start.
+    /// The user approves a plugin folder that nobody installed through CouchHud, or whose files changed: a local plugin from then on. The same
+    /// as installing an unsigned package: the couch unlocked, not a child's profile, expert mode with the developer switch, and the parents'
+    /// code (the couch code when there are no parental controls); the plugin loads at the next start. <paramref name="shownHash"/> is the hash
+    /// behind the code the dialog showed: the approval holds only for exactly those files.
     /// </summary>
-    public object ApprovePlugin(string folder)
+    public object ApprovePlugin(string folder, string shownHash)
+    {
+        RefuseWhileConfigFaulted();
+        var ticket = RequirePluginChange(PluginChange.Approve, PluginOrigin.Local, null, folder);
+        plugins.Approve(folder, shownHash);
+        UseUp(ticket);
+        plugins.RaiseTabsChanged();
+        return GetPlugins();
+    }
+
+    /// <summary>The parents let a withdrawn plugin run again, for exactly its current files (their code every time).</summary>
+    public object AcceptRevokedPlugin(string folder)
+    {
+        RefuseWhileConfigFaulted();
+        var entry = plugins.Trust?.Entry(folder);
+        var ticket = RequirePluginChange(PluginChange.AcceptRevoked, entry?.Origin ?? PluginOrigin.Local, entry?.Capabilities, folder);
+        plugins.AcceptRevocation(folder);
+        UseUp(ticket);
+        plugins.RaiseTabsChanged();
+        return GetPlugins();
+    }
+
+    /// <summary>The parents confirm the program whose command line a plugin may run (capability "process"); below Program Files only.</summary>
+    public object ConfirmPluginExe(string folder, string exe)
+    {
+        RefuseWhileConfigFaulted();
+        var entry = plugins.Trust?.Entry(folder);
+        if (entry?.Capabilities is not { } caps || !caps.Contains(PluginCapabilities.Process)) throw new InvalidOperationException(Strings.Get("plugin.cap.denied", folder, PluginCapabilities.Process));
+        var ticket = RequirePluginChange(PluginChange.ConfirmExe, entry.Origin, caps, folder);
+        plugins.ConfirmExe(folder, exe);
+        UseUp(ticket);
+        return GetPlugins();
+    }
+
+    /// <summary>Removes a user plugin; it is gone at once or, while its DLLs are loaded, at the next start (it never loads again either way).</summary>
+    public object UninstallPlugin(string folder)
+    {
+        RefuseWhileConfigFaulted();
+        var entry = plugins.Trust?.Entry(folder);
+        var ticket = RequirePluginChange(PluginChange.Uninstall, entry?.Origin ?? PluginOrigin.Local, entry?.Capabilities, folder);
+        // Every id the plugin was known by (the real id, also when it never loaded), taken before the folder goes.
+        // (A trust list that cannot be read leaves the ids unknown: then nothing is forgotten, the owner's choices stay.)
+        List<string> ids;
+        try
+        {
+            ids = plugins.PluginIdsToForget(folder).ToList();
+        }
+        catch (IOException)
+        {
+            ids = [];
+        }
+        var gone = Catalog.Uninstall(folder);
+        // Only when the plugin really went: a refused removal keeps the owner's choices.
+        if (gone) ForgetFunctionLevels(ids);
+        UseUp(ticket);
+        plugins.RaiseTabsChanged();
+        return new { gone, plugins = GetPlugins() };
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugin suggestions: a matching program is installed, or Wand (no longer bundled) was in use. Never installs anything.
+
+    private PluginSuggestions? _suggestions;
+
+    private PluginSuggestions Suggestions => _suggestions ??= new PluginSuggestions(dataDir, new WindowsRegistry(), Environment.UserName, UsedFeature);
+
+    /// <summary>A feature of the core that became a plugin was set up here (so the plugin is worth pointing out).</summary>
+    private bool UsedFeature(string feature) =>
+        feature == "homeAssistant" && PluginSettingSeeds.For(config.Current, PluginSettingSeeds.HomeAssistantId) is not null;
+
+    /// <summary>What may be pointed out now (nothing on the locked couch: it waits for the next unlocked look).</summary>
+    public async Task<object> GetPluginSuggestionsAsync()
+    {
+        if (Locked) return new List<object>();
+        await Catalog.PrepareSuggestionsAsync();
+        // Installed means a folder is there, loaded or not (a restart pending): that one is not pointed at again.
+        var installed = plugins.Plugins.Select(p => p.Id).ToList();
+        try
+        {
+            installed.AddRange(plugins.InstalledPluginIds());
+        }
+        catch (IOException)
+        {
+            // Plugin folders or the trust list unreadable: better no suggestion than one for something that may be installed.
+            return new List<object>();
+        }
+        return Suggestions.Due(Catalog.InstallableSignedEntries, installed, Locked).Select(s => new
+        {
+            s.EntryId,
+            s.Name,
+            s.Reason,
+            text = s.Reason switch
+            {
+                "wand" => Strings.Get("plugin.suggestWand"),
+                "feature" => Strings.Get("plugin.suggestHomeAssistant", s.Name),
+                "program" when s.EntryId == PluginSettingSeeds.CaseHudId => Strings.Get("plugin.suggestCaseHud", s.Name),
+                "program" when s.EntryId == PluginSettingSeeds.VpnId => Strings.Get("plugin.suggestVpn", s.Name),
+                _ => Strings.Get("plugin.suggest", s.Program ?? "", s.Name)
+            }
+        }).ToList();
+    }
+
+    public void DismissPluginSuggestion(string entryId)
     {
         RequireUnlocked();
-        plugins.Approve(folder);
-        return GetPlugins();
+        Suggestions.MarkOffered(entryId);
     }
 
     // -----------------------------------------------------------------------
@@ -3610,7 +4171,11 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
 
     private CatalogManager Catalog => _catalog ??= new CatalogManager(config, plugins, dataDir, () => _sessions.Current is not null,
         (app, title, body) => Ui(() => PostNotification(app, title, body)),
-        updates => Ui(() => Emit("catalogUpdates", updates)));
+        updates => Ui(() => Emit("catalogUpdates", updates)))
+    {
+        // The catalog finished loading after the first look: the UI asks for the suggestions again (the host still answers nothing on the locked couch).
+        SignedEntriesChanged = () => Ui(() => Emit("pluginSuggestionsReady", null))
+    };
 
     private SelfUpdateManager? _selfUpdate;
 
@@ -3622,32 +4187,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
             if (state.Busy is { } busy) _downloads.Report(DownloadIds.Self, detail: busy, cancellable: state.Cancellable);
             Ui(() => Emit("selfUpdate", state));
         });
-
-    // CaseHUD: finding, starting, installing and controlling it (all of it in CaseHudManager).
-    private Lazy<CaseHudManager>? _caseHudLazy;
-
-    private Lazy<CaseHudManager> CaseHudLazy => LazyInitializer.EnsureInitialized(ref _caseHudLazy, () => new Lazy<CaseHudManager>(() =>
-        new CaseHudManager(config, dataDir, () => _sessions.Current is not null, (name, payload) => Ui(() => Emit(name, payload))) { Downloads = _downloads }));
-
-    public CaseHudManager CaseHud => CaseHudLazy.Value;
-
-    // VPN (NordVPN first): the installed app's command line and the tunnel adapter, all of it in VpnManager.
-    private Lazy<VpnManager>? _vpnLazy;
-
-    private Lazy<VpnManager> VpnLazy => LazyInitializer.EnsureInitialized(ref _vpnLazy, () => new Lazy<VpnManager>(() => new VpnManager(config,
-        new CouchHud.Core.Integrations.Vpn.NordVpnProvider(), RequireVpnChange, (name, payload) => Ui(() => Emit(name, payload)))));
-
-    public VpnManager Vpn => VpnLazy.Value;
-
-    /// <summary>
-    /// A change of the VPN (connect, disconnect, other country, opening the app): the bridge already refused it on a locked couch; with
-    /// parental controls on it also needs the parents' one-time release, like the other settings a child could use to get around rules.
-    /// </summary>
-    private void RequireVpnChange()
-    {
-        RequireUnlocked();
-        if (config.Current.ParentalEnabled) RequireParentGrant(CouchHud.Core.Integrations.Vpn.VpnPolicy.ParentAction);
-    }
 
     // TV control (LG webOS first): pairing, volume, inputs, on/off, all of it in TvManager and Core's TvController.
     private Lazy<TvManager>? _tvLazy;
@@ -3721,16 +4260,144 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         });
     }
 
+    // -----------------------------------------------------------------------
+    // Skins that moved to the catalog in 0.6
+
+    private volatile bool _skinRestoring;
+    private bool _skinRestoreWaiting;
+    private (bool UpdateCheck, bool Busy)? _skinRestoreSeen;
+
+    /// <summary>
+    /// First start after the update: a household whose skin left the app gets it from the signed catalog (SkinRestore: bounded, verified
+    /// like any catalog install). Meanwhile the page shows the Couch skin; when it is done the page is told (event "skinRestore").
+    /// </summary>
+    private void StartSkinRestore()
+    {
+        var wanted = CouchHud.Core.Skins.SkinRestore.Wanted(ConfigStore.AskedSkins(config.Current));
+        if (wanted.Count == 0) return;
+        var restore = Catalog.SkinRestore;
+        if (!wanted.Any(restore.CanTry)) { _skinRestoreWaiting = false; return; }
+        // Same rules as the quiet update checks: switched off means no network at all, a running game means later (the tick asks again).
+        // Not gated by the lock: it installs no code (a stylesheet), only what the household already chose, from the official signed index
+        // with hash and size checks, bounded in attempts, and nothing in the UI or from a remote can start it.
+        _skinRestoreSeen = (config.Current.CatalogUpdateCheck, GameBusy);
+        var gate = CouchHud.Core.Skins.SkinRestore.Gate(_skinRestoreSeen.Value.UpdateCheck, _skinRestoreSeen.Value.Busy);
+        _skinRestoreWaiting = gate != CouchHud.Core.Skins.SkinRestoreGate.Go;
+        if (_skinRestoreWaiting || _skinRestoring) return;
+        _skinRestoring = true;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var results = await restore.RunAsync(wanted);
+                foreach (var r in results.Where(r => r.Outcome == CouchHud.Core.Skins.SkinRestoreOutcome.Failed))
+                    Console.Error.WriteLine($"[skins] {r.CatalogId} not restored: {r.Reason}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[skins] restore failed: {ex.Message}");
+            }
+            finally
+            {
+                _skinRestoring = false;
+                Ui(() => Emit("skinRestore", new { skin = SkinCatalog.MigrateSkinId(LookProfile.Skin), state = SkinRestoreState() is null ? "ready" : "missing" }));
+            }
+        });
+    }
+
+    /// <summary>
+    /// What the page needs to tell the person: the skin the settings ask for is one that moved to the catalog and is not installed.
+    /// "restoring" while the first start's install runs, "missing" when it is not coming (offline, refused, tried enough times).
+    /// </summary>
+    public object? SkinRestoreState()
+    {
+        var wanted = SkinCatalog.MovedCatalogId(SkinCatalog.MigrateSkinId(LookProfile.Skin));
+        if (wanted is null || ListSkins().Any(s => s.Id == SkinCatalog.UserId(wanted))) return null;
+        return new { skin = SkinCatalog.UserId(wanted), state = _skinRestoring ? "restoring" : "missing" };
+    }
+
     public Task<CatalogState> GetCatalogAsync(bool refresh) => Catalog.GetAsync(refresh);
 
     public IReadOnlyList<CatalogRow> GetCatalogUpdates() => Catalog.Updates;
 
     public async Task<object> InstallCatalogEntryAsync(string id, string kind)
     {
+        RefuseWhileConfigFaulted();
         var name = Catalog.NameOf(id);
+        // A skin of a catalog the user added is third-party like a plugin of one: the same gate (expert mode, the parents' code, never locked
+        // or in a child's profile). Any other skin needs the unlocked couch and no child's profile.
+        if (kind == "skin") RequireSkinChange();
+        var extraSkin = kind == "skin" && await Catalog.IsExtraAsync(id, kind);
+        // The gate is asked inside the catalog service, once the statement checked out (origin and capabilities are known), before the download,
+        // and its grant is used up right there, once (CatalogInstallFlow): a grant lives 90 seconds, a download can take longer. A skin of an
+        // added catalog is only looked at early (a missing code fails before a download is tracked); that look does not use the grant up.
         var (message, restartNeeded, state) = await TrackAsync(DownloadIds.Plugin(kind, id), DownloadKind.Plugin, kind == "skin" ? "skin" : "plugin", name,
-            started => Catalog.InstallAsync(id, kind, started));
+            started => CatalogInstallFlow.RunAsync(extraSkin,
+                early: () => RequirePluginChange(PluginChange.Install, PluginOrigin.ThirdParty, null, id),
+                gate: request => UseUp(RequirePluginChange(request.IsUpdate && request.Entry.Kind != CatalogKind.Skin ? PluginChange.Update : PluginChange.Install, request.Origin,
+                    request.Statement?.Statement.Capabilities, request.Entry.Id, request.AddsCapabilities)),
+                install: approve => Catalog.InstallAsync(id, kind, started, approve)));
         return new { message, restartNeeded, state };
+    }
+
+    /// <summary>The detail page of a catalog entry (long text, verified screenshots, changelog, the third-party warning).</summary>
+    public Task<CatalogDetail> GetCatalogDetailAsync(string id, string kind) => Catalog.GetDetailAsync(id, kind);
+
+    /// <summary>
+    /// The catalogs: CouchHUD's own (built in, signed with CouchHUD's key, cannot be removed or switched off) and the ones the user added. The
+    /// warning text for the dialog that asks "I trust this developer" comes along, so the page shows what the host will insist on.
+    /// </summary>
+    public object GetCatalogSources()
+    {
+        var extra = CouchHud.Core.Plugins.CatalogSourceRules.Effective(config.Current.ExtraCatalogSources);
+        return new
+        {
+            official = new { url = CouchHud.Core.Plugins.CatalogSourceRules.OfficialUrl, builtIn = true, removable = false },
+            extra = extra.Select(s => new { url = s.Url, host = new Uri(s.Url).IdnHost, name = s.Name, nameNotAllowed = s.NameNotAllowed, keyCode = CouchHud.Core.Plugins.CatalogSourceRules.KeyCode(s), signed = s.PublisherKey is not null, added = s.Added }).ToList(),
+            max = CouchHud.Core.Plugins.CatalogSourceRules.MaxSources,
+            warning = new { title = Strings.Get("catalog.source.warningTitle"), body = Strings.Get("catalog.source.warning"), confirm = Strings.Get("catalog.source.trust") }
+        };
+    }
+
+    /// <summary>
+    /// Adds a catalog of another developer: only from the HUD itself, never on the locked couch or in a child's profile, expert mode, the
+    /// parents' code (the couch code without parental controls), and only after the user confirmed that they trust the developer
+    /// (<paramref name="acknowledgedTrust"/>, true only from the warning dialog). https only. Everything from it is third-party.
+    /// </summary>
+    public object AddCatalogSource(string url, string? publisherKey, string? name, bool acknowledgedTrust)
+    {
+        RefuseWhileConfigFaulted();
+        var ticket = RequireSourceChange(CouchHud.Core.Plugins.CatalogSourceChange.Add, url, publisherKey, name, acknowledgedTrust);
+        config.UpdateOrThrow(c => c.ExtraCatalogSources = CouchHud.Core.Plugins.CatalogSourceRules.Apply(
+            CouchHud.Core.Plugins.CatalogSourceRules.Effective(c.ExtraCatalogSources), CouchHud.Core.Plugins.CatalogSourceChange.Add, url, publisherKey, name, DateTimeOffset.UtcNow));
+        Catalog.Invalidate();
+        UseUp(ticket);
+        return GetCatalogSources();
+    }
+
+    /// <summary>Removes a catalog the user added. The official one cannot be removed (refused whatever else is true).</summary>
+    public object RemoveCatalogSource(string url)
+    {
+        RefuseWhileConfigFaulted();
+        var ticket = RequireSourceChange(CouchHud.Core.Plugins.CatalogSourceChange.Remove, url, null, null, false);
+        config.UpdateOrThrow(c => c.ExtraCatalogSources = CouchHud.Core.Plugins.CatalogSourceRules.Apply(
+            CouchHud.Core.Plugins.CatalogSourceRules.Effective(c.ExtraCatalogSources), CouchHud.Core.Plugins.CatalogSourceChange.Remove, url, null, null, DateTimeOffset.UtcNow));
+        Catalog.Invalidate();
+        UseUp(ticket);
+        return GetCatalogSources();
+    }
+
+    private ParentTicket? RequireSourceChange(CouchHud.Core.Plugins.CatalogSourceChange change, string url, string? publisherKey, string? name, bool acknowledged)
+    {
+        var c = config.Current;
+        var gate = new PluginPolicy.GateContext(PluginCaller.Hud, Locked, ProfileSwitch.IsChild(c, c.ActiveProfile.Id), c.ExpertMode, c.CatalogAllowLocal, c.ParentalEnabled);
+        var decision = CouchHud.Core.Plugins.CatalogSourceRules.Decide(gate, change, url, publisherKey, name, acknowledged, CouchHud.Core.Plugins.CatalogSourceRules.Effective(c.ExtraCatalogSources));
+        if (decision.Refused is { } refused)
+        {
+            if (refused == "lock.unlockFirst") throw new LockedException(Strings.Get(refused));
+            throw new InvalidOperationException(Strings.Get(refused));
+        }
+        return decision.ParentCode ? CheckParentGrant(decision.ParentAction, url) : null;
     }
 
     // -----------------------------------------------------------------------
@@ -4331,87 +4998,6 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         });
     }
 
-    /// <summary>
-    /// What the Smart Home tab, the guide menu and the assistant get: the chosen entities in the chosen order, then pinned ones
-    /// (see <see cref="HomeAssistantSelection.InScope"/>). Never the whole house.
-    /// </summary>
-    public async Task<IReadOnlyList<HaEntity>> GetHomeEntitiesAsync()
-    {
-        var all = await _home.GetEntitiesAsync();
-        var c = config.Current;
-        return HomeAssistantSelection.InScope(all, c.HomeAssistantEntities, c.HomeAssistantPinned);
-    }
-
-    /// <summary>
-    /// The picker: everything Home Assistant offers for a TV, with rooms (when the token may render templates) and suggestions,
-    /// plus the current choice. Not open on a locked couch (bridge), the choice is the owner's.
-    /// </summary>
-    public async Task<object> GetHomeCatalogAsync()
-    {
-        var (all, registry) = await _home.GetCatalogAsync();
-        // The couch may have locked while Home Assistant answered: the choice stays the owner's.
-        if (Locked) throw new LockedException(Strings.Get("lock.unlockFirst"));
-        var c = config.Current;
-        return new
-        {
-            entities = HomeAssistantSelection.Catalog(all, registry),
-            selected = HomeAssistantSelection.Effective(c.HomeAssistantEntities, c.HomeAssistantPinned),
-            areas = registry.Values.Any(r => r.Area is not null)
-        };
-    }
-
-    /// <summary>The connection test in the settings: one /api/states call, the number of entities Home Assistant offers for a TV.</summary>
-    public async Task<int> TestHomeAssistantAsync() => (await _home.GetEntitiesAsync()).Count;
-
-    /// <summary>Stores the choice for the Smart Home tab (well-formed ids only, at most 500); pins of dropped entities go too.</summary>
-    public IReadOnlyList<string> SetHomeSelection(System.Text.Json.JsonElement ids)
-    {
-        var selection = HomeAssistantSelection.Sanitize(ids);
-        config.UpdateOrThrow(c =>
-        {
-            c.HomeAssistantEntities = selection;
-            c.HomeAssistantPinned = HomeAssistantSelection.PinsAfterChoice(c.HomeAssistantPinned, selection);
-        });
-        return selection;
-    }
-
-    /// <summary>
-    /// Switches one thing in Home Assistant. The id must look like an entity id, be chosen for the Smart Home tab or pinned,
-    /// and be one Home Assistant lists as switchable; locked, only lights, scenes, media players and pinned switches
-    /// (see <see cref="HomeAssistantPolicy"/>).
-    /// </summary>
-    public async Task ActivateHomeEntityAsync(string entityId)
-    {
-        if (!HomeAssistantPolicy.IsValidEntityId(entityId)) throw new ArgumentException(Strings.Get("ha.invalidEntity"));
-        var pins = HomeAssistantSelection.Sanitize(config.Current.HomeAssistantPinned);
-        if (Locked && !HomeAssistantPolicy.AllowedWhileLocked(entityId, pins.Contains(entityId)))
-        {
-            throw new LockedException(Strings.Get("ha.lockedEntity"));
-        }
-        if (!HomeAssistantSelection.IsInScope(entityId, config.Current.HomeAssistantEntities, pins))
-        {
-            throw new ArgumentException(Strings.Get("ha.notSelected", entityId));
-        }
-        var known = await _home.GetEntitiesAsync();
-        if (!known.Any(e => e.Id == entityId && e.Controllable)) throw new ArgumentException(Strings.Get("ha.unknownEntity", entityId));
-        await _home.ActivateAsync(entityId);
-    }
-
-    public bool PinHomeEntity(string entityId)
-    {
-        if (!HomeAssistantPolicy.IsValidEntityId(entityId)) throw new ArgumentException(Strings.Get("ha.invalidEntity"));
-        var pinned = false;
-        config.Update(c =>
-        {
-            c.HomeAssistantPinned ??= [];
-            pinned = !c.HomeAssistantPinned.Remove(entityId);
-            // Only what is chosen for the tab can go into the guide menu (unpinning always works).
-            if (pinned && !HomeAssistantSelection.Effective(c.HomeAssistantEntities, c.HomeAssistantPinned).Contains(entityId)) pinned = false;
-            if (pinned) c.HomeAssistantPinned.Add(entityId);
-        });
-        return pinned;
-    }
-
     public CouchHud.Core.Files.BrowseResult Browse(string? path, IReadOnlyCollection<string>? extensions) =>
         CouchHud.Core.Files.FileBrowser.List(path, extensions);
 
@@ -4597,12 +5183,12 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
 
     public void RemoveEntry(string id) => library.RemoveCustomEntry(id);
 
-    public IReadOnlyList<SkinInfo> ListSkins() => SkinCatalog.ListUserSkins(Path.Combine(dataDir, "skins"));
+    public IReadOnlyList<SkinInfo> ListSkins() => SkinCatalog.ListUserSkins(Path.Combine(dataDir, "skins"), Strings.Language);
 
     public void SetSkin(string id)
     {
         // A locked couch may change the look, but only to a skin that exists.
-        var current = SkinCatalog.MigrateId(id);
+        var current = SkinCatalog.MigrateSkinId(id);
         if (!SkinCatalog.IsKnown(current, ListSkins())) throw new ArgumentException(Strings.Get("tools.noSkin", id));
         config.Update(c => c.ActiveProfile.Skin = current!);
     }
@@ -4909,8 +5495,8 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         pane.DialogRequested += dialog => OnPageDialog(pane, dialog);
         pane.Notice += (key, arg) => BrowserNotice(key, arg);
         pane.Crashed += fatal => OnBrowserCrashed(pane, fatal);
-        // Home Assistant's sign-in: the redirect with the code, cancelled in the pane before it loads.
-        pane.SignInRedirect += (url, pageUrl) => OnHaSignInRedirect(pane, url, pageUrl);
+        // A plugin's sign-in: the redirect with the code, cancelled in the pane before it loads.
+        pane.PluginSignInRedirect += (url, pageUrl) => OnPluginSignInRedirect(pane, url, pageUrl);
         // A TV page (YouTube TV) is steered by keys: the sticks leave the cursor alone, the left stick gives arrow keys.
         pane.TvModeChanged += () =>
         {
@@ -5268,7 +5854,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     {
         // Web pages can open Windows file dialogs (upload, save as PDF), a way out of the couch.
         RequireUnlocked();
-        // The single way into the couch browser: with Browser switched off nothing opens it (news links, plugins, the Home Assistant sign-in).
+        // The single way into the couch browser: with Browser switched off nothing opens it (news links, plugins, a plugin's web sign-in).
         RequireArea(FeatureAreas.Browser);
         // \\server\share or C:\…: no files in the couch browser, and such a path does not go to a search engine either.
         if (BrowserAddress.IsLocalPath(text)) throw new ArgumentException(Strings.Get("browser.localPath"));
@@ -5305,9 +5891,10 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     private void CloseBrowser(bool bringFront)
     {
         if (_browser is null) return;
-        // A sign-in to Home Assistant ends with its page: a code arriving later is not taken.
-        _haLogin.Cancel();
-        _haSignInPage = null;
+        // A plugin's sign-in ends with its page: a code arriving later is not taken.
+        _signInPage = null;
+        EndPluginSignIn();
+        ResetPluginRedirectHost();
         CancelPageDialogs(leaving: true);
         _typing = null;
         SetBrowserFocus(false);
@@ -5485,9 +6072,9 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     {
         open = _browser?.Url.Length > 0,
         url = ShownBrowserUrl(),
-        // Signing in to Home Assistant (until the browser closes, also after the sign-in ran out): the HUD keeps the page out of its
+        // Signing in for a plugin (until the browser closes, also after the sign-in ran out): the HUD keeps the page out of its
         // recent sites.
-        signIn = _haSignInPage is not null,
+        signIn = _signInPage is not null,
         title = _browser?.PageTitle ?? "",
         canGoBack = _browser?.CanGoBack == true,
         canGoForward = _browser?.CanGoForward == true,
@@ -5508,11 +6095,11 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         closesInMs = BrowserClosesInMs()
     };
 
-    /// <summary>The page's address for the bar; Home Assistant's pages during a sign-in without query (the state stays off the screen).</summary>
+    /// <summary>The page's address for the bar; the pages of a plugin's sign-in without query (the state stays off the screen).</summary>
     private string ShownBrowserUrl()
     {
         var url = _browser?.Url ?? "";
-        return _haSignInPage is { } root && HomeAssistantLogin.SameOrigin(url, root) ? HomeAssistantLogin.Shown(url) : url;
+        return _signInPage is { } root && PluginSignInRules.SameOrigin(url, root) ? PluginSignInRules.Shown(url) : url;
     }
 
     private bool BrowserRecentHidden => BrowserRecentPrivacy.Hidden(Locked, config.Current.ParentalEnabled, _browserRecentShown);
@@ -5557,7 +6144,13 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
 
     public object RemoveBookmark(string url)
     {
-        config.Update(c => c.Bookmarks.RemoveAll(b => b.Url == url));
+        config.Update(c =>
+        {
+            c.Bookmarks.RemoveAll(b => b.Url == url);
+            // A favorite website without its bookmark goes too, in every profile.
+            var id = FavoritesShelf.SiteId(url);
+            foreach (var profile in c.AllProfiles) profile.Favorites.Remove(id);
+        });
         return BrowserState();
     }
 
@@ -5650,7 +6243,13 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 var first = _lastLocked is null;
                 _lastLocked = locked;
                 if (!first) ApplyCompetitorSuppression();
+                // A page visit that the parents' code opened ends with the lock.
+                if (locked) EndPluginVisits();
+                // Unlocked now: a plugin suggestion that had to wait for the unlock (the host says nothing while locked) is asked for again.
+                else if (!first) Ui(() => Emit("pluginSuggestionsReady", null));
                 plugins.Events.RaiseLockChanged(locked);
+                // Third-party plugin tabs are hidden while locked.
+                plugins.RaiseTabsChanged();
                 // No way back to the profile picker here (review N3): the couch also locks on a game start, on the way back to the HUD and
                 // when the two-minute unlock ends, with the same person still there. The picker returns with the screensaver, the display
                 // going off and a restart (ProfileIdle).
@@ -6104,9 +6703,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         _bluetoothRecovery?.Dispose();
         _batteries?.Dispose();
         _bluetooth.Dispose();
-        // Ends a running gaming lease first (at most about 2 s), then lets go of the connections.
-        if (_caseHudLazy is { IsValueCreated: true } caseHudManager) caseHudManager.Value.Dispose();
-        if (_vpnLazy is { IsValueCreated: true } vpnManager) vpnManager.Value.Dispose();
+        // Lets go of the connections.
         if (_tvLazy is { IsValueCreated: true } tvManager) tvManager.Value.Dispose();
         _parentalController?.Service.Flush();
         GamePause.ResumeAll();

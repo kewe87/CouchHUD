@@ -72,7 +72,7 @@ function target(e) {
   return e.target instanceof Element ? e.target : null;
 }
 
-const CLICKABLE = '.passcode-key, .timeup-option, .quick-row, .ha-card, .news-card, .tile, .action, .settings li, .settings-cats li, .file-row, .check-row, .chip, .wizard-option, .osk-key, .menu li, #tab-list li, .hint';
+const CLICKABLE = '.passcode-key, .timeup-option, .quick-row, .ha-card, .news-card, .tile, .action, .settings li, .settings-cats li, .file-row, .check-row, .chip, .wizard-option, .osk-key, .menu li, #tab-list li, #tab-pinned li, .hint';
 
 // The code prompt without a menu over it: only clicks on its buttons count there.
 const codeEntry = () => !state.overlay && !quick.open && isCodeEntry(currentView());
@@ -93,7 +93,7 @@ function onClick(e, dispatch) {
   }
   // Clicking next to the open guide menu closes it.
   if (quick.open) return dispatch('b');
-  if (node.matches('#tab-list li')) return switchTab(indexIn(node));
+  if (node.matches('#tab-list li, #tab-pinned li')) return switchTab(Number(node.dataset.tab));
   if (node.matches('.hint')) return dispatch(node.dataset.btn === '≡' ? 'start' : node.dataset.btn.toLowerCase());
   if (node.matches('.menu li')) {
     state.overlay.index = indexIn(node);

@@ -1,0 +1,30 @@
+{
+  "id": "casehud",
+  "folder": "CouchHud.Plugin.CaseHud",
+  "version": "1.0.0",
+  "sha256": "",
+  "sdk": 3,
+  "minCouchHud": "0.6.0",
+  "capabilities": [
+    "pages",
+    "quickActions",
+    "downloads",
+    "setup.run",
+    "lock.restrict",
+    "startup.args",
+    "process",
+    "registry",
+    "native",
+    "network:loopback",
+    "network:internet"
+  ],
+  "publisherKey": "",
+  "license": "GPL-3.0-only",
+  "author": "kewe87",
+  "name": "CaseHUD",
+  "summary": "Switch and operate the LCDs in your fans and pumps through CaseHUD: scenes, brightness, lighting, automation, with guide menu entries",
+  "icon": {
+    "sha256": "1a35d55034c16fcfebfd3086c98b1812d02d7aa692422752910f6f7cdd4b623f",
+    "bytes": 27996
+  }
+}

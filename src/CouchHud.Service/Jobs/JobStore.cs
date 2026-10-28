@@ -21,7 +21,6 @@ public sealed class Job
     private int _installed;
     private bool _rebootRequired;
     private UpdateEntry[]? _updates;
-    private bool _restartCaseHud;
     private long _bytesDone;
     private long _bytesTotal;
 
@@ -69,7 +68,7 @@ public sealed class Job
         }
     }
 
-    public void Complete(TimeSpan now, string? message = null, int installed = 0, bool rebootRequired = false, UpdateEntry[]? updates = null, bool restartCaseHud = false) =>
+    public void Complete(TimeSpan now, string? message = null, int installed = 0, bool rebootRequired = false, UpdateEntry[]? updates = null) =>
         End(() =>
         {
             _state = Done;
@@ -78,18 +77,16 @@ public sealed class Job
             _installed = installed;
             _rebootRequired = rebootRequired;
             _updates = updates;
-            _restartCaseHud = restartCaseHud;
             EndedAt = now;
         });
 
-    public void Fail(TimeSpan now, string message, int installed = 0, bool rebootRequired = false, bool restartCaseHud = false) =>
+    public void Fail(TimeSpan now, string message, int installed = 0, bool rebootRequired = false) =>
         End(() =>
         {
             _state = Failed;
             _message = message;
             _installed = installed;
             _rebootRequired = rebootRequired;
-            _restartCaseHud = restartCaseHud;
             EndedAt = now;
         });
 
@@ -139,7 +136,7 @@ public sealed class Job
 
     public JobData Snapshot()
     {
-        lock (_lock) return new JobData(Id, _state, _percent, _message, _installed, _rebootRequired, _updates, _restartCaseHud,
+        lock (_lock) return new JobData(Id, _state, _percent, _message, _installed, _rebootRequired, _updates,
             _state == Running ? _bytesDone : 0, _state == Running ? _bytesTotal : 0);
     }
 }

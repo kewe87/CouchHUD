@@ -62,7 +62,7 @@ public class PlayStationReportTests
         Assert.Equal(255, sample.LeftTrigger);
         Assert.Equal(0, sample.RightTrigger);
         Assert.Equal("full", battery);
-        Assert.Equal(["a", "guide", "left", "lt", "start", "up"], PadMerger.ToPressed(sample).Order(StringComparer.Ordinal));
+        Assert.Equal(["a", "guide", "left", "lt", "rsdown", "start", "up"], PadMerger.ToPressed(sample).Order(StringComparer.Ordinal));
     }
 
     [Fact]

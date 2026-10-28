@@ -102,14 +102,14 @@ public sealed class ProfileContractTests
         var bridge = Code("src", "CouchHud.Shell", "UiHost", "UiBridge.cs");
         var heldAt = bridge.IndexOf("!ProfilePolicy.OpenWhileHeld.Contains(method) && hud.ProfileHeld", StringComparison.Ordinal);
         var locked = bridge.IndexOf("if (hud.Locked && !OpenWhileLocked.Contains(method)", StringComparison.Ordinal);
-        var prefixes = bridge.IndexOf("method.StartsWith(\"caseHud\"", StringComparison.Ordinal);
+        var prefixes = bridge.IndexOf("method.StartsWith(\"tv\"", StringComparison.Ordinal);
         Assert.True(heldAt >= 0 && locked > heldAt && prefixes > heldAt, "the held check comes first");
         Assert.Contains("throw new ProfileHeldException(", bridge);
         var policy = Code("src", "CouchHud.Core", "Config", "ProfileSwitch.cs");
         var list = Regex.Match(policy, @"OpenWhileHeld = new HashSet<string>\(OpenWhileLocked\)\s*\{(?<list>[^}]*)\}").Groups["list"].Value;
         var held = Regex.Matches(list, "\"(\\w+)\"").Select(m => m.Groups[1].Value).ToHashSet();
         Assert.Contains("parentalAuth", held);
-        foreach (var refused in new[] { "launch", "resumeGame", "getLibrary", "getCollections", "getSettings", "setSetting", "openUrl", "askAssistant", "enterPcMode", "unlock", "getBrowser", "browserCommand", "toggleFavorite", "activateHomeEntity", "setParental", "parentalExtend" })
+        foreach (var refused in new[] { "launch", "resumeGame", "getLibrary", "getCollections", "getSettings", "setSetting", "openUrl", "askAssistant", "enterPcMode", "unlock", "getBrowser", "browserCommand", "toggleFavorite", "setParental", "parentalExtend" })
             Assert.DoesNotContain(refused, held);
         Assert.DoesNotContain(held, m => m.StartsWith("caseHud", StringComparison.Ordinal) || m.StartsWith("vpn", StringComparison.Ordinal) || m.StartsWith("tv", StringComparison.Ordinal));
         // Starting, resuming, the assistant and MCP refuse too.

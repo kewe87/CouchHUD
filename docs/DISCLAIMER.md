@@ -14,7 +14,7 @@ CouchHUD kann, je nach gewähltem Modus und den Funktionen, die du einschaltest,
 - die Anmeldung beeinflussen (Couch-Sperre, Wächterprozess, automatische Windows-Anmeldung: das Passwort wird einmal eingegeben, geprüft und von Windows verschlüsselt als LSA-Secret abgelegt),
 - den Task-Manager im Couch-Modus sperren,
 - ausgewählte Windows-Dienste pausieren und Autostart-Programme selbst starten,
-- auf Wunsch **CaseHUD** (ein eigenes Programm für die Gehäuse-Displays) herunterladen, prüfen und mit Administrator-Bestätigung installieren (das Setup richtet einen Sensor-Dienst und einen Treiber ein) und es im Hintergrund starten,
+- auf Wunsch über das CaseHUD-Plugin **CaseHUD** (ein eigenes Programm für die Gehäuse-Displays) herunterladen, prüfen und mit Administrator-Bestätigung installieren (das Setup richtet einen Sensor-Dienst und einen Treiber ein) und es im Hintergrund starten,
 - Fenster von Spiele-Clients und Update-Popups minimieren und der Xbox Game Bar die Guide-Taste abnehmen („CouchHUD bleibt vorne“, im PC-Modus und beim Beenden wieder zurückgesetzt).
 
 Jeder Eingriff ist einzeln beschrieben, mit Ort, Admin-Bedarf und Weg zum Rückgängigmachen, in CouchHUD unter **Einstellungen › HUD › Was CouchHUD an Windows ändert**. Für den Notfall gibt es den Wiederherstellungsmodus: **Strg + Umschalt** oder **LB + RB + View** beim Start etwa 1,5 Sekunden halten.
@@ -27,6 +27,6 @@ Jeder Eingriff ist einzeln beschrieben, mit Ort, Admin-Bedarf und Weg zum Rückg
 - **Spiel pausieren** hält Prozesse an. Online-Spiele können die Verbindung verlieren, Anti-Cheat-Systeme können darauf reagieren. Die Funktion ist standardmäßig aus.
 - **Plugins** stammen von Dritten. Sie laufen mit denselben Rechten wie CouchHUD. Installiere nur Plugins aus Quellen, denen du vertraust. Für Plugins und deren Folgen sind die jeweiligen Autoren verantwortlich.
 - **Cheats und Mods** (z.B. über das Wand-Plugin) können gegen die Nutzungsbedingungen von Spielen verstoßen und zu Sperren führen, besonders in Online-Spielen.
-- **Markennamen** wie Xbox, PlayStation, Steam, Epic Games, GOG, Ubisoft, EA, Battle.net, Windows, Discord, WhatsApp und andere gehören ihren Inhabern. CouchHUD steht in keiner Verbindung zu ihnen. Die eingebauten Skins tragen eigene Namen, verwenden keine Originalgrafiken oder Logos und beschreiben nur einen Stil.
+- **Markennamen** wie Xbox, PlayStation, Steam, Epic Games, GOG, Ubisoft, EA, Battle.net, Windows, Discord, WhatsApp und andere gehören ihren Inhabern. CouchHUD steht in keiner Verbindung zu ihnen. Die Skins, die CouchHUD mitbringt und im Katalog anbietet, tragen eigene Namen, verwenden keine Originalgrafiken oder Logos und beschreiben nur einen Stil.
 
 Mit dem Bestätigen beim ersten Start erklärst du, diese Hinweise gelesen zu haben.

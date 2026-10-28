@@ -57,6 +57,12 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             Console.WriteLine($"[bridge] {method}: profile picker first");
             Post(new { id, error = ex.Message, held = true });
         }
+        catch (ParentCodeNeededException ex)
+        {
+            // Expected: the page asks the parents' code for exactly this action and item, then repeats the call.
+            Console.WriteLine($"[bridge] {method}: parents' code needed");
+            Post(new { id, error = ex.Message, parent = new { action = ex.Action, item = ex.Item, reason = ex.Reason } });
+        }
         catch (LockedException ex)
         {
             // Expected while the couch is locked: one line, no stack trace; the page knows it by the flag.
@@ -115,8 +121,7 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
         // Couch lock: a guest on the couch gets exactly this list. Everything else (adding
         // apps, plugins, settings, file browsing, uninstallers …) could start a program of
         // their choice, so it needs the code first. Leaving the couch checks in Hud itself.
-        if (hud.Locked && !OpenWhileLocked.Contains(method) && !CouchHud.Core.Integrations.CaseHud.CaseHudPolicy.OpenWhileLocked.Contains(method)
-            && !CouchHud.Core.Integrations.Vpn.VpnPolicy.OpenWhileLocked.Contains(method)
+        if (hud.Locked && !OpenWhileLocked.Contains(method)
             && !CouchHud.Core.Integrations.Tv.TvPolicy.OpenWhileLocked.Contains(method)
             && !ProfilePolicy.OpenWhileLocked.Contains(method)
             && !(method == "setSetting" && Arg(0).ValueKind == JsonValueKind.String && CouchHud.Core.Guard.LockPolicy.IsHarmlessSetting(Arg(0).GetString()!, hud.ProfilesGuarded)))
@@ -134,10 +139,6 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             throw new InvalidOperationException(Strings.Get("areas.off"));
         }
 
-        // CaseHUD page: one prefix, one handler (the lock rules are CaseHudPolicy, checked above).
-        if (method.StartsWith("caseHud", StringComparison.Ordinal)) return await hud.CaseHud.HandleAsync(method, args);
-        // VPN page and Guide menu rows: one prefix, one handler (lock rules: VpnPolicy above; parents: Hud.RequireVpnChange).
-        if (method.StartsWith("vpn", StringComparison.Ordinal)) return await hud.Vpn.HandleAsync(method, args);
         // TV page and Guide menu rows: one prefix, one handler (lock rules: TvPolicy above; parents: Hud.RequireTvInputChange).
         if (method.StartsWith("tv", StringComparison.Ordinal)) return await hud.Tv.HandleAsync(method, args);
 
@@ -151,6 +152,10 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                 return ToDto(hud.Launch(StringArg(0), byPerson: true));
             case "toggleFavorite":
                 return hud.ToggleFavorite(StringArg(0));
+            case "toggleFavoriteSite":
+                return hud.ToggleFavoriteSite(StringArg(0));
+            case "getFavorites":
+                return hud.GetFavorites();
             case "getStoreInfo":
                 return await hud.GetStoreInfoAsync(StringArg(0));
             case "getDetails":
@@ -562,14 +567,26 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             case "setPluginSetting":
                 hud.SetPluginSetting(StringArg(0), StringArg(1), Arg(2).ValueKind == JsonValueKind.String ? Arg(2).GetString() : null);
                 return hud.GetPlugins();
+            case "endPluginVisit":
+                hud.EndPluginVisit(StringArg(0), StringArg(1));
+                return true;
+            case "getPluginTabs":
+                return hud.GetPluginTabs();
             case "getPluginPage":
                 return await hud.GetPluginPageAsync(StringArg(0), StringArg(1));
             case "activatePluginRow":
                 return await hud.ActivatePluginRowAsync(StringArg(0), StringArg(1), StringArg(2));
+            case "changePluginRow":
+                return await hud.ChangePluginRowAsync(StringArg(0), StringArg(1), StringArg(2), StringArg(3));
             case "getQuickActions":
                 return await hud.GetQuickActionsAsync();
+            case "getPluginGate":
+                return hud.GetPluginGate(StringArg(0), Arg(1).ValueKind == JsonValueKind.String ? Arg(1).GetString() : null,
+                    Arg(2).ValueKind == JsonValueKind.String ? Arg(2).GetString() : null, Arg(3).ValueKind == JsonValueKind.String ? Arg(3).GetString() : null);
+            case "setPluginFunctionLevel":
+                return hud.SetPluginFunctionLevel(StringArg(0), StringArg(1), StringArg(2));
             case "approvePlugin":
-                return hud.ApprovePlugin(StringArg(0));
+                return hud.ApprovePlugin(StringArg(0), StringArg(1));
             case "runQuickAction":
                 return await hud.RunQuickActionAsync(StringArg(0), StringArg(1));
             case "installPackage":
@@ -579,7 +596,29 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             case "getCatalogUpdates":
                 return hud.GetCatalogUpdates();
             case "installCatalogEntry":
+            case "updateCatalogEntry":
                 return await hud.InstallCatalogEntryAsync(StringArg(0), StringArg(1));
+            case "getCatalogDetail":
+                return await hud.GetCatalogDetailAsync(StringArg(0), StringArg(1));
+            case "getCatalogSources":
+                return hud.GetCatalogSources();
+            case "addCatalogSource":
+                // The fourth argument is the "I trust this developer" confirmation: only an explicit true counts.
+                return hud.AddCatalogSource(StringArg(0), Arg(1).ValueKind == JsonValueKind.String ? Arg(1).GetString() : null, Arg(2).ValueKind == JsonValueKind.String ? Arg(2).GetString() : null,
+                    Arg(3).ValueKind == JsonValueKind.True);
+            case "removeCatalogSource":
+                return hud.RemoveCatalogSource(StringArg(0));
+            case "uninstallPlugin":
+                return hud.UninstallPlugin(StringArg(0));
+            case "acceptRevokedPlugin":
+                return hud.AcceptRevokedPlugin(StringArg(0));
+            case "confirmPluginExe":
+                return hud.ConfirmPluginExe(StringArg(0), StringArg(1));
+            case "getPluginSuggestions":
+                return await hud.GetPluginSuggestionsAsync();
+            case "dismissPluginSuggestion":
+                hud.DismissPluginSuggestion(StringArg(0));
+                return null;
             case "getNotifications":
                 return hud.GetNotifications();
             case "markNotificationsRead":
@@ -683,24 +722,6 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                 return await hud.GetWeatherAsync();
             case "searchPlaces":
                 return await hud.SearchPlacesAsync(StringArg(0));
-            case "getHomeEntities":
-                return await hud.GetHomeEntitiesAsync();
-            case "activateHomeEntity":
-                await hud.ActivateHomeEntityAsync(StringArg(0));
-                return null;
-            case "pinHomeEntity":
-                return hud.PinHomeEntity(StringArg(0));
-            case "getHomeCatalog":
-                return await hud.GetHomeCatalogAsync();
-            case "setHomeSelection":
-                return hud.SetHomeSelection(Arg(0));
-            case "testHomeAssistant":
-                return await hud.TestHomeAssistantAsync();
-            case "signInHomeAssistant":
-                // Not open while locked (checked above, and in Hud): the same as setting the token.
-                return await hud.SignInHomeAssistantAsync(StringArg(0));
-            case "signOutHomeAssistant":
-                return await hud.SignOutHomeAssistantAsync();
             case "listSkins":
                 return hud.ListSkins().Select(s => s with
                 {

@@ -7,6 +7,7 @@ import { attempt } from '../core/feedback.js';
 import { renderHints } from '../core/nav.js';
 import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
+import { confirmStartIndex } from '../core/plugin-rules.js';
 
 /**
  * menu: { title, message?, entries: [{ label, detail?, icon?, run }], index?, onMove?(i), onCancel?(), hints?(),
@@ -52,7 +53,7 @@ export function confirmDialog(title, confirmLabel, { danger = false, message = '
       message,
       tag,
       web,
-      index: danger || focusCancel ? 1 : 0,
+      index: confirmStartIndex({ danger, focusCancel }),
       onCancel: () => resolve(false),
       entries: [
         { label: confirmLabel, icon, danger, run: () => resolve(true) },

@@ -1,0 +1,24 @@
+{
+  "id": "wand",
+  "folder": "CouchHud.Plugin.Wand",
+  "version": "1.1.0",
+  "sha256": "",
+  "sdk": 3,
+  "minCouchHud": "0.6.0",
+  "capabilities": [
+    "pages",
+    "quickActions",
+    "assistant",
+    "browser",
+    "process"
+  ],
+  "publisherKey": "",
+  "license": "GPL-3.0-or-later",
+  "author": "kewe87",
+  "name": "Wand",
+  "summary": "Cheats and mods for your games through Wand (formerly WeMod), with a guide menu entry and an assistant tool",
+  "icon": {
+    "sha256": "a1080a42220783ec2e1db960d6eaeea557aa7476d1b7fcdd75de5a669828fb6e",
+    "bytes": 7172
+  }
+}

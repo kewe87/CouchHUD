@@ -46,6 +46,6 @@ export function applySkin(skin) {
   else link.removeAttribute('href');
   document.documentElement.dataset.skin = skin.id;
   state.skin = skin;
-  setSkinSounds(skin.id, skin.sounds);
+  setSkinSounds(skin.id, skin.sounds, skin.soundSet);
   refreshGlyphs();
 }

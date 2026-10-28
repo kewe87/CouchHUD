@@ -322,20 +322,54 @@ public partial class App : Application
         var storeInfo = new StoreInfoService(polite, Path.Combine(dataDir, "store-cache.json"), () => CouchHud.Core.Localization.Strings.Language, steamIds);
 
         // Plugins the user already had count as approved the first time; from then on only installed or approved ones load.
-        PluginTrust.KeyProvider = () => DataKey.Get(dataDir);
+        PluginTrust.UseKey(() => DataKey.Get(dataDir));
         var pluginTrust = new PluginTrust(dataDir);
-        new OptionalSteps(Console.Error.WriteLine).Run("plugin trust", () => pluginTrust.AdoptExisting(Path.Combine(dataDir, "plugins")));
-        // Plugin updates from the catalog wait for this moment: nothing is loaded yet, so the old files are free.
+        // Only once, on the upgrade from 0.5.x or older (config.json without the marker): later a missing list adopts nothing.
+        if (!config.Current.PluginTrustAdopted && config.Fault is null)
+        {
+            new OptionalSteps(Console.Error.WriteLine).Run("plugin trust", () =>
+            {
+                pluginTrust.AdoptExisting(Path.Combine(dataDir, "plugins"));
+                if (pluginTrust.HasStore) config.Update(c => c.PluginTrustAdopted = true);
+            });
+        }
+        // Removals and plugin updates from the catalog wait for this moment: nothing is loaded yet, so the old files are free. Removals first,
+        // so a plugin removed and installed again in one session comes back as the new package.
+        new OptionalSteps(Console.Error.WriteLine).Run("removed plugins", () => CatalogService.FinishRemovals(dataDir));
         new OptionalSteps(Console.Error.WriteLine).Run("pending plugin updates", () => PendingPackages.ApplyAll(dataDir, Console.Error.WriteLine));
 
-        // Bundled plugins next to the exe, the user's own (and installed ones) in %APPDATA%.
+        // Only the plugins in %APPDATA% (installed from the catalog or approved by the user): nothing is bundled next to the exe any more,
+        // Wand comes from the signed catalog like every other plugin.
+        var seedsGiven = new System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyDictionary<string, string?>?>(StringComparer.OrdinalIgnoreCase);
         var plugins = new PluginManager(
-            [(Path.Combine(AppContext.BaseDirectory, "plugins"), false), (Path.Combine(dataDir, "plugins"), true)],
+            [(Path.Combine(dataDir, "plugins"), true)],
             dataDir,
             folder => !config.Current.DisabledPlugins.Contains(folder, StringComparer.OrdinalIgnoreCase))
         {
-            Trust = pluginTrust
+            Trust = pluginTrust,
+            // Withdrawn plugins as CouchHUD's signed catalog said last time (its cache is verified again before it counts).
+            Revocations = new OptionalSteps(Console.Error.WriteLine).Run("plugin revocations",
+                () => new CatalogService(http, dataDir, () => [], () => false).CachedRevocations(), []),
+            // What the core kept for CaseHUD, Home Assistant and the VPN before they became plugins (one-time seed); a secret is encrypted again for the plugin.
+            SettingSeeds = id => seedsGiven[id] = PluginSettingSeeds.For(config.Current, id, (plugin, stored) => Secrets.Protect(Secrets.Unprotect(stored), plugin)),
+            // The seed is in the plugin's settings file: the encrypted legacy token fields go, so no second copy stays behind (not on failure).
+            SeedApplied = id =>
+            {
+                if (id.Equals(PluginSettingSeeds.HomeAssistantId, StringComparison.OrdinalIgnoreCase) && seedsGiven.TryGetValue(id, out var given))
+                    config.Update(c => PluginSettingSeeds.ClearLegacyHomeAssistantSecrets(c, given));
+            },
+            // A plugin's secrets (SetSecret, settings of the kind Secret) are encrypted for the Windows user, apart for every plugin.
+            ProtectSecret = (plugin, plain) => Secrets.Protect(plain, plugin),
+            UnprotectSecret = (plugin, stored) => Secrets.Unprotect(stored, plugin),
+            CliRunner = async (plugin, exe, arguments, timeout, ct) =>
+            {
+                Console.Error.WriteLine($"[plugins] {plugin} runs {Path.GetFileName(exe)}");
+                var (exit, stderr) = await TrustedCliRunner.RunAsync(exe, arguments, timeout, ct);
+                return new CouchHud.Sdk.PluginCliResult(exit, stderr, exit is null);
+            }
         };
+        plugins.Host.CanonicalTrustedExe = exe => TrustedCliRunner.Verify(exe, Path.GetFileName(exe), "plugins", logMissing: false);
+        plugins.Host.ProcessImage = pid => TrustedCliRunner.ProcessImage(pid) is { } image ? TrustedCliRunner.CanonicalPath(image) : null;
         // Loading can take seconds on a cold start: the HUD shows first, plugins join in when ready.
         _ = plugins.StartLoading();
 

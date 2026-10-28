@@ -22,6 +22,7 @@ import { state } from '../core/state.js';
 import { confirmDialog } from '../components/overlay.js';
 import { ensureUnlocked, isLocked, onApprovalAnnounced } from '../components/passcode.js';
 import { beginSetupHold, lockStepStatus, setupCouchLock } from '../core/lock-rules.js';
+import { filterSetupSteps, isConsoleReady } from '../core/wizard-rules.js';
 import { sound } from '../sound.js';
 
 const MARK = { done: '✓', ok: '✓', todo: '•', unknown: '?', na: '–', running: '…', skipped: '–', failed: '✕', aborted: '–' };
@@ -62,7 +63,7 @@ async function readStatus(step, env) {
 // ---------------------------------------------------------------------------
 // Engine
 
-function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, restartLabel, deps }) {
+function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, steps, restartAsk, restartLabel, deps, autoStart = false, onDone = null }) {
   const rows = steps.map((step) => ({ step, status: 'todo', note: '' }));
   let phase = 'loading'; // loading, overview, running, done
   let cancel = false;
@@ -134,6 +135,12 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
       // Never start on a button: a second A must not set everything up by accident.
       this.index = 0;
       this.paint();
+      // Started by the setup assistant's "Apply", which already said what happens: no second "Start". The unlock above, the hold
+      // and the administrator prompts of the steps stay; B during the run stops after the current step.
+      if (autoStart && !closed && phase === 'overview') {
+        autoStart = false;
+        queueMicrotask(() => this.start().catch(console.error));
+      }
     },
 
     summary() {
@@ -211,6 +218,8 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
       // Now the lock may close the couch.
       await attempt(() => api.holdUnlockForSetup(false), undefined, { quietLocked: true });
       phase = 'done';
+      // The setup assistant writes its marker only now that the run really happened (a restart offered below must not bring it back).
+      try { await onDone?.(); } catch (err) { console.error(err); }
       const retry = rows.some((r) => ['failed', 'skipped', 'aborted'].includes(r.status));
       actions = [
         ...(restartAsk(rows) ? [{ label: restartLabel, run: () => this.restart() }] : []),
@@ -259,7 +268,7 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
       const lead = waitText ? waitText : phase === 'done'
         ? (rows.some((r) => r.status === 'failed') ? t('consoleSetup.leadFailed') : rows.some((r) => ['skipped', 'aborted'].includes(r.status)) ? t('consoleSetup.leadSkipped') : t('consoleSetup.leadAllDone'))
         : phase === 'running' ? t('consoleSetup.leadRunning') : intro;
-      const extra = phase === 'overview' ? notes(adminPrompts, lastEnv) : [];
+      const extra = phase === 'overview' ? notes(adminPrompts, lastEnv) : phase === 'done' ? doneNotes(rows) : [];
       this.index = Math.min(this.index, Math.max(0, this.focusNodes().length - 1));
       this.root.replaceChildren(el('div', { className: 'files console-page' },
         el('div', { className: 'files-head' },
@@ -371,7 +380,11 @@ async function setupLock(env, deps) {
   return { status: result.status, note: t(note) };
 }
 
-function setupSteps() {
+/**
+ * pauseServices false: the services step only prepares the lock's helper tasks (what it always does when no service is suggested) and
+ * pauses nothing. The lock's Windows policies need those tasks, so the step is never left out of a setup that sets up the lock.
+ */
+function setupSteps({ pauseServices = true } = {}) {
   return [
     {
       id: 'integration',
@@ -403,13 +416,13 @@ function setupSteps() {
     },
     {
       id: 'services',
-      title: t('consoleSetup.step.services.title'),
-      detail: t('consoleSetup.step.services.detail'),
+      title: pauseServices ? t('consoleSetup.step.services.title') : t('consoleSetup.step.servicesTasks.title'),
+      detail: pauseServices ? t('consoleSetup.step.services.detail') : t('consoleSetup.step.servicesTasks.detail'),
       requires: ['integration'],
       admin: true,
       check: async () => {
         const data = await api.getServices();
-        const suggested = (data?.services ?? []).filter((s) => s.suggested);
+        const suggested = pauseServices ? (data?.services ?? []).filter((s) => s.suggested) : [];
         // The same confirmation also sets up the tasks for the lock's Windows policies.
         if (!suggested.length) return data?.policyHelper === false || data?.cleanupNoteCurrent === false ? 'todo' : 'na';
         // A note of the lock's empty Policies keys that is out of date also counts as not done: only a setup run (re)writes it.
@@ -419,7 +432,7 @@ function setupSteps() {
       run: async () => {
         const data = await api.getServices();
         if (data.protectedFolder === false) return skipped(t('consoleSetup.step.services.unprotected'));
-        for (const s of data.services.filter((x) => x.suggested && !x.selected)) await api.toggleCouchService(s.name);
+        if (pauseServices) for (const s of data.services.filter((x) => x.suggested && !x.selected)) await api.toggleCouchService(s.name);
         try {
           await api.setupServiceTask();
         } catch (err) {
@@ -490,11 +503,19 @@ function setupSteps() {
   ];
 }
 
-export function consoleSetupPage(deps) {
+/**
+ * skip: step ids the setup leaves out because the user declined them in the setup assistant (automatic sign-in, the Steam and
+ * startup changes, the services). The steps that must go together stay: lock, shell and integration are never skipped.
+ */
+export function consoleSetupPage(deps, { skip = [], pauseServices = true, carried = [], autoStart = false, onDone = null } = {}) {
   return stepsPage({
     id: 'console-setup',
     title: t('consoleSetup.setup.title'),
     intro: t('consoleSetup.setup.intro'),
+    autoStart,
+    onDone,
+    // The last page says what was done and what failed (also what the assistant did before: `carried`); the way back stays in sight.
+    doneNotes: () => [...carried, t('wizard.result.undo')],
     notes: (admin, env) => [
       ...(env?.security?.accountPassword === false ? [t('consoleSetup.setup.needPassword')] : []),
       (admin === 0 ? t('consoleSetup.setup.adminNone') : admin === 1 ? t('consoleSetup.setup.adminOnce') : t('consoleSetup.setup.adminMany', { count: admin })),
@@ -502,7 +523,8 @@ export function consoleSetupPage(deps) {
       t('consoleSetup.setup.bitlocker')
     ],
     startLabel: t('consoleSetup.setup.start'),
-    steps: setupSteps(),
+    // Never left out: integration, lock and shell go together, and the services step (at least its lock tasks) belongs to the lock.
+    steps: filterSetupSteps(setupSteps({ pauseServices }), skip),
     restartAsk: (rows) => rows.some((r) => r.step.id === 'shell' && (r.status === 'ok' || r.status === 'done')) && rows.some((r) => r.status === 'ok'),
     restartLabel: t('consoleSetup.setup.restart'),
     deps
@@ -618,11 +640,14 @@ function revertSteps() {
   ];
 }
 
-export function consoleRevertPage(deps, wasShell) {
+export function consoleRevertPage(deps, wasShell, { carried = [], autoStart = false, onDone = null } = {}) {
   return stepsPage({
     id: 'console-revert',
     title: t('consoleSetup.revert.title'),
     intro: t('consoleSetup.revert.intro'),
+    autoStart,
+    onDone,
+    doneNotes: () => carried,
     notes: (admin) => [
       admin === 0 ? t('consoleSetup.revert.adminNone') : admin === 1 ? t('consoleSetup.revert.adminOnce') : t('consoleSetup.revert.adminMany', { count: admin }),
       t('consoleSetup.revert.after')
@@ -663,7 +688,4 @@ export function hasConsoleSetup(settings, security, leftovers = false) {
   return settings?.integrationMode === 'full' || !!settings?.isShell || !!security?.autoLogon || security?.autoLogonState === 'lost' || leftovers;
 }
 
-/** True when every part of the setup is in place. */
-export function isConsoleReady(settings, security) {
-  return settings?.integrationMode === 'full' && !!settings?.isShell && lockStepStatus(security) === 'done' && (!!security?.autoLogon || security?.accountPassword === false);
-}
+export { isConsoleReady };

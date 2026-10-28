@@ -16,7 +16,7 @@ Depending on the mode you choose and the features you switch on, CouchHUD can ch
 - affect the sign-in (couch lock, guard process, automatic Windows sign-in: the password is entered once, checked and stored by Windows in encrypted form as an LSA secret),
 - block Task Manager in couch mode,
 - pause selected Windows services and start the startup programs itself,
-- if you ask it to, download **CaseHUD** (a separate program for the displays in the case), verify it and install it with an administrator's approval (its setup installs a sensor service and a driver), and start it in the background,
+- if you ask it to, through the CaseHUD plugin, download **CaseHUD** (a separate program for the displays in the case), verify it and install it with an administrator's approval (its setup installs a sensor service and a driver), and start it in the background,
 - minimize windows of game clients and update pop-ups, and take the Guide button away from the Xbox Game Bar ("CouchHUD stays in front", reset in PC mode and on quit).
 
 Every change is described individually, with its location, whether it needs admin rights and how to undo it, in CouchHUD under **Settings › HUD › What CouchHUD changes in Windows**. For emergencies there is the recovery mode: hold **Ctrl + Shift** or **LB + RB + View** for about 1.5 seconds during start-up.
@@ -29,6 +29,6 @@ Every change is described individually, with its location, whether it needs admi
 - **Pausing a game** suspends its processes. Online games can lose the connection, and anti-cheat systems can react to it. The feature is off by default.
 - **Plugins** come from third parties. They run with the same rights as CouchHUD. Only install plugins from sources you trust. The respective authors are responsible for plugins and their consequences.
 - **Cheats and mods** (e.g. via the Wand plugin) can violate the terms of use of games and lead to bans, especially in online games.
-- **Trademarks** such as Xbox, PlayStation, Steam, Epic Games, GOG, Ubisoft, EA, Battle.net, Windows, Discord, WhatsApp and others belong to their owners. CouchHUD is not affiliated with them. The built-in skins have names of their own, use no original graphics or logos and only describe a style.
+- **Trademarks** such as Xbox, PlayStation, Steam, Epic Games, GOG, Ubisoft, EA, Battle.net, Windows, Discord, WhatsApp and others belong to their owners. CouchHUD is not affiliated with them. The skins CouchHUD ships and offers in its catalog have names of their own, use no original graphics or logos and only describe a style.
 
 By confirming on first start you declare that you have read these notes.

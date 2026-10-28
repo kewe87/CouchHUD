@@ -19,7 +19,6 @@ public class StateCheckTests
         { Operation.AutoLogonOff, null },
         { Operation.InstallWindowsUpdates, new InstallWindowsUpdatesArgs([Guid.NewGuid().ToString("D")]) },
         { Operation.InstallCouchHudUpdate, new SetupStreamArgs("CouchHud-Setup-0.4.2.exe", 10, "AA==", "AA==") },
-        { Operation.InstallCaseHud, new SetupStreamArgs("CaseHUD-Setup-1.0.0.exe", 10, "AA==", "AA==") },
         { Operation.EnrollPasscode, new PasscodeHashArgs("x") },
         { Operation.GetJob, new GetJobArgs("0123456789abcdef0123456789abcdef") },
         { Operation.PauseServices, new ServicesArgs(["WinDefend"]) },
@@ -65,9 +64,8 @@ public class StateCheckTests
     public void A_check_that_asks_for_a_grant_makes_the_request_need_one()
     {
         var checks = new StateChecks()
-            .Register(StateCheck.SignedSetupPipeline, Harness.AllowAll)
-            .Register(StateCheck.CaseHudFirstInstall, new StateCheckFunc((c, _) => c.IsElevatedAdmin ? AuthorizationDecision.Allowed : AuthorizationDecision.GrantNeeded));
-        var request = Req(Operation.InstallCaseHud, new SetupStreamArgs("CaseHUD-Setup-1.0.0.exe", 10, "AA==", "AA=="));
+            .Register(StateCheck.SignedSetupPipeline, new StateCheckFunc((c, _) => c.IsElevatedAdmin ? AuthorizationDecision.Allowed : AuthorizationDecision.GrantNeeded));
+        var request = Req(Operation.InstallCouchHudUpdate, new SetupStreamArgs("CouchHud-Setup-0.4.2.exe", 10, "AA==", "AA=="));
         Assert.Equal(Verdict.NeedGrant, Authorizer.Authorize(Callers.User(), request, false, checks).Verdict);
         Assert.Equal(Verdict.Allow, Authorizer.Authorize(Callers.ElevatedAdmin(), request, false, checks).Verdict);
     }

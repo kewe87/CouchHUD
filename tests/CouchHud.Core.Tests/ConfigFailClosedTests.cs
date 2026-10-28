@@ -34,10 +34,10 @@ public class ConfigFailClosedTests : IDisposable
         Assert.Equal("windows", store.Current.CouchLock);
         // Changing something while it is broken keeps the file as it is, and the stand-in in memory as well.
         Assert.False(store.Update(c => c.Sounds = false));
-        Assert.False(store.Update(c => c.Skin = "deepsea"));
+        Assert.False(store.Update(c => c.Skin = "user:deepsea"));
         Assert.Equal(damaged, File.ReadAllText(File_));
         Assert.True(store.Current.Sounds);
-        Assert.NotEqual("deepsea", store.Current.Skin);
+        Assert.NotEqual("user:deepsea", store.Current.Skin);
         // A copy of the damaged file is kept next to it, as before.
         Assert.Single(Directory.GetFiles(_dir, "config.json.broken-*"));
     }

@@ -60,75 +60,6 @@ public class TrustBoundaryTests
         Assert.False(SecretFields.LooksSecret(new string('a', 5000)));
     }
 
-    // ---- M5: Home Assistant ----
-
-    [Theory]
-    [InlineData("light.sofa", true)]
-    [InlineData("cover.garage_door", true)]
-    [InlineData("input_boolean.guest_mode", true)]
-    [InlineData("light.sofa,lock.front_door", false)]
-    [InlineData("light.sofa lock.front_door", false)]
-    [InlineData("light.", false)]
-    [InlineData(".sofa", false)]
-    [InlineData("light", false)]
-    [InlineData("Light.Sofa", false)]
-    [InlineData("light.sofa/../../api", false)]
-    [InlineData("light.sofa\n", false)]
-    [InlineData("", false)]
-    [InlineData(null, false)]
-    public void An_entity_id_looks_like_one_and_nothing_else(string? id, bool valid)
-    {
-        Assert.Equal(valid, HomeAssistantPolicy.IsValidEntityId(id));
-    }
-
-    [Theory]
-    [InlineData("light.sofa", false, true)]
-    [InlineData("scene.movie", false, true)]
-    [InlineData("media_player.tv", false, true)]
-    [InlineData("switch.lamp", false, false)]
-    [InlineData("switch.lamp", true, true)]
-    [InlineData("fan.ceiling", true, true)]
-    [InlineData("input_boolean.guest_mode", true, true)]
-    [InlineData("cover.garage_door", false, false)]
-    [InlineData("cover.garage_door", true, false)]
-    [InlineData("script.open_gate", true, false)]
-    [InlineData("automation.alarm_arm", true, false)]
-    [InlineData("button.doorbell", true, false)]
-    [InlineData("lock.front_door", true, false)]
-    [InlineData("alarm_control_panel.house", true, false)]
-    [InlineData("light.sofa,lock.front_door", false, false)]
-    public void A_locked_couch_switches_lights_scenes_and_pinned_switches_only(string id, bool pinned, bool allowed)
-    {
-        Assert.Equal(allowed, HomeAssistantPolicy.AllowedWhileLocked(id, pinned));
-    }
-
-    [Theory]
-    [InlineData("http://homeassistant.local:8123", "http://homeassistant.local:8123/", true)]
-    [InlineData("http://homeassistant.local:8123", "HTTP://HomeAssistant.local:8123", true)]
-    [InlineData("http://homeassistant.local:8123", "http://evil.example:8123", false)]
-    [InlineData("http://homeassistant.local:8123", "https://homeassistant.local:8123", false)]
-    [InlineData("", "http://homeassistant.local:8123", false)]
-    [InlineData(null, "", true)]
-    public void A_token_belongs_to_one_server(string? before, string after, bool same)
-    {
-        Assert.Equal(same, HomeAssistantPolicy.SameServer(before, after));
-    }
-
-    [Fact]
-    public async Task The_client_refuses_ids_that_could_mean_several_entities()
-    {
-        var client = new HomeAssistantClient(new HttpClient(new NoNetwork())) { BaseUrl = "http://ha.local:8123", Token = "t" };
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.ActivateAsync("light.a,lock.front_door"));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.ActivateAsync("../services/x"));
-    }
-
-    private sealed class NoNetwork : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("no request may be sent");
-    }
-
     // ---- N6, N7, N10: tools ----
 
     [Fact]
@@ -139,10 +70,10 @@ public class TrustBoundaryTests
         Assert.Contains("launch", allowed);
         Assert.Contains("search_library", allowed);
         Assert.Contains("get_weather", allowed);
-        Assert.Contains("list_home_entities", allowed);
+        Assert.DoesNotContain("list_home_entities", allowed);
         foreach (var blocked in new[]
                  {
-                     "edit_item", "add_entry", "set_setting", "rescan_library", "toggle_favorite", "set_skin", "activate_home_entity",
+                     "edit_item", "add_entry", "set_setting", "rescan_library", "toggle_favorite", "set_skin",
                      "set_volume", "set_audio_output", "power"
                  })
         {
@@ -180,7 +111,7 @@ public class TrustBoundaryTests
         JsonNode.Parse("""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"NAME","arguments":{}}}""".Replace("NAME", name))!.AsObject();
 
     [Fact]
-    public async Task Over_mcp_the_home_assistant_states_and_every_plugin_tool_are_confirmed()
+    public async Task Over_mcp_every_plugin_tool_is_confirmed()
     {
         var plugin = new ToolSpec("plugin_x_read", "[X] reads", new JsonObject { ["type"] = "object" }, Writes: false, Sensitive: true);
         var host = new Host();
@@ -194,11 +125,10 @@ public class TrustBoundaryTests
             }
         };
 
-        await server.HandleAsync(Call("list_home_entities"));
         await server.HandleAsync(Call("plugin_x_read"));
         await server.HandleAsync(Call("get_weather"));
 
-        Assert.Equal(["list_home_entities", "plugin_x_read"], asked);
+        Assert.Equal(["plugin_x_read"], asked);
         // Declined means not run; the plain read ran.
         Assert.Equal(["get_weather"], host.Called);
     }
@@ -313,7 +243,9 @@ public class TrustBoundaryTests
         var user = new[] { new SkinInfo("user:synthwave", "Synthwave", "", new Dictionary<string, string>(), "") };
 
         Assert.True(SkinCatalog.IsKnown("default", user));
-        Assert.True(SkinCatalog.IsKnown("nova", user));
+        // The four skins that moved to the catalog are known only once installed (as "user:<id>").
+        Assert.False(SkinCatalog.IsKnown("nova", user));
+        Assert.False(SkinCatalog.IsKnown("user:nova", user));
         Assert.True(SkinCatalog.IsKnown("user:synthwave", user));
         Assert.False(SkinCatalog.IsKnown("user:missing", user));
         Assert.False(SkinCatalog.IsKnown("../../etc", user));

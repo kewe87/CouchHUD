@@ -31,8 +31,6 @@ const toolLabel = (name) => {
     case 'get_weather': return t('assistant.tool.getWeather');
     case 'get_news': return t('assistant.tool.getNews');
     case 'get_updates': return t('assistant.tool.getUpdates');
-    case 'list_home_entities': return t('assistant.tool.listHomeEntities');
-    case 'activate_home_entity': return t('assistant.tool.activateHomeEntity');
     case 'get_audio': return t('assistant.tool.getAudio');
     case 'set_volume': return t('assistant.tool.setVolume');
     case 'set_audio_output': return t('assistant.tool.setAudioOutput');
@@ -74,7 +72,6 @@ export function startAssistant() {
 function suggestions() {
   const list = [t('assistant.sugPlay'), t('assistant.sugRecent')];
   if (state.info.weather) list.push(t('assistant.sugWeather'));
-  if (state.info.homeAssistant) list.push(t('assistant.sugLight'));
   list.push(t('assistant.sugSkin'), t('assistant.sugUpdates'));
   return list.slice(0, 4);
 }

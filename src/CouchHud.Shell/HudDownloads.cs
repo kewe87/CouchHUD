@@ -29,7 +29,6 @@ public sealed partial class Hud
         public const string Windows = "update:windows";
         public const string Apps = "update:apps";
         public const string Self = "couchhud:self";
-        public const string CaseHud = "casehud";
         public static string Plugin(string kind, string id) => $"catalog:{kind}:{id}";
     }
 

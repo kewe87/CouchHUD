@@ -114,8 +114,19 @@ h1, h2, h3, p {
   overflow: hidden;
 }
 
-#tab-list > li {
+#tab-list > li,
+#tab-pinned > li {
   flex: none;
+}
+
+/* Assistant and Settings: always whole at the end of the bar; only the other tabs scroll. */
+#tab-pinned {
+  display: flex;
+  flex: none;
+  gap: 1.8rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 #tab-list.cut-end {
@@ -130,7 +141,8 @@ h1, h2, h3, p {
   -webkit-mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
 }
 
-#tab-list li {
+#tab-list li,
+#tab-pinned li {
   font-size: 1.35rem;
   font-weight: 600;
   color: var(--muted);
@@ -139,9 +151,27 @@ h1, h2, h3, p {
   transition: color 0.2s, border-color 0.2s;
 }
 
-#tab-list li.active {
+#tab-list li.active,
+#tab-pinned li.active {
   color: var(--fg);
   border-color: var(--accent);
+}
+
+/* A plugin tab's small icon (a checked PNG or a built-in glyph) before its name. */
+#tab-list .tab-icon,
+#tab-pinned .tab-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-right: 0.45rem;
+  font-size: 1.2rem;
+}
+
+#tab-list .tab-icon img,
+#tab-pinned .tab-icon img {
+  width: 1.4rem;
+  height: 1.4rem;
+  object-fit: contain;
 }
 
 #status {
@@ -479,6 +509,35 @@ body[data-view="passcode"] #tabs .shoulder {
   border: 0.1rem solid rgba(255, 255, 255, 0.12);
   font-weight: 600;
   font-size: 1.1rem;
+}
+
+/* A website in the Favorites shelf: the first letter of its address on a color made from it, like the browser's start page. */
+.tile-site {
+  aspect-ratio: 2 / 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  padding: 0 0.8rem;
+  color: #fff;
+  font-weight: 600;
+  font-size: 1.1rem;
+  text-align: center;
+  /* Dark enough for white letters at any hue (4.5:1 and up). */
+  background: linear-gradient(160deg, hsl(var(--h) 60% 32%), hsl(calc(var(--h) + 40) 60% 24%));
+}
+
+.tile-site .site-initial {
+  font-size: 4rem;
+  font-weight: 800;
+}
+
+.tile-site .site-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 .special-icon {
@@ -960,6 +1019,7 @@ body.overlay-open #hints {
 .dialog-text {
   margin: -0.6rem 0 1.2rem;
   max-width: 34rem;
+  white-space: pre-line;
   color: var(--muted);
   font-size: 1.05rem;
   line-height: 1.45;
@@ -1634,6 +1694,7 @@ body.mouse-active .tile.hover:not(.focused) {
 }
 
 #tab-list li,
+#tab-pinned li,
 #status > * {
   white-space: nowrap;
 }
@@ -2041,240 +2102,6 @@ body.quick-open #top {
 
 .battery-bars.battery-low {
   color: #ffd166;
-}
-
-.smarthome {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.ha-grid {
-  flex: 1;
-  display: grid;
-  /* Cards clip their content; without this the rows would squeeze to fit the box. */
-  grid-auto-rows: max-content;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  align-content: start;
-  gap: 1rem;
-  padding: 1.2rem 1.2rem 1.5rem 1.2rem;
-  margin-left: -1.2rem;
-}
-
-.ha-card {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: auto auto;
-  column-gap: 1rem;
-  align-items: center;
-  padding: 1.2rem 1.4rem;
-  border-radius: 1rem;
-  background: var(--panel);
-  border: 0.1rem solid rgba(255, 255, 255, 0.08);
-  transition: transform 0.18s var(--ease), background 0.25s, border-color 0.18s, box-shadow 0.25s;
-}
-
-.ha-icon {
-  grid-row: span 2;
-  font-size: 2.2rem;
-  filter: grayscale(0.6);
-  transition: filter 0.25s;
-}
-
-.ha-name {
-  font-size: 1.1rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ha-state {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.ha-card.on {
-  background: linear-gradient(135deg, rgba(255, 196, 80, 0.22), var(--panel));
-}
-
-.ha-card.on .ha-icon {
-  filter: none;
-  text-shadow: 0 0 1rem rgba(255, 200, 80, 0.8);
-}
-
-.ha-card.on .ha-state {
-  color: var(--fg);
-}
-
-.ha-card.focused {
-  border-color: var(--accent);
-  transform: scale(1.04);
-  box-shadow: 0 0 1.6rem var(--accent-glow);
-}
-
-.ha-sensor .ha-state {
-  color: var(--fg);
-  font-size: 1.3rem;
-  font-weight: 700;
-}
-
-/* Nothing chosen yet: a short explanation and one card into the picker. */
-.ha-empty {
-  margin-top: 1rem;
-  max-width: 52rem;
-}
-
-.ha-empty-title {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin-bottom: 0.4rem;
-}
-
-.ha-choose .ha-icon {
-  filter: none;
-}
-
-/* Picker: chips wrap on narrow screens; the list keeps its rows. */
-.ha-pick {
-  max-width: 80rem;
-}
-
-.ha-pick-chips {
-  flex-wrap: wrap;
-}
-
-.ha-pick-icon {
-  width: 2rem;
-  flex: none;
-  text-align: center;
-  font-size: 1.4rem;
-}
-
-.ha-pick-row.missing .check-main {
-  opacity: 0.6;
-}
-
-.ha-pick-row.grabbed {
-  border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.18);
-  transform: translateX(0.8rem);
-}
-
-/* ------------------------------------------------------------------ CaseHUD */
-
-.casehud .ch-scroll {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  /* Room for the focus glow of the tiles and the scale-up. */
-  padding: 0.6rem 1.2rem 1.5rem 1.2rem;
-  margin-left: -1.2rem;
-}
-
-.casehud .update-section {
-  margin-top: 0.6rem;
-}
-
-.ch-grid {
-  display: grid;
-  grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
-  gap: 1rem;
-  padding: 0.4rem 0;
-}
-
-.ch-tile {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.8rem;
-  border-radius: 1rem;
-  background: var(--panel);
-  border: 0.1rem solid rgba(255, 255, 255, 0.08);
-  transition: transform 0.18s var(--ease), border-color 0.18s, box-shadow 0.25s;
-}
-
-.ch-tile.focused {
-  border-color: var(--accent);
-  transform: scale(1.03);
-  box-shadow: 0 0 1.6rem var(--accent-glow);
-}
-
-.ch-frame {
-  position: relative;
-  aspect-ratio: 1;
-  /* A fan display is round; the picture is square, so the frame cuts it like the real thing. */
-  border-radius: 50%;
-  overflow: hidden;
-  background: rgba(0, 0, 0, 0.35);
-  max-width: 14rem;
-  width: 100%;
-  align-self: center;
-}
-
-.ch-art {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.ch-badge {
-  position: absolute;
-  right: 0.4rem;
-  bottom: 0.4rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: 1rem;
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  font-size: 0.9rem;
-  font-weight: 700;
-}
-
-.ch-name {
-  text-align: center;
-  font-size: 1.1rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ch-detail {
-  text-align: center;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ch-tile.dim .ch-art {
-  filter: grayscale(1) brightness(0.6);
-}
-
-.ch-tile.dim .ch-detail {
-  color: var(--fg);
-}
-
-.casehud .check-row.static {
-  opacity: 0.9;
-}
-
-/* A notice the user has to act on (CaseHUD's first-start disclaimer): framed in the skin's accent. */
-.casehud .check-row.ch-card {
-  padding: 1.1rem 1.3rem;
-  background: var(--panel);
-  border: 0.15rem solid var(--accent);
-  border-radius: var(--tile-radius);
-}
-
-.casehud .check-row.ch-card strong {
-  font-size: 1.3rem;
-}
-
-.casehud .check-row.ch-card small {
-  white-space: normal;
 }
 
 /* ------------------------------------------------------------------ news */
@@ -3083,6 +2910,7 @@ body.quick-open #top {
 }
 
 :root[data-hdr] #tab-list li.active,
+:root[data-hdr] #tab-pinned li.active,
 :root[data-hdr] .focused .pill.on {
   text-shadow: 0 0 1rem var(--accent-glow);
 }
@@ -3630,12 +3458,6 @@ body[data-view="passcode"] .passcode {
   color: var(--accent-contrast, #fff);
 }
 
-/* Values on a focused row keep the row's text colour (yellow/white focus fills in some skins). */
-[data-skin="neoncity"] .settings li.focused .setting-value,
-[data-skin="greenlight"] .settings li.focused .setting-value {
-  color: inherit;
-}
-
 .console-step .pill {
   padding: 0.15rem 0.8rem;
 }
@@ -3704,14 +3526,10 @@ body[data-view="passcode"] .passcode {
   mix-blend-mode: plus-lighter;
 }
 
-:root[data-skin="deepsea"] { --tilt-scale: 0.55; --glare-color: rgba(190, 220, 255, 0.22); }
-:root[data-skin="greenlight"] { --tilt-scale: 0.8; --glare-color: rgba(200, 255, 232, 0.22); }
-:root[data-skin="neoncity"] { --tilt-scale: 0.6; --glare-color: rgba(246, 233, 58, 0.18); }
-:root[data-skin="nova"] { --tilt-scale: 1.2; --glare-color: rgba(190, 215, 255, 0.4); }
 
 /* ------------------------------------------------------------------ launch transition */
-/* components/launch-overlay.js. Skins steer it with --launch-* variables and the
-   [data-skin] blocks below; the structure is the same everywhere. */
+/* components/launch-overlay.js. Skins steer it with --launch-* variables and their
+   own [data-skin] rules; the structure is the same everywhere. */
 
 :root {
   --launch-dim: rgba(4, 6, 12, 0.66);
@@ -3916,39 +3734,9 @@ body[data-view="passcode"] .passcode {
   to { transform: rotate(360deg); }
 }
 
-/* Deep Sea: calm blue wash, a hair-thin line instead of a bar, square cover */
-[data-skin="deepsea"] .launch-backdrop { background-color: #00164a; }
-[data-skin="deepsea"] .launch-shade { background: radial-gradient(ellipse at 50% 45%, rgba(0, 20, 70, 0.35), rgba(0, 6, 24, 0.9) 90%); }
-[data-skin="deepsea"] .launch-card { box-shadow: 0 0 0 0.1rem rgba(255, 255, 255, 0.5), 0 2rem 4rem rgba(0, 0, 0, 0.6); }
-[data-skin="deepsea"] .launch-bar { --launch-bar-height: 0.12rem; width: 26rem; background: rgba(255, 255, 255, 0.25); }
-[data-skin="deepsea"] .launch-bar i { background: #fff; }
-[data-skin="deepsea"] .launch-status { font-weight: 300; letter-spacing: 0.12em; text-transform: uppercase; font-size: 1.1rem; }
 
-/* Greenlight: a short, thick pill bar and a soft green glow behind the cover */
-[data-skin="greenlight"] .launch-bar { --launch-bar-height: 0.4rem; --launch-bar-radius: 0.2rem; width: 14rem; }
-[data-skin="greenlight"] .launch-bar i { background: var(--accent-bright, var(--accent-text)); }
-[data-skin="greenlight"] .launch-card { box-shadow: 0 0 0 0.2rem #fff, 0 0 6rem 0.5rem var(--accent-glow), 0 2rem 4rem rgba(0, 0, 0, 0.6); }
-[data-skin="greenlight"] .launch-shade { background: radial-gradient(ellipse at 50% 55%, rgba(11, 122, 87, 0.22), rgba(5, 8, 7, 0.9) 80%); }
 
-/* Neon City: hard edges, segmented bar, a short glitch now and then */
-[data-skin="neoncity"] .launch-card { clip-path: polygon(0 0, calc(100% - 1.2rem) 0, 100% 1.2rem, 100% 100%, 1.2rem 100%, 0 calc(100% - 1.2rem)); box-shadow: none; }
-[data-skin="neoncity"] .launch-bar { border-radius: 0; background: rgba(246, 233, 58, 0.12); }
-[data-skin="neoncity"] .launch-bar i { border-radius: 0; background: repeating-linear-gradient(90deg, var(--accent) 0 0.5rem, transparent 0.5rem 0.75rem); }
-[data-skin="neoncity"] .launch-status { text-transform: uppercase; letter-spacing: 0.15em; color: var(--accent-text); animation: launch-glitch 5s steps(1) infinite; }
-[data-skin="neoncity"] .launch-shade { background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.18) 0 0.12rem, transparent 0.12rem 0.25rem), radial-gradient(ellipse at 50% 45%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.9) 85%); }
 
-@keyframes launch-glitch {
-  0%, 92%, 100% { transform: none; text-shadow: none; }
-  93% { transform: translateX(0.25rem); text-shadow: -0.15rem 0 #00e5ff, 0.15rem 0 #ff2a6d; }
-  95% { transform: translateX(-0.2rem); text-shadow: 0.15rem 0 #00e5ff, -0.15rem 0 #ff2a6d; }
-  97% { transform: none; text-shadow: none; }
-}
-
-/* Nova: glass panel under the cover, aurora light, gradient bar */
-[data-skin="nova"] .launch-shade { background: radial-gradient(40% 35% at 25% 30%, rgba(124, 231, 255, 0.22), transparent 70%), radial-gradient(35% 40% at 78% 25%, rgba(155, 140, 255, 0.24), transparent 70%), rgba(5, 6, 13, 0.72); }
-[data-skin="nova"] .launch-info { padding: 1.6rem 2.6rem; border-radius: 1.4rem; background: rgba(255, 255, 255, 0.07); border: 0.1rem solid var(--glass-border, rgba(255, 255, 255, 0.14)); backdrop-filter: blur(1.4rem) saturate(1.3); }
-[data-skin="nova"] .launch-bar i { background: linear-gradient(90deg, #7ce7ff, #9b8cff, #ff8bd8); }
-[data-skin="nova"] .launch-card { box-shadow: 0 0 4rem rgba(138, 180, 255, 0.4), 0 2rem 4rem rgba(0, 0, 0, 0.6); }
 
 /* Calm mode: the cover just fades in, the bar stands still */
 :root[data-motion="off"] .launch.in .launch-card { animation: launch-fade 0.4s forwards; }
@@ -4698,6 +4486,159 @@ body[data-view="terms"] #notify-stack .notify-card:not(.security) {
   color: var(--accent-text);
 }
 
+/* Explanation, summary and result pages: the text is read (up/down, right stick), the buttons below stay in view. The text sits in
+   two columns (meaning and change | risks and way back), one column on a narrower screen. */
+.wizard-doc-page {
+  gap: 0.8rem;
+}
+
+.wizard-doc-page .wizard-head {
+  gap: 0.3rem;
+}
+
+.wizard-doc-page .wizard-head h2 {
+  font-size: 2.1rem;
+}
+
+.wizard-doc-page .wizard-body {
+  justify-content: flex-start;
+  gap: 0.6rem;
+}
+
+.wizard-doc {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 92rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 3.2rem;
+  align-content: start;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 0.4rem 1.2rem;
+  text-align: left;
+  font-size: 1.2rem;
+  line-height: 1.45;
+}
+
+.wizard-doc::-webkit-scrollbar {
+  display: none;
+}
+
+.wizard-doc p {
+  margin: 0 0 0.7rem;
+}
+
+.wizard-doc-col > :last-child {
+  margin-bottom: 0;
+}
+
+.wizard-doc h3 {
+  margin: 0 0 0.4rem;
+  color: var(--accent-text);
+  font-size: 1.25rem;
+}
+
+.wizard-doc-what {
+  font-weight: 600;
+}
+
+.wizard-doc-risks,
+.wizard-doc-changes {
+  margin: 0 0 1rem;
+  padding-left: 1.3rem;
+}
+
+.wizard-doc-risks li,
+.wizard-doc-changes li {
+  margin-bottom: 0.35rem;
+}
+
+.wizard-doc-changes li.failed {
+  color: var(--danger, var(--fg));
+  font-weight: 700;
+}
+
+.wizard-doc-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.wizard-doc-note .cat-icon {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: 0.1rem;
+  color: var(--accent-text);
+}
+
+.wizard-doc-details {
+  margin-top: 0.8rem;
+  padding-top: 0.6rem;
+  border-top: 0.1rem solid color-mix(in srgb, var(--fg) 14%, transparent);
+}
+
+.wizard-doc .wizard-summary {
+  justify-content: flex-start;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.wizard-doc .wizard-chip {
+  padding: 0.4rem 1rem;
+  font-size: 1.1rem;
+}
+
+/* The cue that there is more to read: only while the text goes on below. */
+.wizard-more {
+  margin: 0;
+  color: var(--accent-text);
+  font-size: 1.05rem;
+  visibility: hidden;
+}
+
+.wizard-more.show {
+  visibility: visible;
+}
+
+.wizard-actions {
+  flex: none;
+  padding: 0.4rem 0 0.2rem;
+}
+
+.wizard-actions .wizard-options {
+  gap: 1.6rem;
+}
+
+.wizard-actions .wizard-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  min-width: 20rem;
+  padding: 0.7rem 2rem;
+  border-radius: 1.6rem;
+  font-size: 1.3rem;
+}
+
+.wizard-button small {
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 400;
+}
+
+.wizard-button.primary small {
+  color: inherit;
+}
+
+@media (max-aspect-ratio: 4/3) {
+  .wizard-doc {
+    grid-template-columns: 1fr;
+  }
+}
+
 .wizard-later {
   max-width: 60rem;
   color: var(--muted);
@@ -4833,4 +4774,204 @@ body[data-view="terms"] #notify-stack .notify-card:not(.security) {
   width: 6.5rem;
   height: 6.5rem;
   font-size: 3.6rem;
+}
+
+/* ------------------------------------------------------------------ plugin catalog, detail page, declarative plugin pages */
+
+.check-box.has-img {
+  width: 3.4rem;
+  height: 3.4rem;
+  line-height: 0;
+  border: 0;
+  background: none;
+  overflow: hidden;
+  border-radius: 0.7rem;
+}
+
+.plug-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.plug-head .check-box.has-img {
+  width: 5rem;
+  height: 5rem;
+}
+
+.plug-section {
+  list-style: none;
+}
+
+.check-main small.plug-meta {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.check-main small.plug-wrap {
+  white-space: pre-line;
+  max-width: 60rem;
+  line-height: 1.4;
+  color: var(--fg);
+}
+
+.plug-badge {
+  flex: none;
+  margin-left: auto;
+  padding: 0.25rem 0.8rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--fg);
+}
+
+.plug-badge.warn {
+  background: #ffcf4d;
+  color: #1c1400;
+}
+
+.plug-badge.danger {
+  background: #ff6b6b;
+  color: #200404;
+}
+
+.plug-badge + .pill {
+  margin-left: 0.6rem;
+}
+
+.check-row.plug-risky strong {
+  color: #ffcf4d;
+}
+
+.plug-strip {
+  display: flex;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
+}
+
+.plug-shot {
+  height: 8rem;
+  border-radius: 0.5rem;
+  border: 0.1rem solid rgba(255, 255, 255, 0.16);
+}
+
+.pp-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.3rem 0.4rem 1.5rem;
+}
+
+.pp-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pp-row .check-box:has(.pp-icon) {
+  border: 0;
+  overflow: hidden;
+}
+
+.pp-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.pp-arrow {
+  opacity: 0.6;
+  font-size: 0.8rem;
+}
+
+.pp-link {
+  margin-left: auto;
+  font-size: 1.6rem;
+  color: var(--muted);
+}
+
+.pp-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  gap: 1rem;
+  padding: 0.4rem 0;
+}
+
+.pp-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.8rem;
+  border-radius: 1rem;
+  background: var(--panel);
+  border: 0.1rem solid rgba(255, 255, 255, 0.08);
+  transition: transform 0.18s var(--ease), border-color 0.18s, box-shadow 0.25s;
+}
+
+.pp-tile.focused {
+  border-color: var(--accent);
+  transform: scale(1.03);
+  box-shadow: 0 0 1.6rem var(--accent-glow);
+}
+
+.pp-tile.on {
+  border-color: var(--accent);
+}
+
+.pp-frame {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border-radius: 0.7rem;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pp-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pp-glyph {
+  font-size: 2rem;
+  color: var(--muted);
+}
+
+.pp-badge {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+.pp-name {
+  text-align: center;
+  font-size: 1.1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pp-detail {
+  text-align: center;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

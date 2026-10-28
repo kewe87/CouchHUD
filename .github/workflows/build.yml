@@ -32,6 +32,13 @@ jobs:
           $tag = $env:GITHUB_REF_NAME.TrimStart('v')
           if ($tag -ne $version) { throw "Tag $env:GITHUB_REF_NAME does not match <Version>$version</Version> in Directory.Build.props. Bump the version first, then tag." }
 
+      # catalog/index.json.unsigned marks a catalog change that still waits for the maintainer's signature; it must not ship.
+      - name: Catalog signature renewed
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if (Test-Path catalog/index.json.unsigned) { throw 'catalog/index.json.unsigned exists: sign catalog/index.json and delete the marker before tagging a release.' }
+
       - name: Restore
         run: dotnet restore CouchHud.slnx
 
@@ -66,8 +73,9 @@ jobs:
           $files = @(Get-ChildItem publish/service -Recurse -File | ForEach-Object Name)
           if ($files.Count -ne 1 -or $files[0] -ne 'CouchHud.Service.exe') { throw "publish/service should hold only CouchHud.Service.exe, found: $($files -join ', ')" }
 
-      - name: Publish bundled plugins
-        run: dotnet publish plugins/CouchHud.Plugin.Wand/CouchHud.Plugin.Wand.csproj -c Release -o publish/plugins/CouchHud.Plugin.Wand
+      # Plugins are not part of the setup any more (0.6): Wand is built here only to check it compiles; it ships through the signed catalog.
+      - name: Build Wand plugin (catalog package, not bundled)
+        run: dotnet publish plugins/CouchHud.Plugin.Wand/CouchHud.Plugin.Wand.csproj -c Release -o publish-plugins/CouchHud.Plugin.Wand
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

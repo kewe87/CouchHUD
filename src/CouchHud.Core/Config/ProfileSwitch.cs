@@ -65,12 +65,21 @@ public static class ProfileSwitch
 
     /// <summary>
     /// A child's profile: a further profile marked <see cref="UserProfile.Restricted"/>, or the default profile while it has any limit
-    /// (that is where the child played before there were profiles). An unknown id resolves to the default profile (fail-closed).
+    /// (that is where the child played before there were profiles), both only while parental controls are on. An unknown id resolves to the default profile (fail-closed).
     /// </summary>
     public static bool IsChild(AppConfig c, string id)
     {
+        // Without parental controls nobody is a child: the limits and the mark are dormant, and no gate may treat the household as children.
+        if (!c.ParentalEnabled) return false;
         var p = c.Profile(id);
         return p.IsDefault ? ProfileCheck.HasLimits(p.Rules) : p.Restricted;
+    }
+
+    /// <summary>The default profile has rules with a limit (whatever parental controls say); for the badge in the profile list only.</summary>
+    public static bool HasLimits(AppConfig c, string id)
+    {
+        var p = c.Profile(id);
+        return p.IsDefault && ProfileCheck.HasLimits(p.Rules);
     }
 
     /// <summary>Entering this profile needs a code: its own one, or the parents' for a profile that is not a child's while children are guarded.</summary>

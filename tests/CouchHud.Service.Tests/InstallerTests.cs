@@ -58,6 +58,20 @@ public class InstallerTests
         @"Type: files; Name: ""{app}\ui\skins\ps4.css""",
         @"Type: files; Name: ""{app}\ui\skins\xbox.css""",
         @"Type: files; Name: ""{app}\ui\skins\cyberpunk.css""",
+        // 0.6 no longer ships Wand next to the program (it comes from the catalog); the files 0.4 and 0.5 put there.
+        @"Type: files; Name: ""{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.dll""",
+        @"Type: files; Name: ""{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.pdb""",
+        @"Type: files; Name: ""{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.deps.json""",
+        @"Type: files; Name: ""{app}\plugins\CouchHud.Plugin.Wand\plugin.json""",
+        // The project loads dynamically, so its build also wrote a runtimeconfig.json; without it the folder never became empty.
+        @"Type: files; Name: ""{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.runtimeconfig.json""",
+        // The folder itself goes only when it is empty (nothing of the user's is ever removed).
+        @"Type: dirifempty; Name: ""{app}\plugins\CouchHud.Plugin.Wand""",
+        // 0.6 moved four built-in skins to the catalog.
+        @"Type: files; Name: ""{app}\ui\skins\deepsea.css""",
+        @"Type: files; Name: ""{app}\ui\skins\greenlight.css""",
+        @"Type: files; Name: ""{app}\ui\skins\neoncity.css""",
+        @"Type: files; Name: ""{app}\ui\skins\nova.css""",
     ];
 
     [Fact]
@@ -69,12 +83,12 @@ public class InstallerTests
         foreach (var entry in entries)
         {
             Assert.Contains(entry, AllowedInstallDeletes);
-            Assert.StartsWith(@"Type: files; Name: ""{app}\", entry);
+            Assert.True(entry.StartsWith(@"Type: files; Name: ""{app}\", StringComparison.Ordinal) || entry == @"Type: dirifempty; Name: ""{app}\plugins\CouchHud.Plugin.Wand""", entry);
             Assert.DoesNotContain("*", entry);
             Assert.DoesNotContain("..", entry);
         }
-        // The renamed skins are really gone from the program, so nothing the setup installs is deleted again.
-        foreach (var old in new[] { "ps4.css", "xbox.css", "cyberpunk.css" }) Assert.False(File.Exists(Path.Combine(Root, "ui", "skins", old)));
+        // The renamed and the moved skins are really gone from the program, so nothing the setup installs is deleted again.
+        foreach (var old in new[] { "ps4.css", "xbox.css", "cyberpunk.css", "deepsea.css", "greenlight.css", "neoncity.css", "nova.css" }) Assert.False(File.Exists(Path.Combine(Root, "ui", "skins", old)));
     }
 
     [Fact]

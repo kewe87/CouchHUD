@@ -11,7 +11,7 @@ webview.addEventListener('message', ({ data }) => {
     const call = pending.get(data.id);
     if (!call) return;
     pending.delete(data.id);
-    if (data.error !== undefined) call.reject(Object.assign(new Error(data.error), { locked: data.locked === true, held: data.held === true }));
+    if (data.error !== undefined) call.reject(Object.assign(new Error(data.error), { locked: data.locked === true, held: data.held === true, parent: data.parent ?? null }));
     else call.resolve(data.result);
   } else if (data.event) {
     for (const cb of listeners.get(data.event) || []) cb(data.payload);
@@ -34,6 +34,8 @@ window.couchhud = {
   getLibrary: (opts = {}) => call('getLibrary', opts),
   launch: (id) => call('launch', id),
   toggleFavorite: (id) => call('toggleFavorite', id),
+  toggleFavoriteSite: (url) => call('toggleFavoriteSite', url),
+  getFavorites: () => call('getFavorites'),
   getDetails: (id) => call('getDetails', id),
   getStoreInfo: (id) => call('getStoreInfo', id),
   uninstall: (id) => call('uninstall', id),
@@ -57,15 +59,6 @@ window.couchhud = {
   removeFeed: (url) => call('removeFeed', url),
   openUrl: (url, source) => call('openUrl', url, source ?? null),
   searchPlaces: (query) => call('searchPlaces', query),
-  getHomeEntities: () => call('getHomeEntities'),
-  activateHomeEntity: (id) => call('activateHomeEntity', id),
-  pinHomeEntity: (id) => call('pinHomeEntity', id),
-  getHomeCatalog: () => call('getHomeCatalog'),
-  setHomeSelection: (ids) => call('setHomeSelection', ids),
-  testHomeAssistant: () => call('testHomeAssistant'),
-  signInHomeAssistant: (url) => call('signInHomeAssistant', url),
-  signOutHomeAssistant: () => call('signOutHomeAssistant'),
-  onHomeAssistantSignIn: on('homeAssistantSignIn'),
   setSetting: (key, value) => call('setSetting', key, value),
   browse: (path, extensions) => call('browse', path ?? null, extensions ?? null),
   scanFolder: (path) => call('scanFolder', path),
@@ -110,11 +103,13 @@ window.couchhud = {
   onScreenshot: on('screenshot'),
   onUpdates: on('updates'),
   onCatalogUpdates: on('catalogUpdates'),
+  onPluginSuggestionsReady: on('pluginSuggestionsReady'),
   onDownloads: on('downloads'),
   onUninstalledArt: on('uninstalledArt'),
   onSelfUpdate: on('selfUpdate'),
   onAssistant: on('assistant'),
   onSkin: on('skin'),
+  onSkinRestore: on('skinRestore'),
   onSettings: on('settings'),
   onAreas: on('areas'),
   onHdr: on('hdr'),
@@ -142,17 +137,36 @@ window.couchhud = {
   getPerformance: () => call('getPerformance'),
   getCaptures: () => call('getCaptures'),
   getPlugins: () => call('getPlugins'),
+  // change 'functionLevel': may the owner change who uses a plugin function now; 'use' with (plugin, function): may it be used now.
+  getPluginGate: (change, origin, plugin, fn) => call('getPluginGate', change, origin ?? null, plugin ?? null, fn ?? null),
+  setPluginFunctionLevel: (plugin, fn, level) => call('setPluginFunctionLevel', plugin, fn, level),
+  endPluginVisit: (plugin, page) => call('endPluginVisit', plugin, page),
   setPluginEnabled: (folder, enabled) => call('setPluginEnabled', folder, enabled),
-  approvePlugin: (folder) => call('approvePlugin', folder),
+  approvePlugin: (folder, hash) => call('approvePlugin', folder, hash),
   setPluginSetting: (plugin, key, value) => call('setPluginSetting', plugin, key, value),
+  getPluginTabs: () => call('getPluginTabs'),
+  onPluginTabs: on('pluginTabs'),
   getPluginPage: (plugin, page) => call('getPluginPage', plugin, page),
   activatePluginRow: (plugin, page, row) => call('activatePluginRow', plugin, page, row),
+  // A stepper or choice row got a value; the host only accepts one the row offers.
+  changePluginRow: (plugin, page, row, value) => call('changePluginRow', plugin, page, row, String(value)),
+  onPluginPageChanged: on('pluginPageChanged'),
+  uninstallPlugin: (folder) => call('uninstallPlugin', folder),
+  acceptRevokedPlugin: (folder) => call('acceptRevokedPlugin', folder),
+  confirmPluginExe: (folder, exe) => call('confirmPluginExe', folder, exe),
+  getCatalogDetail: (id, kind) => call('getCatalogDetail', id, kind),
+  getPluginSuggestions: () => call('getPluginSuggestions'),
+  dismissPluginSuggestion: (entryId) => call('dismissPluginSuggestion', entryId),
   getQuickActions: () => call('getQuickActions'),
   runQuickAction: (plugin, id) => call('runQuickAction', plugin, id),
   installPackage: (path, kind) => call('installPackage', path, kind),
   getCatalog: (refresh) => call('getCatalog', !!refresh),
   getCatalogUpdates: () => call('getCatalogUpdates'),
   installCatalogEntry: (id, kind) => call('installCatalogEntry', id, kind),
+  getCatalogSources: () => call('getCatalogSources'),
+  // acknowledgedTrust must be true: it comes only from the warning dialog ("I trust this developer"); the host refuses without it.
+  addCatalogSource: (url, publisherKey, name, acknowledgedTrust) => call('addCatalogSource', url, publisherKey ?? null, name ?? null, acknowledgedTrust === true),
+  removeCatalogSource: (url) => call('removeCatalogSource', url),
   getGameFolders: () => call('getGameFolders'),
   addGameFolder: (path) => call('addGameFolder', path),
   removeGameFolder: (path) => call('removeGameFolder', path),
@@ -188,14 +202,6 @@ window.couchhud = {
   getSelfUpdate: () => call('getSelfUpdate'),
   checkSelfUpdate: () => call('checkSelfUpdate'),
   startSelfUpdate: () => call('startSelfUpdate'),
-  // VPN (NordVPN first): src/CouchHud.Shell/Services/VpnManager.cs. Reading works locked; every change needs the unlock.
-  onVpn: on('vpn'),
-  vpnStatus: () => call('vpnStatus'),
-  vpnCountries: () => call('vpnCountries'),
-  /** target: { kind: 'quick' } | { kind: 'country', country: 'de' } | { kind: 'server', server: 'Germany #812' } (checked by the host). */
-  vpnConnect: (target) => call('vpnConnect', target),
-  vpnDisconnect: () => call('vpnDisconnect'),
-  vpnOpenApp: () => call('vpnOpenApp'),
   // TV control (LG webOS first): src/CouchHud.Shell/Services/TvManager.cs. Locked: state, volume, mute, on/off; the rest needs the unlock.
   onTv: on('tv'),
   /** refresh: also read volume and input from the TV (skipped by the host right after a failure). */
@@ -214,36 +220,6 @@ window.couchhud = {
   tvCancelPair: () => call('tvCancelPair'),
   tvForget: () => call('tvForget'),
   tvSetMac: (mac) => call('tvSetMac', mac),
-  // CaseHUD (LCDs of fans and pumps): src/CouchHud.Shell/Services/CaseHudManager.cs
-  onCaseHud: on('caseHud'),
-  caseHudStatus: () => call('caseHudStatus'),
-  caseHudCheckUpdate: (force = false) => call('caseHudCheckUpdate', force),
-  caseHudStart: () => call('caseHudStart'),
-  /** Asks the host to look at the release; answers { token, version, unsigned, ... }, the token is what install and update need. */
-  caseHudPrepare: () => call('caseHudPrepare'),
-  caseHudInstall: (token) => call('caseHudInstall', token),
-  caseHudUpdate: (token) => call('caseHudUpdate', token),
-  caseHudOpenGui: () => call('caseHudOpenGui'),
-  /** CaseHUD's API on or off for this user (CaseHUD.exe --set-api=on|off from the verified installation; needs the unlock). */
-  caseHudSetApi: (on) => call('caseHudSetApi', on),
-  caseHudPanels: () => call('caseHudPanels'),
-  caseHudPatchPanel: (id, patch) => call('caseHudPatchPanel', id, patch),
-  caseHudSets: () => call('caseHudSets'),
-  caseHudApplySet: (set, theme, panels) => call('caseHudApplySet', set, theme, panels ?? null),
-  caseHudScenes: () => call('caseHudScenes'),
-  caseHudActivateScene: (id) => call('caseHudActivateScene', id),
-  caseHudRotation: (enabled) => call('caseHudRotation', enabled),
-  /** CaseHUD's automation (scenes by rule) on or off; the rules are edited in CaseHUD's window. Needs the unlock, like the rotation. */
-  caseHudAutomation: (enabled) => call('caseHudAutomation', enabled),
-  caseHudNextScene: () => call('caseHudNextScene'),
-  caseHudPower: (on) => call('caseHudPower', on),
-  caseHudIdentify: (id) => call('caseHudIdentify', id ?? null),
-  caseHudAwtrix: (enabled) => call('caseHudAwtrix', enabled),
-  // Lighting (CaseHUD 1.0): the host checks every change against the last read (CaseHudLighting.BuildPatch).
-  caseHudLighting: () => call('caseHudLighting'),
-  caseHudPatchLighting: (patch) => call('caseHudPatchLighting', patch),
-  /** Live image of a display as a PNG data: URL (the token never reaches the WebView). */
-  caseHudPreview: (id, size) => call('caseHudPreview', id, size ?? null),
   startUpdate: (kind, id) => call('startUpdate', kind, id ?? null),
   getSession: () => call('getSession'),
   resumeGame: () => call('resumeGame'),

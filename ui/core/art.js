@@ -34,10 +34,9 @@ export function artwork(item, kind, className) {
     box.classList.add('loaded');
     // A landscape picture (a store header standing in for a cover) would lose its sides, and with them the
     // logo: show it whole over a blurred copy of itself instead.
-    if (kind === 'cover' && img && img.naturalWidth / img.naturalHeight > 1.15) {
-      box.style.setProperty('--art-img', `url("${url}")`);
-      box.classList.add('art-wide');
-    }
+    // A skin whose tiles are not 2:3 (a square row) can show a portrait cover whole the same way: the picture is at hand as --art-img.
+    if (kind === 'cover') box.style.setProperty('--art-img', `url("${url}")`);
+    if (kind === 'cover' && img && img.naturalWidth / img.naturalHeight > 1.15) box.classList.add('art-wide');
   });
   return box;
 }

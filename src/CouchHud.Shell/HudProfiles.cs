@@ -144,6 +144,8 @@ public sealed partial class Hud
                 isDefault = p.IsDefault,
                 restricted = p.Restricted,
                 child = ProfileSwitch.IsChild(c, p.Id),
+                // The profile has limits of its own (the default profile's rules): shown whatever parental controls say, which only decide "child".
+                limits = ProfileSwitch.HasLimits(c, p.Id),
                 hasCode = p.HasCode,
                 active = p.Id == active,
                 isProtected = ProfileSwitch.IsProtected(c, p.Id),

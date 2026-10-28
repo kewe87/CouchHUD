@@ -23,10 +23,11 @@ export const SETTING_AREAS = {
   steamGridDbApiKey: 'games',
   trailerPreviews: 'games',
   maximizeBrowser: 'browser',
-  browserHistory: 'browser'
+  browserHistory: 'browser',
+  favoritesSites: 'browser'
 };
 
-/** Main tabs that belong to an area (by the view's id). Home, downloads, smart home, assistant and settings are always there. */
+/** Main tabs that belong to an area (by the view's id). Favorites (the home view), downloads, assistant and settings are always there. */
 export const TAB_AREAS = { games: 'games', apps: 'apps', browser: 'browser', news: 'news' };
 
 /** Setup assistant steps that belong to an area: the game clients only make sense with Gaming. */

@@ -34,7 +34,7 @@ Eine Oberfläche nur für den Controller. Einschalten, Controller nehmen, spiele
 - **Guide-Taste über jedem Spiel:** Lautstärke pro App, Audio-Ausgang, Bluetooth, Benachrichtigungen, Energie; halten bringt dich zurück
 - **Statt des Desktops:** CouchHUD startet bei der Anmeldung, Steam & Co. halten sich leise im Hintergrund bereit
 - **Fürs Sofa gebaut:** Browser als Tab, Bildschirmtastatur, Handy als Fernbedienung, WLAN, Anzeige, Updates
-- **5 Skins** mit eigenen Sounds und Mauszeiger, dazu Plugins und Skins aus dem signierten Katalog
+- **Couch-Skin** mit eigenen Sounds und Mauszeiger eingebaut, dazu weitere Skins und Plugins aus dem signierten Katalog
 - **Couch-Sperre und Jugendschutz**, Admin-Arbeit im Hintergrunddienst: keine UAC-Abfragen im Alltag
 
 Kostenlos, offen (GPL-3.0), ohne Konto, ohne Telemetrie.
@@ -137,27 +137,23 @@ Alle Tasten: [Handbuch › Steuerung](docs/GUIDE.md#steuerung).
 - **Admin nur im Dienst:** `CouchHud.Service` erledigt Admin-Aufgaben über eine feste Befehlsliste. CouchHud.exe läuft nie mit Admin-Rechten.
 - **Codes prüft der Dienst**, mit wachsender Wartezeit nach Fehlversuchen. Eltern- und Admin-Freigaben laufen über den Windows-Anmeldedialog auf dem sicheren Desktop.
 - **Fail-closed:** Fehlt der Dienst, bleibt die Sperre zu und Windows wird gesperrt. *Dienst reparieren* richtet ihn neu ein (eine UAC-Abfrage, nur Windows-Programme).
-- **Nur Signiertes:** Self-Update, Katalog und CaseHUD-Installation prüfen eine ECDSA-Signatur.
+- **Nur Signiertes:** Self-Update, Katalog und Plugin-Pakete prüfen eine ECDSA-Signatur.
 - **Ehrliche Grenzen:** Schutz gegen Kinder und Gäste am Controller, nicht gegen Admins, fremden Code im selben Konto, Startmedien oder ausgebaute Laufwerke. Gutes Windows-Kennwort und BitLocker bzw. Geräteverschlüsselung empfohlen.
 
 Details, Grenzen und Lücken melden: [SECURITY.md](SECURITY.md) · [Haftungsausschluss](docs/DISCLAIMER.md) · [Datenschutz](docs/PRIVACY.md)
 
 ### Plugins, Skins und Katalog
 
-<p align="center"><img src="docs/skins.png" alt="Die fünf eingebauten Skins" width="820"></p>
+<p align="center"><img src="docs/skins.png" alt="Couch-Skin und Katalog-Skins" width="820"></p>
 
 - **Skins** sind CSS plus optionale Glyphen, Sounds und Mauszeiger: [docs/SKINS.md](docs/SKINS.md)
 - **Plugins** (C#) bringen Spiele-Quellen, Seiten, Einstellungen und Guide-Menü-Einträge: [docs/PLUGINS.md](docs/PLUGINS.md)
 - **Katalog** [`kewe87/CouchHUD-Catalog`](https://github.com/kewe87/CouchHUD-Catalog): Installieren mit A, signierter Index, Pflicht-Prüfsumme
 - Mitgeliefert: das Plugin **Wand** (Cheats und Mods), zugleich Beispiel für eigene Plugins
 
-### CaseHUD
+### Home Assistant, CaseHUD und VPN
 
-<p align="center"><img src="docs/screenshot-casehud.png" alt="CaseHUD in CouchHUD" width="820"></p>
-
-Das Schwesterprojekt CaseHUD (`kewe87/CaseHUD`) zeigt Temperaturen und Last auf den LCDs in Lüftern und Pumpen.
-CouchHUD installiert es auf Wunsch (nur signierte Releases ab 1.0), startet es und steuert es vom Sofa:
-Displays, Szenen, Automatik und die Seite **Beleuchtung**; Designs und Effekte baust du in CaseHUD am PC. Mehr: [docs/CASEHUD.md](docs/CASEHUD.md)
+Smart Home (Home Assistant), CaseHUD (die LCDs in Lüftern und Pumpen) und das VPN (NordVPN) sind keine Teile von CouchHUD mehr, sondern **Plugins aus dem signierten Katalog** (*Einstellungen › Plugins*): ein Plugin, das du installierst, wenn du es brauchst. Wer 0.5 mit einem davon eingerichtet hatte, bekommt das Plugin vorgeschlagen und seine Einstellungen werden übernommen. Mehr zu CaseHUD: [docs/CASEHUD.md](docs/CASEHUD.md)
 
 ### Selbst bauen
 
@@ -204,14 +200,14 @@ An interface made only for the controller. Switch on, pick up the controller, pl
 - **Guide button over any game:** per-app volume, audio output, Bluetooth, notifications, power; hold it to get back
 - **Instead of the desktop:** CouchHUD starts at sign-in, Steam & co. wait quietly in the background
 - **Made for the couch:** browser as a tab, on-screen keyboard, phone as a remote, Wi-Fi, display, updates
-- **5 skins** with their own sounds and mouse pointer, plus plugins and skins from the signed catalog
+- **Couch skin** built in, with its own sounds and mouse pointer, plus more skins and plugins from the signed catalog
 - **Couch lock and parental controls**, admin work in a background service: no UAC prompts day to day
 
 Free, open (GPL-3.0), no account, no telemetry.
 
 <p align="center">
-  <img src="docs/screenshot-library.png" alt="Library" width="410">
-  <img src="docs/screenshot-guide.png" alt="Guide menu" width="410">
+  <img src="docs/screenshot-library.en.png" alt="Library" width="410">
+  <img src="docs/screenshot-guide.en.png" alt="Guide menu" width="410">
 </p>
 
 ### App or Shell
@@ -296,7 +292,7 @@ All buttons: [guide › Controls](docs/GUIDE.en.md#controls).
 
 ### Couch lock and parental controls
 
-<p align="center"><img src="docs/screenshot-lock.png" alt="Couch lock with controller code" width="600"></p>
+<p align="center"><img src="docs/screenshot-lock.en.png" alt="Couch lock with controller code" width="600"></p>
 
 - **Couch lock:** leaving CouchHUD takes a controller code (6–8 buttons) or your Windows sign-in. While locked, only games start.
 - **Parental controls:** daily play time, time windows, per-game limits, age rating; more time only with the parents' code.
@@ -307,27 +303,23 @@ All buttons: [guide › Controls](docs/GUIDE.en.md#controls).
 - **Admin only in the service:** `CouchHud.Service` does admin tasks from a fixed list of operations. CouchHud.exe never runs with admin rights.
 - **The service checks the codes**, with growing wait times after wrong tries. Parent and admin approvals use the Windows credential dialog on the secure desktop.
 - **Fail-closed:** if the service is missing, the lock stays closed and Windows locks. *Repair service* sets it up again (one UAC prompt, Windows programs only).
-- **Signed only:** self-update, catalog and the CaseHUD install check an ECDSA signature.
+- **Signed only:** self-update, catalog and plugin packages check an ECDSA signature.
 - **Honest limits:** it protects against kids and guests at the controller, not against admins, other code in the same account, boot media or removed drives. A good Windows password and BitLocker or device encryption are recommended.
 
 Details, limits and reporting a vulnerability: [SECURITY.md](SECURITY.md#english) · [Disclaimer](docs/DISCLAIMER.en.md) · [Privacy](docs/PRIVACY.en.md) (the German versions prevail)
 
 ### Plugins, skins and catalog
 
-<p align="center"><img src="docs/skins.png" alt="The five built-in skins" width="820"></p>
+<p align="center"><img src="docs/skins.en.png" alt="Couch skin plus catalog skins" width="820"></p>
 
 - **Skins** are CSS plus optional glyphs, sounds and mouse pointer: [docs/SKINS.en.md](docs/SKINS.en.md)
 - **Plugins** (C#) add game sources, pages, settings and Guide menu entries: [docs/PLUGINS.md](docs/PLUGINS.md) (German)
 - **Catalog** [`kewe87/CouchHUD-Catalog`](https://github.com/kewe87/CouchHUD-Catalog): install with A, signed index, mandatory checksum
 - Included: the **Wand** plugin (cheats and mods), which is also the example for your own plugins
 
-### CaseHUD
+### Home Assistant, CaseHUD and the VPN
 
-<p align="center"><img src="docs/screenshot-casehud.png" alt="CaseHUD in CouchHUD" width="820"></p>
-
-The sister project CaseHUD (`kewe87/CaseHUD`) shows temperatures and load on the LCDs in fans and pump heads.
-CouchHUD can install it for you (signed releases from 1.0 only), start it and control it from the couch:
-displays, scenes, automation and the **Lighting** page; designs and effects are built in CaseHUD on the PC. More: [docs/CASEHUD.md](docs/CASEHUD.md) (German)
+Smart home (Home Assistant), CaseHUD (the LCDs in fans and pump heads) and the VPN (NordVPN) are no longer parts of CouchHUD but **plugins from the signed catalog** (*Settings › Plugins*): install the one you need. If you had set one of them up in 0.5, the plugin is suggested to you and its settings carry over. More about CaseHUD: [docs/CASEHUD.md](docs/CASEHUD.md) (German)
 
 ### Build from source
 

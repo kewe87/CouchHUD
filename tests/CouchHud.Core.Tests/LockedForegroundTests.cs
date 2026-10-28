@@ -26,7 +26,7 @@ public sealed class LockedForegroundTests
     [InlineData(false, true)]
     public void CaseHudWindowIsMinimizedWhileLocked(bool fullscreen, bool unreadable)
     {
-        var d = Decide(Win("CaseHUD", fullscreen: fullscreen, unreadable: unreadable) with { CaseHud = () => true });
+        var d = Decide(Win("CaseHUD", fullscreen: fullscreen, unreadable: unreadable) with { PluginRestricted = () => true });
         Assert.Equal(ForegroundAction.Minimize, d.Action);
         Assert.Equal(ForegroundReason.LockedForeign, d.Reason);
     }
@@ -37,16 +37,16 @@ public sealed class LockedForegroundTests
         // A program called CaseHUD.exe somewhere else is judged like any unknown program (could be a game).
         Assert.False(Decide(Win("CaseHUD")).Suppress);
         // The installed CaseHUD under another name is still CaseHUD.
-        Assert.True(Decide(Win("renamed") with { CaseHud = () => true }).Suppress);
+        Assert.True(Decide(Win("renamed") with { PluginRestricted = () => true }).Suppress);
     }
 
     [Fact]
     public void CaseHudWindowIsLeftAloneWhenUnlockedAndItsFileDialogIsClosed()
     {
-        Assert.False(Decide(Win("CaseHUD") with { CaseHud = () => true }, Locked with { Locked = false }).Suppress);
-        Assert.Equal(ForegroundAction.CloseDialog, Decide(Win("CaseHUD", dialog: true) with { CaseHud = () => true }).Action);
+        Assert.False(Decide(Win("CaseHUD") with { PluginRestricted = () => true }, Locked with { Locked = false }).Suppress);
+        Assert.Equal(ForegroundAction.CloseDialog, Decide(Win("CaseHUD", dialog: true) with { PluginRestricted = () => true }).Action);
         // CouchHud's own windows never count as CaseHUD.
-        Assert.False(Decide(Win("CouchHud", ownPid: true) with { CaseHud = () => true }).Suppress);
+        Assert.False(Decide(Win("CouchHud", ownPid: true) with { PluginRestricted = () => true }).Suppress);
     }
 
     [Fact]

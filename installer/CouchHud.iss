@@ -1,10 +1,10 @@
 ; CouchHUD installer (Inno Setup 6)
-; Build: iscc /DAppVersion=0.5.0 /DPublishDir=..\publish /DWebView2Setup=MicrosoftEdgeWebview2Setup.exe CouchHud.iss
+; Build: iscc /DAppVersion=0.6.0 /DPublishDir=..\publish /DWebView2Setup=MicrosoftEdgeWebview2Setup.exe CouchHud.iss
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
-; A test or development build carries a suffix (0.5.0-test, 0.5.0-dev+abc): AppVersion and the file name keep it, the file's
+; A test or development build carries a suffix (0.6.0-test, 0.6.0-dev+abc): AppVersion and the file name keep it, the file's
 ; version resource (VersionInfoVersion) takes only numbers, so it gets the part before the first "-" or "+".
 #define VersionCut Pos("+", AppVersion)
 #if VersionCut > 0
@@ -145,10 +145,24 @@ Name: "autostart"; Description: "{cm:Autostart}"; Flags: unchecked
 [InstallDelete]
 ; Only single program files an older version installed and this one no longer has (an update copies over the folder, it does not
 ; clean it). Never folders, never wildcards, never anything with user data: InstallerTests keeps this an exact allowlist.
-; 0.5 renamed the built-in skins (deepsea.css, greenlight.css, neoncity.css).
+; 0.5 renamed the built-in skins (old file names ps4, xbox, cyberpunk).
 Type: files; Name: "{app}\ui\skins\ps4.css"
 Type: files; Name: "{app}\ui\skins\xbox.css"
 Type: files; Name: "{app}\ui\skins\cyberpunk.css"
+; Up to 0.5 Wand came with the setup in {app}\plugins; from 0.6 it comes from the catalog and that folder is no longer loaded.
+; Its files (the publish output of 0.4 and 0.5: the dll, pdb, deps.json and, because the project loads dynamically, runtimeconfig.json, plus
+; plugin.json); the folder goes once it is empty (a folder the user put something into stays), and with the uninstall ([UninstallDelete]).
+Type: files; Name: "{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.dll"
+Type: files; Name: "{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.pdb"
+Type: files; Name: "{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.deps.json"
+Type: files; Name: "{app}\plugins\CouchHud.Plugin.Wand\plugin.json"
+Type: files; Name: "{app}\plugins\CouchHud.Plugin.Wand\CouchHud.Plugin.Wand.runtimeconfig.json"
+Type: dirifempty; Name: "{app}\plugins\CouchHud.Plugin.Wand"
+; 0.6 ships the Couch skin only: the four others come from the catalog (CouchHUD installs the one in use again on the first start).
+Type: files; Name: "{app}\ui\skins\deepsea.css"
+Type: files; Name: "{app}\ui\skins\greenlight.css"
+Type: files; Name: "{app}\ui\skins\neoncity.css"
+Type: files; Name: "{app}\ui\skins\nova.css"
 
 [Files]
 ; Helpers that stop and restart CouchHUD (extracted to {tmp} on demand, never installed).

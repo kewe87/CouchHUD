@@ -8,7 +8,7 @@ using CouchHud.Service.Logging;
 namespace CouchHud.Service.Setup;
 
 /// <summary>
-/// Installs a signed CouchHUD or CaseHUD setup for a standard user without UAC (design §3 "Setups ohne TOCTOU", P0 spike, E7):
+/// Installs a signed CouchHUD setup for a standard user without UAC (design §3 "Setups ohne TOCTOU", P0 spike, E7):
 /// <list type="number">
 /// <item>Header: signature, signed name, version newer than installed (<see cref="SignedSetupVerifier"/>); one setup at a time machine-wide.</item>
 /// <item>"streamReady", then the bytes (<see cref="StreamCodec"/>: exact size, at most 400 MB, time limits) into the protected staging
@@ -16,8 +16,7 @@ namespace CouchHud.Service.Setup;
 /// <item>Sealed: held open for reading only, size, SHA-256, real path and PE checked on that handle; the answer is a job id.</item>
 /// <item>Job: the hash once more right before the start, then the setup as SYSTEM with fixed arguments from the held path.</item>
 /// </list>
-/// CaseHUD only over an installed CaseHUD (a first installation stays with UAC); afterwards the job says CaseHUD must be started again
-/// in the user's session (the shell does it: its setup ends CaseHUD everywhere).
+/// Only CouchHUD's own update goes this way: a plugin never gets a privileged power, and the former route for CaseHUD updates is gone.
 /// </summary>
 public sealed class SignedSetupPipeline(
     SignedSetupVerifier verifier,
@@ -56,9 +55,6 @@ public sealed class SignedSetupPipeline(
     /// </summary>
     public const string KeepSessionArgument = "/KEEPSESSION=";
 
-    /// <summary>CaseHUD as SYSTEM over an installed one (P0 spike): no autostart entry in the SYSTEM hive, SYSTEM not into the performance log users.</summary>
-    public const string CaseHudArguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS=\"!autostart,!fps\"";
-
     /// <summary>Inno's log of the CouchHUD setup, into the service's logs folder (only SYSTEM and Administrators can read it).</summary>
     public const string LogSwitch = "/LOG=";
 
@@ -69,7 +65,6 @@ public sealed class SignedSetupPipeline(
     public const int MaxSessionId = 99999;
 
     public const string CouchHudJob = "couchHudSetup";
-    public const string CaseHudJob = "caseHudSetup";
 
     public static readonly TimeSpan DefaultSetupTimeout = TimeSpan.FromMinutes(20);
 
@@ -102,7 +97,6 @@ public sealed class SignedSetupPipeline(
     /// </summary>
     public static string? ArgumentsFor(SetupKind kind, int? keepSession, string? logFile = null)
     {
-        if (kind == SetupKind.CaseHud) return CaseHudArguments;
         if (keepSession is < 1 or > MaxSessionId) return null;
         var arguments = $"{CouchHudArguments} {ServiceUpdateSwitch}";
         if (keepSession is { } session) arguments += $" {KeepSessionArgument}{session.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
@@ -151,11 +145,8 @@ public sealed class SignedSetupPipeline(
     /// </summary>
     public bool Available => staging.Ready;
 
-    /// <summary>For <see cref="StateCheck.CaseHudFirstInstall"/>.</summary>
-    public bool CaseHudInstalled => installed.CaseHud() is not null;
-
     /// <summary>
-    /// The handler of InstallCouchHudUpdate / InstallCaseHud: "streamReady" with a receiver, or a refusal. The stream goes into its own
+    /// The handler of InstallCouchHudUpdate: "streamReady" with a receiver, or a refusal. The stream goes into its own
     /// staging folder first (at most <see cref="MaxConcurrentStreams"/> at a time); the one setup slot is taken only for seal and start.
     /// </summary>
     public byte[] Begin(RequestContext context, SetupKind kind)
@@ -163,7 +154,7 @@ public sealed class SignedSetupPipeline(
         var caller = context.Caller;
         var args = context.Request.GetArgs<SetupStreamArgs>();
         if (!_failures.HasBudget(caller.Sid, RateBucket.SetupFailures)) return Refuse(caller, kind, ErrorCodes.RateLimited, "too many failed setup streams");
-        var current = kind == SetupKind.CouchHud ? installed.CouchHud() : installed.CaseHud();
+        var current = installed.CouchHud();
         var verdict = verifier.Verify(kind, args, current);
         if (!verdict.Ok) return Refuse(caller, kind, verdict.Code, verdict.Reason ?? "refused");
         var plan = verdict.Plan!;
@@ -250,7 +241,7 @@ public sealed class SignedSetupPipeline(
                     return owner.RefuseStream(caller, plan.Kind, ErrorCodes.VerificationFailed, $"staged file: {ex.GetType().Name}");
                 }
 
-                if (owner.Jobs.Create(caller.Sid, plan.Kind == SetupKind.CouchHud ? CouchHudJob : CaseHudJob) is not { } job)
+                if (owner.Jobs.Create(caller.Sid, CouchHudJob) is not { } job)
                 {
                     return owner.Refuse(caller, plan.Kind, ErrorCodes.Busy, "no room for a job");
                 }
@@ -395,10 +386,9 @@ public sealed class SignedSetupPipeline(
             var code = process.ExitCode;
             log.Info($"[setup] {plan.Kind} {plan.Version} ended with {code}");
             events.Add(caller.Sid, "setup", $"{plan.Kind} {plan.Version} exit {code}");
-            if (code == 0) job.Complete(jobs.Clock.Now, "installed", restartCaseHud: plan.Kind == SetupKind.CaseHud);
+            if (code == 0) job.Complete(jobs.Clock.Now, "installed");
             else if (code == ExitServiceNotStarted && plan.Kind == SetupKind.CouchHud) job.Fail(jobs.Clock.Now, "serviceNotStarted");
-            // CaseHUD's setup ends CaseHUD in every session even when it fails late: start it again either way.
-            else job.Fail(jobs.Clock.Now, $"exitCode:{code}", restartCaseHud: plan.Kind == SetupKind.CaseHud);
+            else job.Fail(jobs.Clock.Now, $"exitCode:{code}");
         }
         finally
         {

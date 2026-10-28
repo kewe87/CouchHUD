@@ -146,6 +146,9 @@ public sealed class PadMerger
         if (g.LY < -StickThreshold) pressed.Add("down");
         if (g.LX < -StickThreshold) pressed.Add("left");
         if (g.LX > StickThreshold) pressed.Add("right");
+        // The right stick reads: long texts (the setup assistant's explanations) scroll with it; pages that do not read ignore it.
+        if (g.RY > StickThreshold) pressed.Add("rsup");
+        if (g.RY < -StickThreshold) pressed.Add("rsdown");
         if (g.LeftTrigger > TriggerThreshold) pressed.Add("lt");
         if (g.RightTrigger > TriggerThreshold) pressed.Add("rt");
         return pressed;

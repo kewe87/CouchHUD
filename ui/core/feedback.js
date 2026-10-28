@@ -18,11 +18,11 @@ export function toast(text, ms = 2500, { long = false } = {}) {
  * `quietLocked`: for reads the page makes on its own (not because the user asked): a locked couch is no error then, the
  * result is undefined and the page shows "locked" or nothing.
  */
-export async function attempt(action, label, { quietLocked = false } = {}) {
+export async function attempt(action, label, { quietLocked = false, lockedValue = undefined } = {}) {
   try {
     return await action();
   } catch (err) {
-    if (quietLocked && err?.locked) return undefined;
+    if (quietLocked && err?.locked) return lockedValue;
     // A protected profile waits at the picker: the host answers only the picker; everything else is reloaded once it is chosen.
     if (err?.held) return undefined;
     console.error(err);

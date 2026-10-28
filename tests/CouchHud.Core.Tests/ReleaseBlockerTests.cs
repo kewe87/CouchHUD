@@ -423,11 +423,11 @@ public sealed class ConfigSaveRetryTests : IDisposable
             File.Move(from, to, overwrite: true);
         });
 
-        var saved = store.Update(c => c.Skin = "deepsea");
+        var saved = store.Update(c => c.Skin = "user:deepsea");
 
         Assert.True(saved);
         Assert.Null(store.LastSaveError);
-        Assert.Equal("deepsea", new ConfigStore(_dir).Current.Skin);
+        Assert.Equal("user:deepsea", new ConfigStore(_dir).Current.Skin);
     }
 
     [Fact]
@@ -441,7 +441,7 @@ public sealed class ConfigSaveRetryTests : IDisposable
         });
         store.SaveAttempts = 5;
 
-        Assert.False(store.Update(c => c.Skin = "deepsea"));
+        Assert.False(store.Update(c => c.Skin = "user:deepsea"));
         Assert.Equal(5, attempts);
         Assert.NotNull(store.LastSaveError);
         Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
@@ -453,7 +453,7 @@ public sealed class ConfigSaveRetryTests : IDisposable
         var store = Store((_, _) => throw new UnauthorizedAccessException("Access denied"));
         store.SaveAttempts = 2;
 
-        var ex = Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.Skin = "deepsea"));
+        var ex = Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.Skin = "user:deepsea"));
 
         Assert.Contains("Access denied", ex.Message);
     }
@@ -463,9 +463,9 @@ public sealed class ConfigSaveRetryTests : IDisposable
     {
         var store = Store();
 
-        store.UpdateOrThrow(c => c.Skin = "greenlight");
+        store.UpdateOrThrow(c => c.Skin = "user:greenlight");
 
-        Assert.Equal("greenlight", new ConfigStore(_dir).Current.Skin);
+        Assert.Equal("user:greenlight", new ConfigStore(_dir).Current.Skin);
     }
 
     [Fact]
@@ -481,7 +481,7 @@ public sealed class ConfigSaveRetryTests : IDisposable
         store.SavePause = TimeSpan.FromMilliseconds(10);
         store.Pause = pauses.Add;
 
-        Assert.True(store.Update(c => c.Skin = "deepsea"));
+        Assert.True(store.Update(c => c.Skin = "user:deepsea"));
 
         Assert.Equal([TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(30)], pauses);
     }
@@ -516,8 +516,8 @@ public sealed class ConfigSaveRetryTests : IDisposable
         File.WriteAllText(Path.Combine(_dir, "config.json"), "{ broken");
         var store = new ConfigStore(_dir, 1, TimeSpan.Zero);
 
-        Assert.False(store.Update(c => c.Skin = "deepsea"));
-        Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.Skin = "deepsea"));
+        Assert.False(store.Update(c => c.Skin = "user:deepsea"));
+        Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.Skin = "user:deepsea"));
     }
 }
 

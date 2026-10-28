@@ -27,10 +27,10 @@ public sealed record LockedWindow(string? Process, string? Title, bool OwnPid, b
     public Func<bool> AppTree { get; init; } = () => false;
 
     /// <summary>
-    /// The window belongs to the installed CaseHUD (its program image, canonical path, is CaseHUD's installed exe; not told by the
-    /// process name). CaseHUD's own window is a settings tool (fan control, lighting, the design editor), never a game.
+    /// The window belongs to a program that one of CouchHUD's own plugins restricts on the locked couch (lock.restrict, and CaseHUD
+    /// itself), told by the canonical path of its program image, never by the process name. Such a window is a settings tool, never a game.
     /// </summary>
-    public Func<bool> CaseHud { get; init; } = () => false;
+    public Func<bool> PluginRestricted { get; init; } = () => false;
 }
 
 /// <summary>
@@ -135,9 +135,9 @@ public static class LockedForeground
         // Before the "own" and "game" checks: a file dialog of the browser's WebView2 or of a game is just as much a way out.
         if (w.FileOrPrintDialog && !w.OwnPid) return new(ForegroundAction.CloseDialog, ForegroundReason.LockedDialog);
         if (w.OwnPid) return new(ForegroundAction.Allow, ForegroundReason.OwnWindow);
-        // CaseHUD's window changes fan curves, lighting and designs: settings, so not on a locked couch. Before "unreadable":
-        // CaseHUD may run elevated, and its image is still readable with limited rights.
-        if (w.CaseHud()) return new(ForegroundAction.Minimize, ForegroundReason.LockedForeign);
+        // Programs a first-party plugin restricts (CaseHUD: fan curves, lighting, designs) are settings, so not on a locked couch.
+        // Before "unreadable": such a program may run elevated, and its image is still readable with limited rights.
+        if (w.PluginRestricted()) return new(ForegroundAction.Minimize, ForegroundReason.LockedForeign);
         // Doubt is not a reason to minimize: a process we cannot look at (protected, elevated, already gone) is left alone.
         if (w.Unreadable) return new(ForegroundAction.Allow, ForegroundReason.LockedUnknown);
         // The running game, its helpers and (in the start phase) what CouchHud started for it. A browser the game started is part of it.

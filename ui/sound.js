@@ -2,7 +2,7 @@
 // gets its own sound set. Skins can also bring their own files (skin.json "sounds").
 
 import { t } from './core/i18n.js';
-import { migrateSkinId } from './core/skin-rules.js';
+import { migrateSoundSetId } from './core/skin-rules.js';
 
 let ctx = null;
 let master = null;
@@ -32,17 +32,20 @@ export function setSoundVolume(v) {
   if (master) master.gain.value = volume;
 }
 
-/** The skin's set ("default", "deepsea", …) and optional files from a user skin: { move: url, … }. */
-export function setSkinSounds(skinId, files = null) {
-  skinId = migrateSkinId(skinId);
-  activeSet = SETS[skinId] ? skinId : 'default';
+/**
+ * The skin's set ("default", "deepsea", …) and optional files from a user skin: { move: url, … }. A skin from the catalog names the
+ * set it wants in skin.json ("soundSet"), the Couch skin has the default one.
+ */
+export function setSkinSounds(skinId, files = null, soundSet = null) {
+  const wanted = migrateSoundSetId(soundSet || skinId);
+  activeSet = Object.hasOwn(SETS, wanted) ? wanted : 'default';
   customFiles = files && Object.keys(files).length ? files : null;
   updateMusic();
 }
 
 /** null follows the skin; a set id uses that set for every skin. */
 export function setSoundSet(id) {
-  id = migrateSkinId(id);
+  id = migrateSoundSetId(id);
   forcedSet = id && SETS[id] ? id : null;
   updateMusic();
 }

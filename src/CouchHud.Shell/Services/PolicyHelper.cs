@@ -52,8 +52,12 @@ public static class PolicyHelper
         _helperFailed = true;
         lock (Gate) _failingSince ??= DateTime.UtcNow;
         ForgetMode();
-        Console.Error.WriteLine($"[lock] policy service call: {result}");
+        // The watch asks again every ten seconds while the setup is half done: the same answer is written once, then every ten minutes.
+        var text = $"[lock] policy service call: {result}";
+        if (CallLog.Allow(text, DateTime.UtcNow, out var left)) Console.Error.WriteLine(left > 0 ? $"{text} (repeated {left} times)" : text);
     }
+
+    private static readonly CouchHud.Core.Guard.LogThrottle CallLog = new(TimeSpan.FromMinutes(10));
 
     /// <summary>The last try through the service did not work (the Hud tries again once the service is healthy).</summary>
     public static bool Failed => _helperFailed;

@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using CouchHud.Core.Integrations.CaseHud;
 using CouchHud.Core.Plugins;
 using CouchHud.Core.Updates;
 using CouchHud.Service.Contracts;
@@ -9,8 +8,7 @@ namespace CouchHud.Service.Setup;
 
 public enum SetupKind
 {
-    CouchHud,
-    CaseHud
+    CouchHud
 }
 
 /// <summary>What the signed checksum file says about the setup that is to come: its name, version and hash. Nothing in here is from the client.</summary>
@@ -26,14 +24,12 @@ public sealed record SetupVerdict(SetupPlan? Plan, string Code, string? Reason =
 
 /// <summary>
 /// Checks the header of a setup stream before a single byte of the setup is accepted: the signature of the checksum file with the
-/// public key built into this program (CouchHUD: the release key with the context "couchhud-release-v1"; CaseHUD: its own key with
-/// "casehud-release-v1"), then the setup's name, version and hash from the signed content. The client's file name is only compared
+/// public key built into this program (the CouchHUD release key with the context "couchhud-release-v1"), then the setup's name, version and hash from the signed content. The client's file name is only compared
 /// with it; the version comes from the signed name and must be newer than what is installed (no downgrade, no replay of the same
-/// release) and at least the minimum. The crypto is <see cref="ReleaseIntegrity"/> / <see cref="CaseHudIntegrity"/> of Core, not a copy.
+/// release) and at least the minimum. The crypto is <see cref="ReleaseIntegrity"/> of Core, not a copy.
 /// </summary>
 /// <param name="couchHudKeyPem">Null: the built-in key (<see cref="CatalogSignature.PublicKeyPem"/>). Tests pass a throwaway key.</param>
-/// <param name="caseHudKeyPem">The CaseHUD release key; empty is refused (the service never installs an unsigned CaseHUD).</param>
-public sealed class SignedSetupVerifier(string? couchHudKeyPem = null, string caseHudKeyPem = CaseHudInfo.ReleasePublicKeyPem)
+public sealed class SignedSetupVerifier(string? couchHudKeyPem = null)
 {
     /// <summary>The first CouchHUD that has the service: an older setup would leave it behind (design §4 "Rückweg").</summary>
     public static readonly SemVer CouchHudMinimum = new(0, 4, 1, "");
@@ -41,26 +37,19 @@ public sealed class SignedSetupVerifier(string? couchHudKeyPem = null, string ca
     /// <summary>The largest CouchHUD setup the service takes (below StreamCodec's general 400 MB; a setup is far smaller).</summary>
     public const long MaxCouchHudSetupBytes = 200L * 1024 * 1024;
 
-    /// <summary>The largest CaseHUD setup the service takes.</summary>
-    public const long MaxCaseHudSetupBytes = 200L * 1024 * 1024;
-
-    public static long MaxSetupBytes(SetupKind kind) => kind == SetupKind.CouchHud ? MaxCouchHudSetupBytes : MaxCaseHudSetupBytes;
-
-    /// <summary>CaseHUD releases are signed from 1.0.0 on.</summary>
-    public static SemVer CaseHudMinimum => CaseHudInfo.MinimumVersion;
+    public static long MaxSetupBytes(SetupKind kind) => MaxCouchHudSetupBytes;
 
     // The same shapes the validator accepts for the client's name (ASCII digits, no pre-release).
     private const RegexOptions Options = RegexOptions.CultureInvariant | RegexOptions.NonBacktracking;
     private static readonly Regex CouchHudName = new(@"^CouchHud-Setup-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?\.exe\z", Options);
-    private static readonly Regex CaseHudName = new(@"^CaseHUD-Setup-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\.exe\z", Options);
     // A sha256sum line: hash, space, space or '*' (binary mode), name. Only to find the name; the hash is read by Core's parser.
     private static readonly Regex Line = new(@"^[0-9a-fA-F]{64} [ *](.+)\z", Options);
 
-    public static string Prefix(SetupKind kind) => kind == SetupKind.CouchHud ? SelfUpdateRules.SetupPrefix : CaseHudInfo.SetupPrefix;
+    public static string Prefix(SetupKind kind) => SelfUpdateRules.SetupPrefix;
 
-    public static SemVer Minimum(SetupKind kind) => kind == SetupKind.CouchHud ? CouchHudMinimum : CaseHudMinimum;
+    public static SemVer Minimum(SetupKind kind) => CouchHudMinimum;
 
-    /// <param name="installed">The installed version; null: CouchHUD's cannot be read, or CaseHUD is not installed. Both are refused.</param>
+    /// <param name="installed">The installed version; null: CouchHUD's cannot be read, which is refused.</param>
     public SetupVerdict Verify(SetupKind kind, SetupStreamArgs args, SemVer? installed)
     {
         if (args.Size <= 0 || args.Size > MaxSetupBytes(kind)) return SetupVerdict.Refuse(ErrorCodes.StreamTooLarge, $"announced {args.Size} bytes, at most {MaxSetupBytes(kind)}");
@@ -76,16 +65,7 @@ public sealed class SignedSetupVerifier(string? couchHudKeyPem = null, string ca
 
         try
         {
-            if (kind == SetupKind.CouchHud)
-            {
-                ReleaseIntegrity.VerifySignature(checksum, args.Signature, couchHudKeyPem);
-            }
-            else
-            {
-                // CaseHudIntegrity skips the signature without a key; the service never does.
-                if (string.IsNullOrWhiteSpace(caseHudKeyPem)) return SetupVerdict.Refuse(ErrorCodes.VerificationFailed, "no CaseHUD release key");
-                CaseHudIntegrity.VerifySignature(checksum, args.Signature, caseHudKeyPem);
-            }
+            ReleaseIntegrity.VerifySignature(checksum, args.Signature, couchHudKeyPem);
         }
         catch (CatalogException)
         {
@@ -97,7 +77,7 @@ public sealed class SignedSetupVerifier(string? couchHudKeyPem = null, string ca
         string sha256;
         try
         {
-            sha256 = kind == SetupKind.CouchHud ? ReleaseIntegrity.ParseChecksum(checksum, name) : CaseHudIntegrity.ParseChecksum(checksum, name);
+            sha256 = ReleaseIntegrity.ParseChecksum(checksum, name);
         }
         catch (CatalogException)
         {
@@ -109,7 +89,7 @@ public sealed class SignedSetupVerifier(string? couchHudKeyPem = null, string ca
         if (version < Minimum(kind)) return SetupVerdict.Refuse(ErrorCodes.Denied, $"version {version} below the minimum {Minimum(kind)}");
         if (installed is not { } current)
         {
-            return SetupVerdict.Refuse(ErrorCodes.Denied, kind == SetupKind.CouchHud ? "installed CouchHUD version unknown" : "CaseHUD not installed (first installation stays with UAC)");
+            return SetupVerdict.Refuse(ErrorCodes.Denied, "installed CouchHUD version unknown");
         }
         if (version <= current) return SetupVerdict.Refuse(ErrorCodes.Denied, $"version {version} not newer than the installed {current}");
 
@@ -119,7 +99,7 @@ public sealed class SignedSetupVerifier(string? couchHudKeyPem = null, string ca
     /// <summary>The one setup of this kind the signed file lists (a file that names two different setups names none).</summary>
     private static string? SignedName(SetupKind kind, byte[] checksum)
     {
-        var pattern = kind == SetupKind.CouchHud ? CouchHudName : CaseHudName;
+        var pattern = CouchHudName;
         string? found = null;
         foreach (var raw in Encoding.UTF8.GetString(checksum).Split('\n'))
         {

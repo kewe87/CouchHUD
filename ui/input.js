@@ -5,7 +5,7 @@ import { kindFromGamepadId, kindFromPresses } from './core/pad-glyphs.js';
 
 const REPEAT_DELAY = 380;
 const REPEAT_RATE = 90;
-const REPEATING = new Set(['up', 'down', 'left', 'right']);
+const REPEATING = new Set(['up', 'down', 'left', 'right', 'rsup', 'rsdown']);
 
 const KEYMAP = {
   ArrowUp: 'up',
@@ -101,11 +101,14 @@ export class Input {
         if (!gp) continue;
         const now = new Set();
         gp.buttons.forEach((b, i) => b.pressed && GAMEPAD_BUTTONS[i] && now.add(GAMEPAD_BUTTONS[i]));
-        const [lx = 0, ly = 0] = gp.axes;
+        const [lx = 0, ly = 0, , ry = 0] = gp.axes;
         if (ly < -0.5) now.add('up');
         if (ly > 0.5) now.add('down');
         if (lx < -0.5) now.add('left');
         if (lx > 0.5) now.add('right');
+        // The right stick reads (long texts); pages that do not read ignore it.
+        if (ry < -0.5) now.add('rsup');
+        if (ry > 0.5) now.add('rsdown');
         const before = prev.get(gp.index) || new Set();
         if ([...now].some((b) => !before.has(b))) kinds.push(kindFromGamepadId(gp.id));
         prev.set(gp.index, now);

@@ -58,6 +58,18 @@ public sealed class SaveAutoBackupTests : IDisposable
 
     private static string Saves(SaveContext c) => Path.Combine(c.WinAppData, "RealGame", "saves");
 
+    private int _changes;
+
+    /// <summary>
+    /// Writes new content and gives the file its own, strictly increasing change time. Two quick writes of the same size otherwise
+    /// land in one tick of the file system clock (about 15 ms), and the product rightly calls such a state unchanged.
+    /// </summary>
+    private void Change(string path, string content)
+    {
+        File.WriteAllText(path, content);
+        File.SetLastWriteTimeUtc(path, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(++_changes));
+    }
+
     private static void Write(string path, string content = "data")
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -1015,7 +1027,7 @@ public sealed class SaveAutoBackupTests : IDisposable
 
         for (var i = 0; i < 6; i++)
         {
-            File.WriteAllText(Path.Combine(Saves(ctx), "b.sav"), "state " + i);
+            Change(Path.Combine(Saves(ctx), "b.sav"), "state " + i);
             Assert.False(ByHand(svc, ctx).Complete);
         }
 
@@ -1036,9 +1048,9 @@ public sealed class SaveAutoBackupTests : IDisposable
         Assert.True(complete.Complete);
         // A planted hard link: every backup by hand from now on is incomplete.
         Assert.True(CreateHardLinkW(Path.Combine(_tmp, "elsewhere.dat"), Path.Combine(Saves(ctx), "a.sav"), IntPtr.Zero));
-        File.WriteAllText(Path.Combine(Saves(ctx), "b.sav"), "state 1");
+        Change(Path.Combine(Saves(ctx), "b.sav"), "state 1");
         var first = ByHand(svc, ctx);
-        File.WriteAllText(Path.Combine(Saves(ctx), "b.sav"), "state 2");
+        Change(Path.Combine(Saves(ctx), "b.sav"), "state 2");
         var second = ByHand(svc, ctx);
         Assert.False(first.Complete || first.Unchanged);
         Assert.False(second.Complete || second.Unchanged);
@@ -1059,7 +1071,7 @@ public sealed class SaveAutoBackupTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(BackupRoot, "*.part", SearchOption.AllDirectories));
 
         // A real change is a new version again (and the rotation of incomplete ones applies as before).
-        File.WriteAllText(Path.Combine(Saves(ctx), "b.sav"), "state 3");
+        Change(Path.Combine(Saves(ctx), "b.sav"), "state 3");
         var changed = ByHand(svc, ctx);
         Assert.False(changed.Unchanged);
         Assert.NotEqual(second.Id, changed.Id);
@@ -1078,9 +1090,9 @@ public sealed class SaveAutoBackupTests : IDisposable
         // A planted hard link: every automatic backup from now on is incomplete.
         Assert.True(CreateHardLinkW(Path.Combine(_tmp, "elsewhere.dat"), Path.Combine(Saves(ctx), "a.sav"), IntPtr.Zero));
         AutoBackupResult Run() => SaveGameService.AutoBackupCore(svc, Game, entry, ctx, Limits(), CancellationToken.None);
-        File.WriteAllText(Path.Combine(Saves(ctx), "b.sav"), "state 1");
+        Change(Path.Combine(Saves(ctx), "b.sav"), "state 1");
         var first = Run();
-        File.WriteAllText(Path.Combine(Saves(ctx), "b.sav"), "state 2");
+        Change(Path.Combine(Saves(ctx), "b.sav"), "state 2");
         var second = Run();
         Assert.Equal(AutoBackupOutcome.Incomplete, first.Outcome);
         Assert.Equal(AutoBackupOutcome.Incomplete, second.Outcome);
@@ -1100,7 +1112,7 @@ public sealed class SaveAutoBackupTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(BackupRoot, "*.part", SearchOption.AllDirectories));
 
         // A real change is a new (told) incomplete backup again.
-        File.WriteAllText(Path.Combine(Saves(ctx), "b.sav"), "state 3");
+        Change(Path.Combine(Saves(ctx), "b.sav"), "state 3");
         var changed = Run();
         Assert.Equal(AutoBackupOutcome.Incomplete, changed.Outcome);
         Assert.NotEqual(second.BackupId, changed.BackupId);

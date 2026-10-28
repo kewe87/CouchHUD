@@ -52,7 +52,6 @@ public class RequestValidatorTests
             [Operation.InstallWindowsUpdates] = null,
             [Operation.SetRemoteFirewall] = """{"ports":[8765,8766]}""",
             [Operation.InstallCouchHudUpdate] = SetupArgs("CouchHud-Setup-0.4.1.exe"),
-            [Operation.InstallCaseHud] = SetupArgs("CaseHUD-Setup-1.2.3.exe"),
             [Operation.EnrollPasscode] = $$"""{"hash":"{{Hash}}"}""",
             [Operation.ChangePasscode] = $$"""{"hash":"{{Hash}}"}""",
             [Operation.VerifyCode] = """{"kind":"parent","sequence":["a","b","x","y","up","down"]}""",
@@ -281,18 +280,13 @@ public class RequestValidatorTests
     public void The_setup_name_of_a_couchhud_update_follows_the_release_pattern(string name) =>
         Rejected(Request("InstallCouchHudUpdate", SetupArgs(name)), ErrorCodes.BadArgument);
 
-    [Theory]
-    [InlineData("..\\Setup.exe")]
-    [InlineData("a/b.exe")]
-    [InlineData("setup.bat")]
-    [InlineData("CON.exe")]
-    [InlineData("NUL.exe")]
-    [InlineData("")]
-    [InlineData("CaseHud-Setup-1.2.3.exe")]        // the prefix has its own spelling
-    [InlineData("CaseHUD-Setup-1.2.exe")]
-    [InlineData("CaseHUD-Setup-1.2.3.exe\n")]
-    public void The_setup_name_of_casehud_follows_the_release_pattern(string name) =>
-        Rejected(Request("InstallCaseHud", SetupArgs(name)), ErrorCodes.BadArgument);
+    [Fact]
+    public void The_removed_CaseHUD_update_is_an_unknown_operation()
+    {
+        // The no-UAC CaseHUD update is gone for good: its name is no operation any more, whatever the arguments look like.
+        Assert.False(Enum.TryParse<Operation>("InstallCaseHud", out _));
+        Rejected(Request("InstallCaseHud", SetupArgs("CaseHUD-Setup-1.2.3.exe")), ErrorCodes.UnknownOperation);
+    }
 
     [Theory]
     [InlineData(0L)]

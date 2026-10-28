@@ -50,13 +50,13 @@ node scripts/preview-server.js          # http://localhost:5173, the complete UI
 `scripts/ui-shot.mjs` drives the preview in a windowless Edge (over the DevTools protocol), presses keys, switches skins, takes screenshots and checks contrasts. Good for UI changes and as evidence in a pull request:
 
 ```bash
-node scripts/ui-shot.mjs --out shots skin:deepsea wait:300 shot:home key:ArrowRight shot:next
+node scripts/ui-shot.mjs --out shots skin:default wait:300 shot:home key:ArrowRight shot:next
 node scripts/ui-shot.mjs --out shots --size 3840x2160 --query lang=en shot:home4k
 ```
 
 Steps: `skin:<id>`, `key:<key>`, `keys:ArrowDown*3`, `wait:<ms>`, `shot:<name>`, `eval:<js>`, `contrast:<label>`, `text:<text>`. Keys: arrows, `Enter` = A, `Escape` = B, `q`/`e` = LB/RB, `x`, `y`, `m` = Start, `Home` = Guide. The path to Edge can be set with the environment variable `EDGE`.
 
-**Screenshots for the README and docs** always with `--query demo`: the preview then shows made-up games with self-generated covers (`ui/mock-demo.js`) instead of real store covers, and no notification pop-ups. The images under `docs/` were made this way (1920×1080, scaled down to 1280×720).
+**Screenshots for the README and docs** always with `--query demo`: the preview then shows made-up games with self-generated covers (`ui/mock-demo.js`) instead of real store covers, and no notification pop-ups. The images under `docs/` were made this way (1920×1080, scaled down to 1280×720). `node scripts/docs-shots.mjs` re-shoots all of them in German and English (`docs/<name>.png`, `docs/<name>.en.png`; for the skins image add `--catalog <folder of catalog skins>`).
 
 **Logo and icon**: the sources are `docs/logo.svg` (from 48 px) and `assets/branding/icon-small.svg` (16–32 px), plus `docs/banner.svg` and `docs/social-preview.svg`. `node scripts/brand-render.mjs` renders all PNGs from them with Edge and rebuilds `src/CouchHud.Shell/couchhud.ico`. `ui/assets/icon.svg` is a copy of `docs/logo.svg`.
 
@@ -107,8 +107,8 @@ Signing scripts (PowerShell 7):
 
 | Script | Purpose |
 |---|---|
-| `scripts\sign-file.ps1` | Signs a file with ECDSA P-256 (SHA-256) and writes `<file>.sig`. `-GenerateKey` creates the key pair the first time and shows the public key (which is in the code as `CatalogSignature.PublicKeyPem`). `-Context catalog` (default) or `release` keeps the purposes apart. |
-| `scripts\catalog-sign.ps1` | Signs the plugin catalog: `-Index .\catalog\index.json` writes `index.json.sig`. Do not change the file after signing (not even line endings). |
+| `scripts\sign-file.ps1` | Signs a file with ECDSA P-256 (SHA-256) and writes `<file>.sig`. `-GenerateKey` creates the key pair the first time and shows the public key (which is in the code as `CatalogSignature.PublicKeyPem`). `-Context catalog` (default) or `release` keeps the purposes apart. `-BumpSerial` (catalog index only, used by `catalog-sign.ps1`) raises the root `serial` of the index by 1 before signing; the file and the `.sig` are replaced only once the signature exists. Signing never creates a key and refuses a key that is not the one compiled into CouchHUD. |
+| `scripts\catalog-sign.ps1` | Signs the plugin catalog: `-Index .\catalog\index.json` raises `serial` by 1 (every change needs a higher number, or clients refuse the index as older) and writes `index.json.sig`. It never creates a key and refuses a key that is not the one compiled into CouchHUD. Do not change the file after signing (not even line endings). |
 | `scripts\sign-release.ps1` | The release step above. |
 | `scripts\catalog-entry.ps1` | Packs a plugin or skin folder as `<Name>-<Version>.zip` and prints the SHA-256 for the catalog entry. |
 

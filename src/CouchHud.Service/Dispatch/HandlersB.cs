@@ -12,9 +12,9 @@ namespace CouchHud.Service.Dispatch;
 public sealed record HandlersBParts(WindowsUpdateJobs WindowsUpdate, UpdateSearchCache SearchCache, SignedSetupPipeline Setups, JobStore Jobs);
 
 /// <summary>
-/// Package P6 ("Operationen B"): Windows Update search and installation as jobs, the signed-setup pipeline for CouchHUD and CaseHUD,
+/// Package P6 ("Operationen B"): Windows Update search and installation as jobs, the signed-setup pipeline for CouchHUD,
 /// GetJob, and the state checks these operations need (<see cref="StateCheck.UpdateIdsFromSearch"/>, <see cref="StateCheck.SignedSetupPipeline"/>,
-/// <see cref="StateCheck.CaseHudFirstInstall"/>, <see cref="StateCheck.JobOwner"/>). The rate limits come from <see cref="RateLimiter.BucketFor"/>
+/// <see cref="StateCheck.JobOwner"/>). The rate limits come from <see cref="RateLimiter.BucketFor"/>
 /// (setups 6/h, Windows Update installations 6/h, searches 20/h) and are applied by the dispatcher before a handler runs.
 /// </summary>
 public static class HandlersB
@@ -56,7 +56,6 @@ public static class HandlersB
         handlers[Operation.InstallWindowsUpdates] = (context, _) =>
             ValueTask.FromResult(parts.WindowsUpdate.StartInstall(context.Caller, context.Request.GetArgs<InstallWindowsUpdatesArgs>().Ids));
         handlers[Operation.InstallCouchHudUpdate] = (context, _) => ValueTask.FromResult(parts.Setups.Begin(context, SetupKind.CouchHud));
-        handlers[Operation.InstallCaseHud] = (context, _) => ValueTask.FromResult(parts.Setups.Begin(context, SetupKind.CaseHud));
         handlers[Operation.GetJob] = (context, _) =>
         {
             // The owner check ran as a state check; asked again here, so a handler never answers for a job that is not the caller's.
@@ -75,10 +74,6 @@ public static class HandlersB
         }));
         checks.Register(StateCheck.SignedSetupPipeline, new StateCheckFunc((_, _) =>
             parts.Setups.Available ? AuthorizationDecision.Allowed : AuthorizationDecision.Denied("setup staging not available")));
-        // Owner decision E7: over an installed CaseHUD only. A first installation stays with UAC, for administrators too (their UAC
-        // prompt is the right place for it), so no grant opens it either.
-        checks.Register(StateCheck.CaseHudFirstInstall, new StateCheckFunc((_, _) =>
-            parts.Setups.CaseHudInstalled ? AuthorizationDecision.Allowed : AuthorizationDecision.Denied("CaseHUD not installed: a first installation stays with UAC")));
         checks.Register(StateCheck.JobOwner, new StateCheckFunc((caller, request) =>
             request.Args is GetJobArgs { JobId: { } id } && parts.Jobs.FindFor(caller, id) is not null
                 ? AuthorizationDecision.Allowed

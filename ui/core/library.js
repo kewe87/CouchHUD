@@ -8,6 +8,7 @@ import { sound } from '../sound.js';
 import { parentalGate } from '../components/parental.js';
 import { ensureUnlocked } from '../components/passcode.js';
 import { cancelLaunch, showLaunch } from '../components/launch-overlay.js';
+import { refreshFavorites } from './favorites.js';
 
 export const SOURCE_LABEL = {
   steam: 'Steam',
@@ -68,6 +69,7 @@ export async function toggleFavorite(item) {
   toast(item.favorite ? t('library.favoriteOn', { name: item.name }) : t('library.favoriteOff', { name: item.name }));
   if (!state.stack.length) keepFocusOn(item);
   render();
+  refreshFavorites();
 }
 
 export async function reloadLibrary(rescan = false) {
@@ -85,4 +87,5 @@ export function setLibrary(items) {
     if (page.item) page.item = findItem(page.item.id) ?? page.item;
   }
   render();
+  refreshFavorites();
 }

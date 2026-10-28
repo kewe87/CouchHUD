@@ -50,13 +50,13 @@ node scripts/preview-server.js          # http://localhost:5173, komplette UI mi
 `scripts/ui-shot.mjs` steuert die Vorschau in einem Edge ohne Fenster (über das DevTools-Protokoll), drückt Tasten, wechselt Skins, macht Screenshots und prüft Kontraste. Gut für UI-Änderungen und als Beleg im Pull Request:
 
 ```bash
-node scripts/ui-shot.mjs --out shots skin:deepsea wait:300 shot:home key:ArrowRight shot:next
+node scripts/ui-shot.mjs --out shots skin:default wait:300 shot:home key:ArrowRight shot:next
 node scripts/ui-shot.mjs --out shots --size 3840x2160 --query lang=en shot:home4k
 ```
 
 Schritte: `skin:<id>`, `key:<Taste>`, `keys:ArrowDown*3`, `wait:<ms>`, `shot:<name>`, `eval:<js>`, `contrast:<label>`, `text:<text>`. Tasten: Pfeile, `Enter` = A, `Escape` = B, `q`/`e` = LB/RB, `x`, `y`, `m` = Start, `Home` = Guide. Der Pfad zu Edge lässt sich über die Umgebungsvariable `EDGE` setzen.
 
-**Screenshots für README und Doku** immer mit `--query demo`: Die Vorschau zeigt dann ausgedachte Spiele mit selbst erzeugten Covern (`ui/mock-demo.js`) statt echter Store-Cover, und keine eingeblendete Nachricht. Die Bilder unter `docs/` sind so entstanden (1920×1080, verkleinert auf 1280×720).
+**Screenshots für README und Doku** immer mit `--query demo`: Die Vorschau zeigt dann ausgedachte Spiele mit selbst erzeugten Covern (`ui/mock-demo.js`) statt echter Store-Cover, und keine eingeblendete Nachricht. Die Bilder unter `docs/` sind so entstanden (1920×1080, verkleinert auf 1280×720). `node scripts/docs-shots.mjs` erzeugt sie alle neu, auf Deutsch und Englisch (`docs/<Name>.png`, `docs/<Name>.en.png`; für das Skin-Bild `--catalog <Ordner mit Katalog-Skins>` angeben).
 
 **Logo und Icon**: Quellen sind `docs/logo.svg` (ab 48 px) und `assets/branding/icon-small.svg` (16–32 px), dazu `docs/banner.svg` und `docs/social-preview.svg`. `node scripts/brand-render.mjs` rendert daraus mit Edge alle PNGs und baut `src/CouchHud.Shell/couchhud.ico` neu. `ui/assets/icon.svg` ist eine Kopie von `docs/logo.svg`.
 
@@ -107,8 +107,8 @@ Signier-Skripte (PowerShell 7):
 
 | Skript | Zweck |
 |---|---|
-| `scripts\sign-file.ps1` | Signiert eine Datei mit ECDSA P-256 (SHA-256) und schreibt `<Datei>.sig`. `-GenerateKey` legt das Schlüsselpaar beim ersten Mal an und zeigt den öffentlichen Schlüssel (der im Code als `CatalogSignature.PublicKeyPem` steht). `-Context catalog` (Standard) oder `release` trennt die Verwendungszwecke. |
-| `scripts\catalog-sign.ps1` | Signiert den Plugin-Katalog: `-Index .\catalog\index.json` schreibt `index.json.sig`. Die Datei vor dem Signieren nicht mehr ändern (auch keine Zeilenenden). |
+| `scripts\sign-file.ps1` | Signiert eine Datei mit ECDSA P-256 (SHA-256) und schreibt `<Datei>.sig`. `-GenerateKey` legt das Schlüsselpaar beim ersten Mal an und zeigt den öffentlichen Schlüssel (der im Code als `CatalogSignature.PublicKeyPem` steht). `-Context catalog` (Standard) oder `release` trennt die Verwendungszwecke. `-BumpSerial` (nur Katalog-Index, nutzt `catalog-sign.ps1`) erhöht vor dem Signieren die `serial` an der Wurzel des Index um 1; die Datei und die `.sig` werden erst ersetzt, wenn die Signatur steht. Signieren legt nie einen Schlüssel an und lehnt einen Schlüssel ab, der nicht der in CouchHUD eingebaute ist. |
+| `scripts\catalog-sign.ps1` | Signiert den Plugin-Katalog: `-Index .\catalog\index.json` erhöht `serial` um 1 (jede Änderung braucht eine höhere Nummer, sonst lehnen Clients den Index als älter ab) und schreibt `index.json.sig`. Legt nie einen Schlüssel an und lehnt einen Schlüssel ab, der nicht der in CouchHUD eingebaute ist. Die Datei vor dem Signieren nicht mehr ändern (auch keine Zeilenenden). |
 | `scripts\sign-release.ps1` | Der Release-Schritt oben. |
 | `scripts\catalog-entry.ps1` | Packt ein Plugin- oder Skin-Verzeichnis als `<Name>-<Version>.zip` und gibt die SHA-256 für den Katalogeintrag aus. |
 

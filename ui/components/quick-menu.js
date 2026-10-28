@@ -16,6 +16,7 @@ import { capture } from '../views/deck.js';
 import { downloadsQuickDetail } from '../views/downloads.js';
 import { chooseDialog, confirmDialog } from './overlay.js';
 import { sound } from '../sound.js';
+import { withParentGrant } from '../core/parent-retry.js';
 import { t, fmtNumber, fmtPercent, fmtTime, fmtDate } from '../core/i18n.js';
 import { powerRows } from '../core/power.js';
 import { weatherLine } from '../core/weather.js';
@@ -172,7 +173,7 @@ function rows() {
       label: a.label,
       detail: a.detail,
       run: async () => {
-        const message = await attempt(() => api.runQuickAction(a.plugin, a.id), a.label);
+        const message = await attempt(() => withParentGrant(() => api.runQuickAction(a.plugin, a.id)), a.label);
         if (message) toast(message);
       }
     });

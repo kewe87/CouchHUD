@@ -125,23 +125,46 @@ public class PluginHardeningTests : IDisposable
     public void Approving_remembers_the_files_and_a_later_change_asks_again()
     {
         var dir = MakePlugin("Dropped");
+        // A real assembly (the SDK's own): approving looks at the code like an install does, garbage is no plugin to approve.
+        File.Copy(typeof(CouchHud.Sdk.IPlugin).Assembly.Location, Path.Combine(dir, "Dropped.dll"), overwrite: true);
         var trust = new PluginTrust(DataDir);
         var manager = new PluginManager([(UserPlugins, true)], DataDir, _ => true) { Trust = trust };
 
-        manager.Approve("Dropped");
+        manager.Approve("Dropped", PluginTrust.HashFolder(dir));
         Assert.Equal(PluginTrustState.Trusted, trust.Check("Dropped", dir));
 
-        // The files are no plugin (garbage): it is tried, and fails for that reason, not for lack of approval.
-        var again = new PluginManager([(UserPlugins, true)], DataDir, _ => true) { Trust = trust };
-        again.LoadAll();
-        Assert.False(Assert.Single(again.Plugins).NeedsApproval);
-
-        File.WriteAllText(Path.Combine(dir, "Dropped.dll"), "swapped");
+        File.WriteAllText(Path.Combine(dir, "plugin.json"), """{"name":"Test","version":"1.0.1"}""");
         var changed = new PluginManager([(UserPlugins, true)], DataDir, _ => true) { Trust = trust };
         changed.LoadAll();
         var info = Assert.Single(changed.Plugins);
         Assert.True(info.NeedsApproval);
         Assert.True(info.Changed);
+    }
+
+    [Fact]
+    public void Approving_is_bound_to_the_files_the_user_was_shown_and_looks_at_their_code()
+    {
+        var dir = MakePlugin("Dropped");
+        File.Copy(typeof(CouchHud.Sdk.IPlugin).Assembly.Location, Path.Combine(dir, "Dropped.dll"), overwrite: true);
+        var trust = new PluginTrust(DataDir);
+        var manager = new PluginManager([(UserPlugins, true)], DataDir, _ => true) { Trust = trust };
+        var shown = PluginTrust.HashFolder(dir);
+
+        // No hash, a wrong hash, a malformed one: refused, nothing recorded.
+        Assert.Throws<InvalidOperationException>(() => manager.Approve("Dropped", null));
+        Assert.Throws<InvalidOperationException>(() => manager.Approve("Dropped", new string('0', 64)));
+        Assert.Throws<InvalidOperationException>(() => manager.Approve("Dropped", shown[..60]));
+        Assert.Equal(PluginTrustState.Unknown, trust.Check("Dropped", dir));
+
+        // Files swapped after the dialog showed its code: the shown hash no longer fits.
+        File.AppendAllText(Path.Combine(dir, "readme.txt"), "swapped after the dialog");
+        Assert.Throws<InvalidOperationException>(() => manager.Approve("Dropped", shown));
+        Assert.Equal(PluginTrustState.Unknown, trust.Check("Dropped", dir));
+
+        // Unreadable code (a DLL that is no assembly) is refused at the approval itself, even with the right hash.
+        File.WriteAllText(Path.Combine(dir, "Dropped.dll"), "no assembly");
+        Assert.Throws<CatalogException>(() => manager.Approve("Dropped", PluginTrust.HashFolder(dir)));
+        Assert.Equal(PluginTrustState.Unknown, trust.Check("Dropped", dir));
     }
 
     [Theory]
@@ -155,24 +178,9 @@ public class PluginHardeningTests : IDisposable
         MakePlugin("Real");
         var manager = new PluginManager([(UserPlugins, true)], DataDir, _ => true) { Trust = new PluginTrust(DataDir) };
 
-        Assert.Throws<ArgumentException>(() => manager.Approve(folder));
+        Assert.Throws<ArgumentException>(() => manager.Approve(folder, new string('a', 64)));
     }
 
-    [Fact]
-    public void A_copy_that_waits_for_approval_does_not_push_the_bundled_plugin_out()
-    {
-        var bundled = Path.Combine(_root, "bundled");
-        Directory.CreateDirectory(Path.Combine(bundled, "Wand"));
-        File.WriteAllText(Path.Combine(bundled, "Wand", "Wand.dll"), "x");
-        File.WriteAllText(Path.Combine(bundled, "Wand", "plugin.json"), """{"version":"1.0.0"}""");
-        MakePlugin("Wand", "newer");
-        File.WriteAllText(Path.Combine(UserPlugins, "Wand", "plugin.json"), """{"version":"2.0.0"}""");
-        var dirs = new[] { (bundled, false), (UserPlugins, true) };
-
-        Assert.Contains("Wand", PluginManager.OverriddenBundledFolders(dirs));
-        Assert.DoesNotContain("Wand", PluginManager.OverriddenBundledFolders(dirs, (_, _) => false));
-        Assert.Contains("Wand", PluginManager.OverriddenBundledFolders(dirs, (_, _) => true));
-    }
 
     // ---- M10: staged updates are checked again ----
 
@@ -194,6 +202,8 @@ public class PluginHardeningTests : IDisposable
         Directory.CreateDirectory(PendingPackages.Folder(DataDir));
         File.Copy(zip, Path.Combine(PendingPackages.Folder(DataDir), "plugin-staged.zip"), overwrite: true);
         new CatalogRegistry(DataDir).Set("plugin:staged", new CatalogRegistry.Record("1.1.0", "Staged", true, null, sha256));
+        // The verified hash lives under the trust store's HMAC (the registry is only bookkeeping).
+        if (sha256 is not null) new PluginTrust(DataDir).StagePending("Staged", new PluginTrustEntry { Hash = sha256 });
     }
 
     [Fact]
@@ -301,7 +311,7 @@ public class PluginHardeningTests : IDisposable
     [Fact]
     public void The_sdk_has_the_lock_state_and_stays_compatible()
     {
-        Assert.Equal(2, SdkVersion.Current);
+        Assert.Equal(3, SdkVersion.Current);
         // A host (or a test double) that knows nothing of SDK 2 answers "not locked" through the default implementation.
         IPluginContext old = new OldContext();
         Assert.False(old.Locked);

@@ -84,7 +84,6 @@ public class GrantCacheTests
     }
 
     [Theory]
-    [InlineData(Operation.InstallCaseHud)]
     [InlineData(Operation.ApplyLockPolicies)]
     [InlineData(Operation.PauseServices)]
     [InlineData(Operation.VerifyCode)]
@@ -261,7 +260,6 @@ public class CodeRouterTests
         await ops.SetAutoLogonAsync("pw", false);
         var validator = new RequestValidator(_ => true);
         Assert.Equal(["SetAutoLogon"], validator.Validate(server.Request(0)).Request!.GetArgs<VerifyCodeArgs>().Ops);
-        Assert.Null(validator.Validate(server.Request(1)).Request!.Grant);
         Assert.Equal(Grant, validator.Validate(server.Request(2)).Request!.Grant);
     }
 
@@ -356,17 +354,15 @@ public class CodeRouterTests
     }
 
     [Fact]
-    public async Task The_update_carries_the_unlocks_grant_and_casehud_none()
+    public async Task The_update_carries_the_unlocks_grant()
     {
         await using var server = new FakePipeServer(_ => FakePipeServer.Fail(ErrorCodes.Denied));
         var ops = Ops(server);
         ops.Cache.Set(new GrantData(Grant, GrantKindNames.Couch, 120));
         var header = new SetupStreamArgs("CouchHud-Setup-0.4.2.exe", 10, "AA==", "AA==");
         await ops.InstallCouchHudUpdateAsync(header, new MemoryStream(new byte[10]), null);
-        await ops.InstallCaseHudAsync(header with { FileName = "CaseHUD-Setup-1.0.0.exe" }, new MemoryStream(new byte[10]), null);
         var validator = new RequestValidator(_ => true);
         Assert.Equal(Grant, validator.Validate(server.Request(0)).Request!.Grant);
-        Assert.Null(validator.Validate(server.Request(1)).Request!.Grant);
     }
 
     [Fact]

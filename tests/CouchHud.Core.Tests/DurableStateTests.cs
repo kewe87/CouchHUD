@@ -41,7 +41,7 @@ public sealed class DurableStateTests : IDisposable
             c.Parental.Enabled = true;
             c.Parental.WeekdayMinutes = 60;
         });
-        store.UpdateOrThrow(c => c.Skin = "deepsea");
+        store.UpdateOrThrow(c => c.Skin = "user:deepsea");
         return store;
     }
 
@@ -257,7 +257,7 @@ public sealed class DurableStateTests : IDisposable
     public void Parental_controls_switched_on_stay_on_when_the_file_goes_missing()
     {
         var store = new ConfigStore(_dir, 1, Quick);
-        store.UpdateOrThrow(c => c.Skin = "deepsea");
+        store.UpdateOrThrow(c => c.Skin = "user:deepsea");
         store.UpdateOrThrow(c => c.Parental.Enabled = true);
         File.Delete(ConfigFile);
 
@@ -435,11 +435,11 @@ public sealed class DurableStateTests : IDisposable
         // Valid JSON just below the cap is read; one byte more of the same and it is passed over (the .bak is read instead).
         var padded = text.TrimEnd().TrimEnd('}') + new string(' ', ConfigStore.MaxPeekBytes - text.Length - 16) + "}";
         File.WriteAllText(ConfigFile, padded);
-        Assert.Equal("deepsea", ConfigStore.Peek(_dir)!.Skin);
-        File.WriteAllText(Backup, text.Replace("deepsea", "nova"));
+        Assert.Equal("user:deepsea", ConfigStore.Peek(_dir)!.Skin);
+        File.WriteAllText(Backup, text.Replace("user:deepsea", "user:nova"));
         File.WriteAllText(ConfigFile, padded + new string(' ', 32));
         Assert.True(new FileInfo(ConfigFile).Length > ConfigStore.MaxPeekBytes);
-        Assert.Equal("nova", ConfigStore.Peek(_dir)!.Skin);
+        Assert.Equal("user:nova", ConfigStore.Peek(_dir)!.Skin);
         File.Delete(Backup);
         Assert.Null(ConfigStore.Peek(_dir));
     }
@@ -450,14 +450,14 @@ public sealed class DurableStateTests : IDisposable
         Locked();
         var outside = Path.Combine(_dir, "outside.json");
         // The file the link points to says something else than the .bak (which holds the last saved state, deepsea).
-        File.WriteAllText(outside, File.ReadAllText(ConfigFile).Replace("deepsea", "neoncity"));
+        File.WriteAllText(outside, File.ReadAllText(ConfigFile).Replace("user:deepsea", "user:neoncity"));
         File.Delete(ConfigFile);
         File.CreateSymbolicLink(ConfigFile, outside);
         Assert.True(File.GetAttributes(ConfigFile).HasFlag(FileAttributes.ReparsePoint));
-        Assert.Contains("neoncity", File.ReadAllText(outside));
+        Assert.Contains("user:neoncity", File.ReadAllText(outside));
 
         // The link is passed over: the .bak is what is read, never the file the link points to.
-        Assert.Equal("deepsea", ConfigStore.Peek(_dir)!.Skin);
+        Assert.Equal("user:deepsea", ConfigStore.Peek(_dir)!.Skin);
 
         File.Delete(Backup);
         Assert.Null(ConfigStore.Peek(_dir));

@@ -261,11 +261,27 @@ public sealed class BrowserPane : Grid
     public event Action<bool>? Crashed;
 
     /// <summary>
-    /// The page wanted to load the Home Assistant sign-in's redirect address (see <see cref="HomeAssistantLogin.IsRedirect"/>): the
-    /// navigation is cancelled before any request, so the address never shows, never goes into the history and reaches no server.
-    /// Arguments: that address (it carries the code: never logged) and the address of the page it came from.
+    /// The redirect host of a plugin's sign-in (ends in ".invalid", set by the HUD for a sign-in of a plugin with the capability
+    /// "browser.signin"). Navigations to it are cancelled before any request, in frames too,
+    /// and handed over as <see cref="PluginSignInRedirect"/>; other requests to it get a 403 in the browser. Null: none.
     /// </summary>
-    public event Action<string, string>? SignInRedirect;
+    public string? PluginRedirectHost
+    {
+        get => _pluginRedirectHost;
+        set => _pluginRedirectHost = value;
+    }
+
+    private volatile string? _pluginRedirectHost;
+
+    /// <summary>The page wanted to load the redirect address of a plugin's sign-in (never logged: it carries the code): address and the page it came from.</summary>
+    public event Action<string, string>? PluginSignInRedirect;
+
+    private static bool IsInvalidHost(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.IdnHost.TrimEnd('.').EndsWith(".invalid", StringComparison.OrdinalIgnoreCase);
+
+    private bool IsPluginRedirect(string? url) =>
+        _pluginRedirectHost is { } host && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && uri.Scheme is "http" or "https" && string.Equals(uri.IdnHost.TrimEnd('.'), host, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The last load failed (the error page is showing): no lock symbol, no "secure".</summary>
     public bool Failed => _failed;
@@ -511,18 +527,19 @@ public sealed class BrowserPane : Grid
         };
         core.FrameNavigationStarting += (_, e) =>
         {
-            // The sign-in's redirect address never loads in a frame either; a frame's redirect is not taken as a sign-in.
-            if (!BrowserPolicy.IsNavigable(e.Uri) || HomeAssistantLogin.IsRedirect(e.Uri)) e.Cancel = true;
+            // A plugin's sign-in redirect address never loads in a frame either; a frame's redirect is not taken as a sign-in.
+            if (!BrowserPolicy.IsNavigable(e.Uri)) e.Cancel = true;
+            if (IsPluginRedirect(e.Uri)) e.Cancel = true;
         };
-        // Defense in depth for the sign-in's redirect host: any request there that got past the navigation checks (an image, fetch,
-        // a form in a frame, a shared or service worker) is answered here with 403, in the browser, never sent out. .invalid would
-        // not resolve anyway.
-        BlockRequests(core, "*://" + HomeAssistantLogin.RedirectHost + "/*");
-        BlockRequests(core, "*://" + HomeAssistantLogin.RedirectHost + ":*");
-        BlockRequests(core, "*://" + HomeAssistantLogin.RedirectHost + "./*");
+        // Defense in depth for a plugin sign-in's redirect host (it always ends in .invalid): any request to a .invalid host that got past the
+        // navigation checks (an image, fetch, a form in a frame, a shared or service worker) is answered here with 403, in the browser, never
+        // sent out. .invalid would not resolve anyway.
+        BlockRequests(core, "*://*.invalid/*");
+        BlockRequests(core, "*://*.invalid:*");
+        BlockRequests(core, "*://*.invalid./*");
         core.WebResourceRequested += (_, e) =>
         {
-            if (HomeAssistantLogin.IsRedirect(e.Request.Uri))
+            if (IsPluginRedirect(e.Request.Uri) || IsInvalidHost(e.Request.Uri))
                 e.Response = core.Environment.CreateWebResourceResponse(null, 403, "Forbidden", "");
         };
         // Pop-ups open in the same window (there is only one screen on the couch), and only after a click.
@@ -533,13 +550,13 @@ public sealed class BrowserPane : Grid
         };
         core.NavigationStarting += (_, e) =>
         {
-            // Home Assistant's sign-in sends the code here: never loaded (no request, no address bar, no history), handed to the HUD.
+            // A plugin's sign-in redirect (the code comes here): never loaded (no request, no address bar, no history), handed to the HUD.
             // Checked first, before anything else of this handler could note the address.
-            if (HomeAssistantLogin.IsRedirect(e.Uri))
+            if (IsPluginRedirect(e.Uri))
             {
                 e.Cancel = true;
                 _cancelled.Add(e.NavigationId);
-                SignInRedirect?.Invoke(e.Uri, core.Source ?? "");
+                PluginSignInRedirect?.Invoke(e.Uri, core.Source ?? "");
                 return;
             }
             if (_errorPagePending && e.Uri.StartsWith("data:text/html", StringComparison.OrdinalIgnoreCase))

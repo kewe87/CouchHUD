@@ -7,10 +7,13 @@ namespace CouchHud.Core.Assistant;
 /// One operation the assistant (and MCP clients) may use. <see cref="Writes"/>
 /// marks anything that changes state; the shell asks before running those.
 /// <see cref="Sensitive"/> asks MCP clients for a confirmation even though nothing changes
-/// (Home Assistant states tell who is home; a plugin's tool can do anything).
+/// (a plugin's tool can do anything).
 /// </summary>
 public sealed record ToolSpec(string Name, string Description, JsonObject Schema, bool Writes, bool Sensitive = false)
 {
+    /// <summary>A tool of one of CouchHUD's own plugins that may run on the locked couch (set by the plugin manager; never for other plugins).</summary>
+    public bool AllowedWhileLocked { get; init; }
+
     /// <summary>Does a call from outside (MCP) need an A on the TV?</summary>
     public bool NeedsConfirmationOverMcp => Writes || Sensitive;
 }
@@ -55,9 +58,6 @@ public static class ToolCatalog
         Read("get_weather", "Current weather and forecast for the configured place.", Props()),
         Read("get_news", "Latest headlines from the configured news feeds.", Props(("limit", Int("How many, default 10")))),
         Read("get_updates", "Pending Windows and app updates from the last check.", Props()),
-        Sensitive("list_home_entities", "Home Assistant scenes, lights, switches and sensors with their state. Only the entities the owner chose for the Smart home tab (and pinned ones); others are not available.", Props()),
-        Write("activate_home_entity", "Run a scene or script, or toggle a light, switch or media player in Home Assistant. Only entities from list_home_entities.",
-            Props(("entity_id", Str("Entity id from list_home_entities"))), "entity_id"),
         Read("get_audio", "Volume, mute state and audio outputs.", Props()),
         Write("set_volume", "Set the master volume.", Props(("percent", Int("0-100"))), "percent"),
         Write("set_audio_output", "Switch the default audio output (e.g. to the headset).", Props(("device_id", Str("Device id from get_audio"))), "device_id"),
@@ -74,7 +74,7 @@ public static class ToolCatalog
 
     /// <summary>
     /// A locked couch: the assistant and MCP may look things up and start something from the library, nothing else
-    /// (no settings, no smart home, no power, no plugins). A guest at the controller gets no more from the assistant than from the HUD.
+    /// (no settings, no power, no plugins). A guest at the controller gets no more from the assistant than from the HUD.
     /// </summary>
     public static bool AllowedWhileLocked(string name) =>
         name == "launch" || (Find(name) is { Writes: false } && name != "rescan_library");

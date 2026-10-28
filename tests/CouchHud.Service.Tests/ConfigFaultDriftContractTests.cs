@@ -48,7 +48,124 @@ public sealed class ConfigFaultDriftContractTests
         "public object SetBlockTaskManager(bool on)",
         "public async Task<object> EnableAutoLogonAsync(string password, bool acceptNoLock)",
         "public object SetFeatureAreas(IReadOnlyList<string> enabled)",
+        "public void SetPluginEnabled(string folder, bool enabled)",
+        "public string InstallPackage(string zipPath, string kind)",
+        "public object ApprovePlugin(string folder, string shownHash)",
+        "public object AcceptRevokedPlugin(string folder)",
+        "public object ConfirmPluginExe(string folder, string exe)",
+        "public object AddCatalogSource(string url, string? publisherKey, string? name, bool acknowledgedTrust)",
+        "public object RemoveCatalogSource(string url)",
+        "public object UninstallPlugin(string folder)",
+        "public async Task<object> InstallCatalogEntryAsync(string id, string kind)",
+        "private ParentTicket? RequirePluginChange(PluginChange change, PluginOrigin origin, IReadOnlyCollection<string>? capabilities, string item, bool addsCapabilities = false)",
     ];
+
+    [Theory]
+    [InlineData("public async Task<object> ActivatePluginRowAsync(string pluginId, string pageId, string rowId)")]
+    [InlineData("public async Task<object> ChangePluginRowAsync(string pluginId, string pageId, string rowId, string value)")]
+    [InlineData("public Task<string?> RunQuickActionAsync(string pluginId, string actionId)")]
+    public void A_plugin_row_that_needs_the_parents_code_is_refused_on_the_stand_in_before_the_grant_is_looked_at(string signature)
+    {
+        var body = Body(Hud(), signature);
+        var refuse = body.IndexOf("RefuseWhileConfigFaulted();", StringComparison.Ordinal);
+        var grant = body.IndexOf("CheckParentGrant(", StringComparison.Ordinal);
+        Assert.True(refuse >= 0 && grant > refuse, "the refusal comes before the parents' grant");
+    }
+
+    /// <summary>
+    /// A plugin row or quick action uses the parents' grant up BEFORE the plugin's code runs, on purpose (SECURITY.md, Plugins): the host
+    /// cannot tell whether a plugin did what the parents allowed, and a grant left over could pay for a second press. Not "fixed" later: this
+    /// pins the order, and that the refusals (locked, config fault, unknown value) all come before the grant is touched.
+    /// </summary>
+    [Theory]
+    [InlineData("public async Task<object> ActivatePluginRowAsync(string pluginId, string pageId, string rowId)", "page.Activate(")]
+    [InlineData("public async Task<object> ChangePluginRowAsync(string pluginId, string pageId, string rowId, string value)", "page.Change(")]
+    [InlineData("public Task<string?> RunQuickActionAsync(string pluginId, string actionId)", "action.Run")]
+    public void The_parents_grant_for_a_plugin_row_is_used_up_before_the_plugin_code_runs_on_purpose(string signature, string pluginCall)
+    {
+        var body = Body(Hud(), signature);
+        var useUp = body.IndexOf("UseUp(CheckParentGrant(", StringComparison.Ordinal);
+        var call = body.IndexOf(pluginCall, StringComparison.Ordinal);
+        Assert.True(useUp >= 0 && call > useUp, "the grant is used up before the plugin's code runs");
+        Assert.True(body.IndexOf("MayPress(", StringComparison.Ordinal) is var gate && (gate < 0 ? body.IndexOf("MayRun(", StringComparison.Ordinal) : gate) is var decided && decided >= 0 && decided < useUp, "the host's own checks come first");
+        // Only one use per press, and none after the plugin ran.
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(body, @"UseUp\("));
+    }
+
+    /// <summary>
+    /// Catalogs of other developers: the one gate (CatalogSourceRules.Decide, tested in the core) comes first, the list is saved with
+    /// UpdateOrThrow (a refused save reports nothing) and the parents' code is used up only after that; the bridge passes the "I trust this
+    /// developer" confirmation only when the page sent an explicit true.
+    /// </summary>
+    [Theory]
+    [InlineData("public object AddCatalogSource(string url, string? publisherKey, string? name, bool acknowledgedTrust)")]
+    [InlineData("public object RemoveCatalogSource(string url)")]
+    public void A_catalog_source_change_goes_through_the_one_gate_and_uses_the_grant_up_after_the_save(string signature)
+    {
+        var body = Body(Hud(), signature);
+        var gate = body.IndexOf("RequireSourceChange(", StringComparison.Ordinal);
+        var save = body.IndexOf("config.UpdateOrThrow(", StringComparison.Ordinal);
+        var useUp = body.IndexOf("UseUp(", StringComparison.Ordinal);
+        Assert.True(gate >= 0 && save > gate && useUp > save, "gate, then save, then use the grant up");
+        Assert.DoesNotContain("config.Update(", body);
+        var requirement = Body(Hud(), "private ParentTicket? RequireSourceChange(");
+        Assert.Contains("CatalogSourceRules.Decide(", requirement);
+        Assert.Contains("PluginCaller.Hud", requirement);
+    }
+
+    /// <summary>
+    /// Adding or removing a catalog forgets the loaded list and its icons before the grant is used up (nothing is installed from, or shown of,
+    /// the old list); a skin of such a catalog goes through the third-party gate; the icons of such an entry are fetched only with a statement
+    /// that checks out, within a time and an entry limit.
+    /// </summary>
+    [Fact]
+    public void A_catalog_change_forgets_the_old_list_and_extra_media_and_skins_are_held_to_the_third_party_rules()
+    {
+        foreach (var signature in new[] { "public object AddCatalogSource(string url, string? publisherKey, string? name, bool acknowledgedTrust)", "public object RemoveCatalogSource(string url)" })
+        {
+            var body = Body(Hud(), signature);
+            Assert.True(body.IndexOf("Catalog.Invalidate()", StringComparison.Ordinal) is var forget and > 0 && forget < body.IndexOf("UseUp(", StringComparison.Ordinal), "forget before the grant is used up");
+            Assert.True(body.IndexOf("config.UpdateOrThrow(", StringComparison.Ordinal) < body.IndexOf("Catalog.Invalidate()", StringComparison.Ordinal));
+        }
+        var manager = Shell("Services", "CatalogManager.cs");
+        var invalidate = Body(manager, "public void Invalidate()");
+        Assert.Contains("_last = null;", invalidate);
+        Assert.Contains("_icons.Clear()", invalidate);
+        var icons = Body(manager, "private async Task LoadIconsAsync(CatalogResult result, int generation)");
+        Assert.Contains("e.Extra && (verified is null ||", icons);
+        Assert.Contains("TimeSpan.FromSeconds(15)", icons);
+        Assert.Contains(".Take(100)", icons);
+        var install = Body(Hud(), "public async Task<object> InstallCatalogEntryAsync(string id, string kind)");
+        Assert.Contains("kind == \"skin\" && await Catalog.IsExtraAsync(id, kind)", install);
+        Assert.Contains("early: () => RequirePluginChange(PluginChange.Install, PluginOrigin.ThirdParty", install);
+    }
+
+    [Fact]
+    public void The_bridge_passes_the_trust_confirmation_only_for_an_explicit_true_and_has_no_other_way_to_add_a_catalog()
+    {
+        var bridge = Shell("UiHost", "UiBridge.cs");
+        var add = bridge[bridge.IndexOf("case \"addCatalogSource\":", StringComparison.Ordinal)..];
+        add = add[..add.IndexOf("case \"removeCatalogSource\":", StringComparison.Ordinal)];
+        Assert.Contains("Arg(3).ValueKind == JsonValueKind.True", add);
+        // Neither the phone remote, MCP nor the assistant knows these calls.
+        foreach (var name in new[] { "AddCatalogSource", "RemoveCatalogSource" })
+        {
+            var users = Directory.EnumerateFiles(Path.Combine(Root(), "src", "CouchHud.Shell"), "*.cs", SearchOption.AllDirectories)
+                .Where(f => !f.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar) && !f.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar))
+                .Where(f => File.ReadAllText(f).Contains("." + name + "(", StringComparison.Ordinal)).Select(Path.GetFileName).ToList();
+            Assert.Equal(["UiBridge.cs"], users);
+        }
+    }
+
+    [Fact]
+    public void Switching_a_plugin_on_or_off_never_reports_what_was_not_saved()
+    {
+        var body = Body(Hud(), "public void SetPluginEnabled(string folder, bool enabled)");
+        Assert.Contains("config.UpdateOrThrow(", body);
+        Assert.DoesNotContain("config.Update(", body);
+        // The grant is used up only after the save.
+        Assert.True(body.IndexOf("UseUp(", StringComparison.Ordinal) > body.IndexOf("config.UpdateOrThrow(", StringComparison.Ordinal));
+    }
 
     [Theory]
     [MemberData(nameof(EntryPoints))]

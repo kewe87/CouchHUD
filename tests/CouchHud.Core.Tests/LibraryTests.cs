@@ -145,10 +145,10 @@ public class LibraryTests
         File.Delete(Path.Combine(dir, "config.json"));
         Assert.Equal(ConfigFault.Missing, new ConfigStore(dir).Fault);
         foreach (var file in Directory.GetFiles(dir)) File.Delete(file);
-        new ConfigStore(dir).Update(c => c.Skin = "nova");
+        new ConfigStore(dir).Update(c => c.Skin = "user:nova");
         var json = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "config.json")));
-        Assert.Equal("nova", json.RootElement.GetProperty("skin").GetString());
-        Assert.Equal("nova", new ConfigStore(dir).Current.Skin);
+        Assert.Equal("user:nova", json.RootElement.GetProperty("skin").GetString());
+        Assert.Equal("user:nova", new ConfigStore(dir).Current.Skin);
     }
 
     private static void CopyDirectory(string source, string target)

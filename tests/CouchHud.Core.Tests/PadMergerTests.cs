@@ -12,6 +12,28 @@ public class PadMergerTests
     private static string Ev(IReadOnlyList<(string Button, bool Down)> e) => string.Join(",", e.Select(x => (x.Down ? "+" : "-") + x.Button));
 
     [Fact]
+    public void RightStick_ReadsUpAndDown_AndSmallDeflectionIsIgnored()
+    {
+        // The setup assistant's long texts scroll with it; positive is up in XInput, like the left stick.
+        Assert.Equal(["rsup"], PadMerger.ToPressed(new PadSample(0, 0, 0, 0, 0, 0, 30000)));
+        Assert.Equal(["rsdown"], PadMerger.ToPressed(new PadSample(0, 0, 0, 0, 0, 0, -30000)));
+        Assert.Empty(PadMerger.ToPressed(new PadSample(0, 0, 0, 0, 0, 0, PadMerger.StickThreshold)));
+        Assert.Empty(PadMerger.ToPressed(new PadSample(0, 0, 0, 0, 0, 30000, 0)));
+    }
+
+    [Fact]
+    public void RightStick_PressAndRelease_AreEventsOfTheirOwn()
+    {
+        var m = new PadMerger();
+        PadSample? Stick(short ry) => new PadSample(0, 0, 0, 0, 0, 0, ry);
+        Assert.Equal("+rsup", Ev(m.Update([Stick(30000)])));
+        Assert.Empty(m.Update([Stick(30000)]));
+        Assert.True(m.IsPressed("rsup"));
+        Assert.Equal(["+rsdown", "-rsup"], Ev(m.Update([Stick(-30000)])).Split(',').Order(StringComparer.Ordinal));
+        Assert.Equal("-rsdown", Ev(m.Update([Stick(0)])));
+    }
+
+    [Fact]
     public void MirroredPads_ProduceSingleDownAndUp()
     {
         var m = new PadMerger();

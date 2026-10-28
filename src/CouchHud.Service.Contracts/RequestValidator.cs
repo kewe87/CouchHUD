@@ -68,9 +68,6 @@ public sealed class RequestValidator(Func<string, bool> serviceAllowed)
     private static readonly Regex GrantText = new(@"^[A-Za-z0-9+/]{43}=\z", Options);
     private static readonly Regex JobId = new(@"^[0-9a-f]{32}\z", Options);
     private static readonly Regex CouchHudSetupName = new(@"^CouchHud-Setup-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?\.exe\z", Options);
-    // The name CaseHudInfo.SetupPrefix + version + ".exe" makes. Only a hint: the service takes name and version from the content of the
-    // signed checksum file and refuses a request whose name is not that one.
-    private static readonly Regex CaseHudSetupName = new(@"^CaseHUD-Setup-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\.exe\z", Options);
     // The iteration count is the one Passcode.Hash uses (100000); anything else is not a hash of ours.
     private static readonly Regex PasscodeHash = new(@"^pbkdf2-sha256\$100000\$[A-Za-z0-9+/]{22}==\$[A-Za-z0-9+/]{43}=\z", Options);
 
@@ -172,9 +169,6 @@ public sealed class RequestValidator(Func<string, bool> serviceAllowed)
             case Operation.InstallCouchHudUpdate:
                 return Typed(operation, grant, args, ["fileName", "size", "checksumFile", "signature"], ProtocolJsonContext.Default.SetupStreamArgs,
                     a => Setup(a, CouchHudSetupName));
-            case Operation.InstallCaseHud:
-                return Typed(operation, grant, args, ["fileName", "size", "checksumFile", "signature"], ProtocolJsonContext.Default.SetupStreamArgs,
-                    a => Setup(a, CaseHudSetupName));
             case Operation.EnrollPasscode or Operation.ChangePasscode:
                 return Typed(operation, grant, args, ["hash", "kind"], ProtocolJsonContext.Default.PasscodeHashArgs, a =>
                     a.Kind is not (CodeKinds.Couch or CodeKinds.Parent or CodeKinds.Both) ? "kind" : !IsPasscodeHash(a.Hash) ? "hash" : null);

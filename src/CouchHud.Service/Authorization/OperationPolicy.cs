@@ -47,10 +47,8 @@ public enum StateCheck
     AutoLogonOwner,
     /// <summary>InstallWindowsUpdates: ids only from the service's own last search; without ids (all) no state is needed.</summary>
     UpdateIdsFromSearch,
-    /// <summary>InstallCouchHudUpdate / InstallCaseHud: the verifying setup pipeline is in place (signature, hash, newer version). P6.</summary>
+    /// <summary>InstallCouchHudUpdate: the verifying setup pipeline is in place (signature, hash, newer version). P6.</summary>
     SignedSetupPipeline,
-    /// <summary>InstallCaseHud: only over an installed CaseHUD; a first installation stays with UAC (owner decision E7), for everyone. P6.</summary>
-    CaseHudFirstInstall,
     /// <summary>
     /// EnrollPasscode: only while the SID has no code of that kind (one first enrollment per SID and kind; the shell's migration of its
     /// local hash is the first enrollment of the couch code). A second kind next to an existing code needs a parent's or an
@@ -112,7 +110,6 @@ public static class OperationPolicy
         [Operation.RemoveLegacyFirewallRules] = new(Requirement.OwnAccount),
 
         [Operation.InstallCouchHudUpdate] = new(Requirement.OwnAccount, StateCheck.SignedSetupPipeline),
-        [Operation.InstallCaseHud] = new(Requirement.OwnAccount, StateCheck.SignedSetupPipeline, StateCheck.CaseHudFirstInstall),
 
         [Operation.EnrollPasscode] = new(Requirement.OwnAccount, StateCheck.EnrollAllowed),
         // The current code (a grant of that code), a parent's or an administrator's approval, or an elevated administrator; the kinds
@@ -191,7 +188,7 @@ public static class OperationPolicy
             {
                 Requirement.ParentGrantOrAdmin => GrantKinds.ParentOrAdmin,
                 Requirement.GrantOrAdmin or Requirement.GrantOrAdminOnceCodeEnrolled => couchProof,
-                // A state check may ask for a grant on an operation whose table entry needs none (CaseHudFirstInstall): the couch's proof.
+                // A state check may ask for a grant on an operation whose table entry needs none: the couch's proof.
                 Requirement.OwnAccount => couchProof,
                 _ => GrantKinds.None
             }

@@ -1,7 +1,7 @@
 namespace CouchHud.Core.Platform;
 
 /// <summary>
-/// A started command line of an installed program (CaseHUD's <c>--set-api</c>, NordVPN's <c>-c</c>/<c>-d</c>): stdout is never
+/// A started command line of an installed program (a plugin's program, e.g. CaseHUD's <c>--set-api</c> or NordVPN's <c>-c</c>/<c>-d</c>): stdout is never
 /// redirected, stderr only when the caller asked for it (read in the background with a cap).
 /// </summary>
 public interface ICliProcess : IDisposable
@@ -20,7 +20,7 @@ public interface ICliProcess : IDisposable
 }
 
 /// <summary>
-/// What every "run the installed program's command line" in CouchHUD shares (CaseHUD and the VPN apps): where the program may be run
+/// What every "run the installed program's command line" in CouchHUD shares (the programs of plugins): where the program may be run
 /// from, how long it may take and what of its output may reach the log. The Windows side (canonical path, no reparse points, starting
 /// the process) is in the shell's <c>TrustedCliRunner</c>.
 /// </summary>
@@ -36,7 +36,7 @@ public static class TrustedCli
 
     /// <summary>
     /// Waits for the process with a hard limit. On timeout or cancellation (CouchHUD quits) the whole process tree is killed, unless
-    /// <paramref name="killOnTimeout"/> says no (a GUI program that became the app instance itself, see the VPN provider): then it is
+    /// <paramref name="killOnTimeout"/> says no (a GUI program that became the app instance itself, a VPN app): then it is
     /// left running and the call only stops waiting. Without a rule (CaseHUD) it is always killed. After the exit, stderr gets
     /// <see cref="StderrGrace"/> at most. Null exit = timed out.
     /// <paramref name="onWindow"/> is called once when the process gets a window of its own while it is waited for (asked every

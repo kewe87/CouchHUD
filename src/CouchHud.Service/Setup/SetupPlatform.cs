@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
-using CouchHud.Core.Integrations.CaseHud;
 using CouchHud.Core.Platform;
 using CouchHud.Core.Plugins;
 using CouchHud.Privileged;
@@ -239,17 +238,14 @@ public interface IInstalledVersions
 {
     /// <summary>The ProductVersion of <c>{app}\CouchHud.exe</c>; null when it cannot be read (then no setup is accepted).</summary>
     SemVer? CouchHud();
-
-    /// <summary>The installed CaseHUD's version (uninstall entry in HKLM with an existing exe); null when it is not installed.</summary>
-    SemVer? CaseHud();
 }
 
 /// <param name="appDirectory">The install folder of CouchHUD (the service runs from <c>{app}\service</c>).</param>
-public sealed class InstalledVersions(string appDirectory, IRegistry registry) : IInstalledVersions
+public sealed class InstalledVersions(string appDirectory) : IInstalledVersions
 {
     /// <summary>The service's own place: <c>{app}\service\CouchHud.Service.exe</c>, so <c>{app}</c> is two levels up.</summary>
     public static InstalledVersions ForService() =>
-        new(Path.GetDirectoryName(Path.GetDirectoryName(Environment.ProcessPath) ?? "") ?? "", new WindowsRegistry());
+        new(Path.GetDirectoryName(Path.GetDirectoryName(Environment.ProcessPath) ?? "") ?? "");
 
     public SemVer? CouchHud()
     {
@@ -264,12 +260,5 @@ public sealed class InstalledVersions(string appDirectory, IRegistry registry) :
         {
             return null;
         }
-    }
-
-    public SemVer? CaseHud()
-    {
-        // HKLM is written by setups (administrators) only; a user cannot fake an installation there.
-        var install = new CaseHudDiscovery("", _ => null, registry).FindInstall();
-        return install is null ? null : CaseHudVersion.Parse(install.Version);
     }
 }

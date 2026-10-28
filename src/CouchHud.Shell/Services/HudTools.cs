@@ -28,8 +28,6 @@ public sealed class HudTools(Hud hud) : IToolHost
         "add_entry" => Strings.Get("tools.addEntry", Str(args, "name"), Str(args, "path"), ArgsText(args)),
         "set_setting" => Strings.Get("tools.setSetting", Str(args, "key"), Raw(args, "value")),
         "set_skin" => Strings.Get("tools.setSkin", Str(args, "id")),
-        "activate_home_entity" => Strings.Get("tools.homeAssistant", Str(args, "entity_id")),
-        "list_home_entities" => Strings.Get("tools.listHome"),
         "set_volume" => Strings.Get("tools.setVolume", Raw(args, "percent")),
         "set_audio_output" => Strings.Get("tools.switchOutput"),
         "power" => Str(args, "action") switch
@@ -46,7 +44,7 @@ public sealed class HudTools(Hud hud) : IToolHost
         // A protected profile waits for its code at the picker: the assistant and MCP do nothing at all until it is entered (review M1).
         hud.RequireProfileChosen();
         // A locked couch: the assistant and MCP may look things up and start a game or app, nothing else.
-        if (hud.Locked && !ToolCatalog.AllowedWhileLocked(name))
+        if (hud.Locked && !hud.ToolAllowedWhileLocked(name))
         {
             throw new InvalidOperationException(Strings.Get("tools.locked"));
         }
@@ -72,8 +70,6 @@ public sealed class HudTools(Hud hud) : IToolHost
             "get_news" => (await hud.GetNewsAsync()).Take(Math.Clamp(OptInt(args, "limit") ?? 10, 1, 30))
                 .Select(n => new { n.Feed, n.Title, n.Summary, published = DateTimeOffset.FromUnixTimeMilliseconds(n.Published).ToLocalTime().ToString("g") }),
             "get_updates" => hud.GetUpdates(),
-            "list_home_entities" => await hud.GetHomeEntitiesAsync(),
-            "activate_home_entity" => await ActivateAsync(args),
             "get_audio" => hud.GetAudio(),
             "set_volume" => hud.SetVolume(Math.Clamp(OptInt(args, "percent") ?? throw new ArgumentException(Strings.Get("tools.percentMissing")), 0, 100)),
             "set_audio_output" => hud.SetAudioOutput(Str(args, "device_id")),
@@ -144,14 +140,14 @@ public sealed class HudTools(Hud hud) : IToolHost
         return new { key, value = value.GetRawText() };
     }
 
-    /// <summary>Built-in skins with their name in the current language and the other names they answer to, then the user skins.</summary>
+    /// <summary>The Couch skin with its name in the current language and the other names it answers to, then the installed skins (the catalog ones too).</summary>
     private IEnumerable<object> ListSkins() =>
         BuiltinSkins.Select(id => (object)new
         {
             id,
             name = SkinCatalog.BuiltinName(id, Strings.Language),
             aliases = new[] { SkinCatalog.BuiltinName(id, "de"), SkinCatalog.BuiltinName(id, "en") }.Distinct().ToArray()
-        }).Concat(hud.ListSkins().Select(s => (object)new { id = s.Id, name = s.Name, aliases = Array.Empty<string>() }));
+        }).Concat(hud.ListSkins().Select(s => (object)new { id = s.Id, name = s.Name, aliases = s.Aliases.ToArray() }));
 
     private object SetSkin(JsonElement args)
     {
@@ -161,12 +157,6 @@ public sealed class HudTools(Hud hud) : IToolHost
         hud.SetSkin(id);
         hud.Notify("skin", id);
         return new { skin = id };
-    }
-
-    private async Task<object> ActivateAsync(JsonElement args)
-    {
-        await hud.ActivateHomeEntityAsync(Str(args, "entity_id"));
-        return new { done = true };
     }
 
     private object Power(JsonElement args)

@@ -1,11 +1,20 @@
 {
+  "id": "wand",
   "name": "Wand",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "kewe87",
   "description": {
-    "de": "Cheats und Mods für deine Spiele über Wand (früher WeMod)",
-    "en": "Cheats and mods for your games through Wand (formerly WeMod)"
+    "de": "Cheats und Mods für deine Spiele über Wand (früher WeMod), mit Eintrag im Guide-Menü und Assistenten-Werkzeug",
+    "en": "Cheats and mods for your games through Wand (formerly WeMod), with a guide menu entry and an assistant tool"
   },
   "homepage": "https://www.wand.com",
-  "sdk": 1
+  "license": "GPL-3.0-or-later",
+  "sdk": 3,
+  "capabilities": [
+    "pages",
+    "quickActions",
+    "assistant",
+    "browser",
+    "process"
+  ]
 }
