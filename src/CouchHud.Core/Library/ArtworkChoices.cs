@@ -60,7 +60,7 @@ public sealed partial class ArtworkResolver
 
         try
         {
-            var appId = SteamStore.AppIdOf(item) ?? (item.Type == ItemType.Game ? await _ids.FindAsync(item.Name, ct) : null);
+            var appId = await StoreAppIdAsync(item, ct);
             if (appId is not null) AddSteamVariants(appId, cover, hero, logo, await _steamAssets.GetAsync(appId, ct));
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)

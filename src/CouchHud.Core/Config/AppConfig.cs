@@ -1,4 +1,6 @@
+using CouchHud.Core.Files;
 using CouchHud.Core.Localization;
+using CouchHud.Core.Saves;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -48,9 +50,46 @@ public sealed class ItemOverride
     public string? Cover { get; set; }
     public string? Hero { get; set; }
     public string? Logo { get; set; }
+    /// <summary>Startup parameters instead of the scanned ones (an exe start, or the own start target). Null: automatic.</summary>
+    public List<string>? LaunchArgs { get; set; }
+    /// <summary>Working folder instead of the scanned one. Null: automatic.</summary>
+    public string? LaunchCwd { get; set; }
+    /// <summary>An .exe, .bat or .cmd inside the install folder, started instead of the scanned start (checked again at every start). Null: automatic.</summary>
+    public string? LaunchTarget { get; set; }
+    /// <summary>
+    /// SHA-256 (hex) and size of a batch file (.bat/.cmd) as the start target was approved: the approval covers this content, not just the path.
+    /// A start whose file differs is refused until the target is confirmed again. Null for an .exe target (see SECURITY.md).
+    /// </summary>
+    public string? LaunchTargetSha256 { get; set; }
+    public long? LaunchTargetSize { get; set; }
+
+    /// <summary>Steam store entry the user picked (an app id) or "none" (no store entry fits). Null: matched automatically by the scanned name.</summary>
+    public string? StoreMatch { get; set; }
+    /// <summary>The picked store entry's name, for the edit menu only.</summary>
+    public string? StoreMatchName { get; set; }
+    /// <summary>
+    /// The age rating of the match before a change the parents did not confirm: the stricter of it and the new match's counts until they do.
+    /// Null: nothing pending.
+    /// </summary>
+    public int? StoreAgeFloor { get; set; }
+    /// <summary>Own texts instead of the store's (plain text, shown as text). Null: the store's.</summary>
+    public string? Description { get; set; }
+    public List<string>? Developers { get; set; }
+    public List<string>? Publishers { get; set; }
+    public string? ReleaseDate { get; set; }
+    public List<string>? Genres { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsEmpty => Name is null && Type is null && !Hidden && Cover is null && Hero is null && Logo is null;
+    public bool HasLaunch => LaunchArgs is not null || LaunchCwd is not null || LaunchTarget is not null;
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool HasInfo => Description is not null || Developers is not null || Publishers is not null || ReleaseDate is not null || Genres is not null;
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool HasStore => StoreMatch is not null || StoreAgeFloor is not null;
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsEmpty => Name is null && Type is null && !Hidden && Cover is null && Hero is null && Logo is null && !HasLaunch && !HasInfo && !HasStore;
 }
 
 /// <summary>A user-made list of games and apps ("Couch Koop", "Kinder").</summary>
@@ -105,6 +144,9 @@ public sealed class AppConfig
     /// <summary>Short controller vibration on navigation and confirm.</summary>
     public bool Rumble { get; set; } = true;
 
+    /// <summary>Button symbols on screen: "auto" (the kind of pad used last), "xbox" or "playstation".</summary>
+    public string PadGlyphs { get; set; } = "auto";
+
     /// <summary>Muted game trailers play in the background when an item stays focused.</summary>
     public bool TrailerPreviews { get; set; } = true;
 
@@ -128,6 +170,9 @@ public sealed class AppConfig
 
     public Dictionary<string, double> PlaytimeMinutes { get; set; } = new();
 
+    /// <summary>Length of the last play session per entry in minutes (the "Continue playing" row on Home shows it).</summary>
+    public Dictionary<string, double> LastSessionMinutes { get; set; } = new();
+
     public Dictionary<string, ItemOverride> Overrides { get; set; } = new();
 
     public List<ItemCollection> Collections { get; set; } = [];
@@ -141,12 +186,24 @@ public sealed class AppConfig
     /// <summary>Long-lived access token, encrypted for the Windows user (DPAPI).</summary>
     public string HomeAssistantToken { get; set; } = "";
 
+    /// <summary>
+    /// "Sign in with Home Assistant": the refresh token for <see cref="HomeAssistantUrl"/>, encrypted for the Windows user (DPAPI) like the
+    /// long-lived token. At most one of the two is set; another address drops both.
+    /// </summary>
+    public string HomeAssistantRefreshToken { get; set; } = "";
+
     /// <summary>RSS/Atom feeds for the News tab.</summary>
     public List<CouchHud.Core.Integrations.NewsFeed> NewsFeeds { get; set; } =
         CouchHud.Core.Integrations.NewsService.Defaults.Select(f => new CouchHud.Core.Integrations.NewsFeed { Name = f.Name, Url = f.Url }).ToList();
 
     /// <summary>Entities shown in the guide menu for quick access.</summary>
     public List<string> HomeAssistantPinned { get; set; } = [];
+
+    /// <summary>
+    /// Entities chosen for the Smart Home tab, in their order (ids like "light.sofa"). Empty: the tab offers the picker.
+    /// Untrusted when read: always through <see cref="CouchHud.Core.Integrations.HomeAssistantSelection.Sanitize(IEnumerable{string?})"/>.
+    /// </summary>
+    public List<string> HomeAssistantEntities { get; set; } = [];
 
     /// <summary>Game client id ("steam", "epic" …) → "standby" (starts quietly with CouchHud, the default), "demand" (only when a game or action needs it) or "off".</summary>
     public Dictionary<string, string> LauncherModes { get; set; } = new();
@@ -163,11 +220,20 @@ public sealed class AppConfig
     /// <summary>A tap on the Xbox button in a game brings up the HUD, like on a console (holding opens the guide menu).</summary>
     public bool GuideTapInGame { get; set; } = true;
 
+    /// <summary>Guide held + Y takes a screenshot (also over a game); the Guide button's own tap then waits for its release.</summary>
+    public bool ScreenshotCombo { get; set; } = true;
+
     /// <summary>
     /// CouchHud is in charge on the couch (full integration only): game clients and known pop-ups do not get
     /// the foreground, the Game Bar does not get the Xbox button. Everything is undone in PC mode and on quit.
     /// </summary>
     public bool SuppressCompetitors { get; set; } = true;
+
+    /// <summary>
+    /// The save backup limits are decimal MB (since 0.5). A file without this field was written with binary MB and is moved up once
+    /// when read (<see cref="ConfigStore"/>, Parse); a new file starts decimal.
+    /// </summary>
+    public bool SaveLimitsDecimal { get; set; } = true;
 
     /// <summary>The one-time upgrade from the blind Game Bar change to the snapshot has run.</summary>
     public bool GameBarMigrated { get; set; }
@@ -245,6 +311,18 @@ public sealed class AppConfig
     /// <summary>Also include "config" paths (graphics settings, keybinds) in save backups.</summary>
     public bool BackupConfigFiles { get; set; }
 
+    /// <summary>Back up a game's saves in the background after it ended (started by CouchHUD or seen running).</summary>
+    public bool AutoBackupSaves { get; set; } = true;
+
+    /// <summary>Automatic backups kept per game, apart from the ones made by hand (expert mode).</summary>
+    public int AutoBackupsToKeep { get; set; } = 3;
+
+    /// <summary>Saves of one game larger than this (decimal MB) are not backed up automatically (expert mode).</summary>
+    public int AutoBackupMaxGameMb { get; set; } = 1000;
+
+    /// <summary>All backups together may take this much space (decimal MB) before automatic backups stop (expert mode).</summary>
+    public int AutoBackupMaxTotalMb { get; set; } = 10000;
+
     public List<Bookmark> Bookmarks { get; set; } =
     [
         new() { Name = "YouTube", Url = "https://www.youtube.com/" },
@@ -262,8 +340,212 @@ public sealed class AppConfig
     /// </summary>
     public string CouchLock { get; set; } = "off";
 
-    /// <summary>Parental controls (play time, time window, locked games). See Core.Parental.</summary>
+    /// <summary>
+    /// Parental controls (play time, time window, locked games). See Core.Parental. The rules in here are the default profile's
+    /// (read them through <see cref="ActiveProfile"/>); the main switch is the household's (<see cref="ParentalEnabled"/>).
+    /// </summary>
     public CouchHud.Core.Parental.ParentalConfig Parental { get; set; } = new();
+
+    /// <summary>
+    /// The age rating system the age limit and the age badge go by, for the whole household: "auto" (by the Windows region), "usk",
+    /// "pegi" or "esrb". Anything else (an edited file) counts as the strictest rating of all systems (<see cref="CouchHud.Core.Parental.AgeRatings.Resolve"/>).
+    /// </summary>
+    public string AgeRatingSystem { get; set; } = CouchHud.Core.Parental.AgeRatings.Auto;
+
+    /// <summary>
+    /// The system <see cref="AgeRatingSystem"/> resolved to when the parents last saved it or an age limit ("usk", "pegi", "esrb",
+    /// "strictest"; empty before). Under "auto" a later region with another system judges games by both, the stricter verdict wins
+    /// (<see cref="CouchHud.Core.Parental.AgeRatings.JudgedSystems"/>).
+    /// </summary>
+    public string AgeRatingSystemResolved { get; set; } = "";
+
+    /// <summary>The household-wide main switch of the parental controls (it is not per profile).</summary>
+    [JsonIgnore]
+    public bool ParentalEnabled
+    {
+        get => Parental.Enabled;
+        set => Parental.Enabled = value;
+    }
+
+    /// <summary>
+    /// Profiles besides the default one (whose data stays in the top-level fields, so an older CouchHUD sees it unchanged).
+    /// Null while there are none: the file then looks as it always did.
+    /// </summary>
+    public List<UserProfile>? Profiles { get; set; }
+
+    /// <summary>The profile on the couch; null means the default profile.</summary>
+    public string? ActiveProfileId { get; set; }
+
+    /// <summary>The profile on the couch. An unknown or broken one is the default profile (its rules apply, never none).</summary>
+    [JsonIgnore]
+    public ProfileView ActiveProfile => Profile(ActiveProfileId);
+
+    /// <summary>
+    /// A profile by id. Null, "default", an unknown or malformed id and a broken entry all give the default profile. With the same id
+    /// twice, the first entry counts (a broken first one is not replaced by a later one).
+    /// </summary>
+    public ProfileView Profile(string? id)
+    {
+        if (id is null || id == ProfileIds.Default || !ProfileIds.IsExtra(id) || Profiles is null) return new ProfileView(this, null);
+        var entry = Profiles.FirstOrDefault(p => p is not null && p.Id == id);
+        return new ProfileView(this, ProfileCheck.Usable(entry) ? entry : null);
+    }
+
+    /// <summary>The default profile and every usable further one, each once.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<ProfileView> AllProfiles
+    {
+        get
+        {
+            var all = new List<ProfileView> { new(this, null) };
+            var seen = new HashSet<string> { ProfileIds.Default };
+            foreach (var p in Profiles ?? [])
+            {
+                if (p is null || !seen.Add(p.Id ?? "")) continue;
+                if (ProfileCheck.Usable(p)) all.Add(new ProfileView(this, p));
+            }
+            return all;
+        }
+    }
+
+    /// <summary>
+    /// Adds a profile with a new fixed id. It starts with a copy of the default profile's parental rules (so a new profile is never
+    /// freer than the default one) and a fresh play time account. Settings follow the household's until changed.
+    /// </summary>
+    public ProfileView AddProfile(string name, string avatar = "", string color = "", bool restricted = true)
+    {
+        if (AllProfiles.Count >= MaxProfiles) throw new InvalidOperationException($"at most {MaxProfiles} profiles");
+        string id;
+        do id = ProfileIds.New();
+        while (Profiles?.Any(p => p?.Id == id) == true);
+        var entry = new UserProfile
+        {
+            Id = id,
+            Name = name,
+            Avatar = avatar,
+            Color = color,
+            Restricted = restricted,
+            // A child's profile: the default profile's rules (never freer). An adult's: really without limits (entering it needs the parents'
+            // code once there are several profiles and parental controls are on, ProfileSwitch).
+            Data = new ProfileData { Rules = restricted ? ProfileCheck.CopyRules(Parental) : ProfileCheck.NoLimits(ProfileCheck.CopyRules(Parental)) }
+        };
+        (Profiles ??= []).Add(entry);
+        return new ProfileView(this, entry);
+    }
+
+    /// <summary>The most profiles a household has, the default one included.</summary>
+    public const int MaxProfiles = 8;
+
+    /// <summary>Name of the default profile as the household calls it (null: the UI's "Standard").</summary>
+    public string? ProfileName { get; set; }
+
+    /// <summary>Avatar of the default profile (one of <see cref="ProfileLooks.Avatars"/>).</summary>
+    public string? ProfileAvatar { get; set; }
+
+    /// <summary>Color of the default profile (one of <see cref="ProfileLooks.Colors"/>).</summary>
+    public string? ProfileColor { get; set; }
+
+    /// <summary>The usable entry of a further profile, or null (the default profile, unknown, malformed or broken).</summary>
+    private UserProfile? UsableEntry(string? id)
+    {
+        if (!ProfileIds.IsExtra(id) || Profiles is null) return null;
+        var entry = Profiles.FirstOrDefault(p => p is not null && p.Id == id);
+        return ProfileCheck.Usable(entry) ? entry : null;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="id"/> the profile on the couch. Only the default profile and usable further ones: anything else is refused
+    /// (false) and the profile on the couch stays. Whether the switch is allowed at all is <see cref="ProfileSwitch"/>'s decision.
+    /// </summary>
+    public bool SwitchActiveProfile(string id)
+    {
+        if (id == ProfileIds.Default)
+        {
+            ActiveProfileId = null;
+            return true;
+        }
+        if (UsableEntry(id) is null) return false;
+        ActiveProfileId = id;
+        return true;
+    }
+
+    /// <summary>Renames a profile (the default one too); the name must pass <see cref="ProfileNames.Accept"/>. False: no such profile, no name left or too long.</summary>
+    public bool RenameProfile(string id, string? name)
+    {
+        var clean = ProfileNames.Accept(name);
+        if (clean is null) return false;
+        if (id == ProfileIds.Default)
+        {
+            ProfileName = clean;
+            return true;
+        }
+        if (UsableEntry(id) is not { } entry) return false;
+        entry.Name = clean;
+        return true;
+    }
+
+    /// <summary>Avatar and color from the presets only. False: no such profile or a value that is not a preset.</summary>
+    public bool SetProfileLook(string id, string avatar, string color)
+    {
+        if (!ProfileLooks.IsAvatar(avatar) || !ProfileLooks.IsColor(color)) return false;
+        if (id == ProfileIds.Default)
+        {
+            ProfileAvatar = avatar;
+            ProfileColor = color;
+            return true;
+        }
+        if (UsableEntry(id) is not { } entry) return false;
+        entry.Avatar = avatar;
+        entry.Color = color;
+        return true;
+    }
+
+    /// <summary>
+    /// Makes a further profile a child's profile or not. The default profile never is one. A profile that stops being a child's loses its
+    /// own code (only children have one).
+    /// </summary>
+    public bool SetProfileRestricted(string id, bool restricted)
+    {
+        if (UsableEntry(id) is not { } entry) return false;
+        if (entry.Restricted == restricted) return true;
+        entry.Restricted = restricted;
+        // Either way the code goes (review rest 1): an adult has none, and a profile that becomes a child's again does not get back a
+        // code nobody set for this child (an old hash planted while it was an adult's would otherwise come alive).
+        entry.CodeHash = null;
+        // An adult's profile has no limits; a profile that becomes a child's gets the default profile's rules (never freer). The play time
+        // account and whether it was started stay.
+        var rules = entry.Data!.Rules!;
+        var next = restricted ? ProfileCheck.CopyRules(Parental) : ProfileCheck.NoLimits(rules);
+        next.LedgerStarted = rules.LedgerStarted;
+        next.TimeZoneId = rules.TimeZoneId;
+        entry.Data.Rules = next;
+        return true;
+    }
+
+    /// <summary>
+    /// Sets (a hash from <see cref="CouchHud.Core.Security.Passcode.Hash"/>) or removes (null) a child's own code. Only a child's profile
+    /// has one; anything that is not a hash in the stored format is refused.
+    /// </summary>
+    public bool SetProfileCode(string id, string? hash)
+    {
+        if (UsableEntry(id) is not { Restricted: true } entry) return false;
+        if (hash is not null && !CouchHud.Core.Security.Passcode.IsLocalHash(hash)) return false;
+        entry.CodeHash = hash;
+        return true;
+    }
+
+    /// <summary>
+    /// Removes a further profile with all its entries. Never the default profile and never the profile on the couch (switch first).
+    /// The caller retires its play time account (<see cref="ProfileIds.RetireLedger"/>).
+    /// </summary>
+    public bool RemoveProfile(string id)
+    {
+        if (!ProfileIds.IsExtra(id) || Profiles is null) return false;
+        if (ActiveProfileId == id || Profile(ActiveProfileId).Id == id) return false;
+        if (Profiles.RemoveAll(p => p is not null && p.Id == id) == 0) return false;
+        if (Profiles.Count == 0) Profiles = null;
+        return true;
+    }
 
     /// <summary>Salted hash of the controller passcode (Core.Security.Passcode).</summary>
     public string PasscodeHash { get; set; } = "";
@@ -285,6 +567,12 @@ public sealed class AppConfig
 
     /// <summary>Plugin folders the user turned off (applies at the next start).</summary>
     public List<string> DisabledPlugins { get; set; } = [];
+
+    /// <summary>
+    /// Feature areas switched off for this install (<see cref="FeatureAreas"/>): "games", "apps", "browser", "news".
+    /// Empty or missing means everything is on; unknown names are ignored.
+    /// </summary>
+    public List<string> DisabledAreas { get; set; } = [];
 
     /// <summary>Plugin/skin catalog indexes (https). Several allowed; the first source wins for a duplicate id.</summary>
     public List<string> CatalogSources { get; set; } = [CouchHud.Core.Plugins.CatalogDefaults.IndexUrl];
@@ -311,6 +599,18 @@ public sealed class AppConfig
     /// <summary>Tell CaseHUD while a game runs (its displays can switch to the gaming scene).</summary>
     public bool CaseHudGamingLease { get; set; } = true;
 
+    /// <summary>The paired TV (TV control, Settings › TV). The pairing key inside is DPAPI-protected.</summary>
+    public CouchHud.Core.Integrations.Tv.TvConfig Tv { get; set; } = new();
+
+    /// <summary>
+    /// The VPN country chosen last in CouchHUD (an id of the provider's fixed list, e.g. "de"), offered again in the Guide menu.
+    /// Only a remembered choice: anything that is not on the list is ignored when it is read.
+    /// </summary>
+    public string? VpnLastCountry { get; set; }
+
+    /// <summary>Show the VPN in the Guide menu (when a VPN app is installed). Expert setting.</summary>
+    public bool VpnInGuide { get; set; } = true;
+
     /// <summary>
     /// Developer switch, only in config.json: also accept http://127.0.0.1 and file: catalogs and downloads
     /// (for testing a catalog without publishing it). Off by default; the hash check stays mandatory.
@@ -325,6 +625,9 @@ public sealed class AppConfig
 
     /// <summary>Web entries open the browser window maximized (the TV has no use for a small window).</summary>
     public bool MaximizeBrowser { get; set; } = true;
+
+    /// <summary>The built-in browser keeps a list of recently visited sites on its start page; off keeps none (and clears it).</summary>
+    public bool BrowserHistory { get; set; } = true;
 
     /// <summary>End the PC-mode autostart programs again when returning to the couch.</summary>
     public bool ClosePcAppsOnReturn { get; set; }
@@ -379,15 +682,21 @@ public enum ConfigFault
     Unreadable,
 
     /// <summary>The file is not valid JSON.</summary>
-    Invalid
+    Invalid,
+
+    /// <summary>
+    /// The file and every usable copy are gone, but CouchHUD was set up here before (<see cref="ConfigStore.EarlierInstallTraces"/>): that is no
+    /// first start with open defaults and no setup assistant, but a locked one until the file is back or the folder was removed on purpose.
+    /// </summary>
+    Missing
 }
 
 /// <summary>
-/// Loads and saves config.json. Never loses the user's file: a broken file is
-/// backed up and left alone (defaults are never written over it), writes are atomic, and edits made while
-/// CouchHud runs are picked up before the next save instead of being overwritten.
-/// A file that exists but cannot be used does not mean "no lock, no parental controls": the store then
-/// runs on a locked configuration (<see cref="FaultConfig"/>) and says so in <see cref="Fault"/>.
+/// Loads and saves config.json. Never loses the user's file: writes are atomic and written through to the disk, the file before the
+/// last save stays as config.json.bak, and edits made while CouchHud runs are picked up before the next save instead of being overwritten.
+/// A broken file (empty, only zero bytes, invalid JSON, <c>null</c>) is replaced by a valid .bak, and is itself kept as
+/// config.json.broken-&lt;time&gt;; it is never overwritten with defaults. Without a valid .bak it is left alone, and that does not mean
+/// "no lock, no parental controls": the store then runs on a locked configuration (<see cref="FaultConfig"/>) and says so in <see cref="Fault"/>.
 /// </summary>
 public sealed class ConfigStore
 {
@@ -408,15 +717,20 @@ public sealed class ConfigStore
     /// <param name="readAttempts">How often to try reading a file that exists but is locked by someone else (at boot a virus scanner or sync tool may hold it for a moment).</param>
     /// <param name="retryDelay">Pause between the tries; default 300 ms.</param>
     /// <param name="unreadableRetry">How often a file that could not be read is tried again in the background (default 15 s).</param>
-    public ConfigStore(string directory, int readAttempts = 5, TimeSpan? retryDelay = null, TimeSpan? unreadableRetry = null)
+    /// <param name="bootTime">When this boot started (tests); default from the tick count, see <see cref="_bootTime"/>.</param>
+    public ConfigStore(string directory, int readAttempts = 5, TimeSpan? retryDelay = null, TimeSpan? unreadableRetry = null, Func<DateTime>? bootTime = null)
     {
+        _bootTime = bootTime ?? WindowsBootTime;
         FilePath = System.IO.Path.Combine(directory, "config.json");
         _readAttempts = Math.Max(1, readAttempts);
         _retryDelay = retryDelay ?? TimeSpan.FromMilliseconds(300);
         Current = Load();
-        if (Fault == ConfigFault.Unreadable)
+        // Temp files a cut-off save left behind were weighed by the restore above; what is older than a running save can be goes now.
+        if (Fault is null) CleanLeftoverTemps(TimeSpan.FromMinutes(1));
+        if (Fault is ConfigFault.Unreadable or ConfigFault.Missing)
         {
-            // A virus scanner or sync tool may let go any moment: try again until the file can be read (or is invalid).
+            // A virus scanner or sync tool may let go any moment: try again until the file can be read (or is invalid). A missing file
+            // is looked for again the same way (put back from a copy of the user's).
             var every = unreadableRetry ?? UnreadableRetry;
             _retry = new Timer(_ => RetryUnreadable(), null, every, every);
         }
@@ -428,7 +742,7 @@ public sealed class ConfigStore
     {
         lock (_lock)
         {
-            if (Fault != ConfigFault.Unreadable)
+            if (Fault is not (ConfigFault.Unreadable or ConfigFault.Missing))
             {
                 _retry?.Dispose();
                 _retry = null;
@@ -460,7 +774,11 @@ public sealed class ConfigStore
         CouchLock = "windows",
         // Parental controls strictly: every game needs the parents' code (an age limit nothing can meet, no rating counts
         // as unknown), and there is no code in this configuration, so no game starts until the file is fixed.
-        Parental = new CouchHud.Core.Parental.ParentalConfig { Enabled = true, MaxAge = 6, BlockUnknownAge = true, CountApps = true }
+        Parental = new CouchHud.Core.Parental.ParentalConfig { Enabled = true, MaxAge = 6, BlockUnknownAge = true, CountApps = true },
+        // No first start: the setup assistant and the notice would ask for a mode, a lock and codes on settings that are only a stand-in
+        // (and could reset the lock through the service). The HUD shows the broken state instead. Never saved (see TrySave).
+        AcceptedTerms = int.MaxValue,
+        SetupWizardDone = int.MaxValue
     };
 
     /// <summary>How often an unreadable file is tried again in the background.</summary>
@@ -482,11 +800,126 @@ public sealed class ConfigStore
     /// </summary>
     public string RecoveryPath => FilePath + ".recovery";
 
+    /// <summary>
+    /// The copy of config.json. ReplaceFile leaves the file before the save there; right after the swap the new content is written to it as
+    /// well, so a copy that is restored never brings back the state before a change that made things stricter (parental controls on, a
+    /// lock, a code). Only a reset in the short window between the two steps leaves the older state, and then the temp file of the save
+    /// (newer, see <see cref="BestCopy"/> and <see cref="AdoptNewerTemps"/>) wins.
+    /// </summary>
+    public string BackupPath => DurableFile.BackupOf(FilePath);
+
+    /// <summary>
+    /// Marker that config.json was restored: written by whichever CouchHUD process restored it (the HUD, the watcher, the sign-in lock),
+    /// read and removed by the HUD for its notice (<see cref="TakeRestoredNotice"/>), so the notice is not lost when another process came first.
+    /// </summary>
+    public string RestoredMarkerPath => FilePath + ".restored";
+
+    /// <summary>What the marker says: when, from which copy, and where the broken file was put (null when the file was only missing).</summary>
+    public sealed record RestoredNotice(DateTimeOffset At, string? Source, string? Broken);
+
+    /// <summary>The marker of a restore (null without one). The HUD reads it once at start and removes it with <see cref="ClearRestoredNotice"/> after the notice was shown.</summary>
+    public RestoredNotice? ReadRestoredNotice()
+    {
+        try
+        {
+            if (!File.Exists(RestoredMarkerPath)) return null;
+            try
+            {
+                if (JsonSerializer.Deserialize<RestoredNotice>(ReadShared(RestoredMarkerPath), JsonOptions) is { } notice) return notice;
+            }
+            catch (JsonException)
+            {
+                // A marker cut off by a reset still means "restored".
+            }
+            return new RestoredNotice(File.GetLastWriteTimeUtc(RestoredMarkerPath), null, null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[config] could not read the restore marker: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The notice was shown: the marker goes.</summary>
+    public void ClearRestoredNotice() => TryDelete(RestoredMarkerPath);
+
+    /// <summary>
+    /// Reads the settings of <paramref name="directory"/> without any side effect, for code that runs with other rights than the user's (the
+    /// uninstaller as an administrator) or only needs a value: it opens for reading only and never writes, deletes, renames or restores (a
+    /// <see cref="ConfigStore"/> may do all of that in the user's folder, and an administrator doing it there could be pointed elsewhere by a
+    /// junction or an oplock). The folder and the files must not be reparse points (junction, symbolic link). config.json first, its .bak
+    /// when it is missing, blank or invalid; null when neither can be used.
+    /// </summary>
+    public static AppConfig? Peek(string directory)
+    {
+        try
+        {
+            if (IsLink(directory)) return null;
+            var file = System.IO.Path.Combine(directory, "config.json");
+            return PeekFile(file) ?? PeekFile(DurableFile.BackupOf(file));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The largest settings file <see cref="Peek"/> reads (4 MB; a real one is a few KB): an administrator's uninstaller must not be
+    /// made to read gigabytes from a file the user can write (audit 0.5).
+    /// </summary>
+    public const int MaxPeekBytes = 4 * 1024 * 1024;
+
+    private static AppConfig? PeekFile(string file)
+    {
+        if (!File.Exists(file) || IsLink(file)) return null;
+        try
+        {
+            string text;
+            using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                if (stream.Length > MaxPeekBytes) return null;
+                // The file Windows really opened must be this one in this folder: a link swapped in after the check above is not followed.
+                if (!SavePathGuard.IsFinalPath(stream.SafeFileHandle, System.IO.Path.GetDirectoryName(file)!, file)) return null;
+                // At most the cap, even if the file grows while it is read.
+                var bytes = new byte[MaxPeekBytes + 1];
+                var length = 0;
+                int got;
+                while (length < bytes.Length && (got = stream.Read(bytes, length, bytes.Length - length)) > 0) length += got;
+                if (length > MaxPeekBytes) return null;
+                using var reader = new StreamReader(new MemoryStream(bytes, 0, length), System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                text = reader.ReadToEnd();
+            }
+            // Swapped for a link while it was opened: what was read is not taken.
+            if (IsLink(file) || IsLink(System.IO.Path.GetDirectoryName(file)!)) return null;
+            return ParseUsable(text);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsLink(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        return attributes.HasFlag(FileAttributes.ReparsePoint);
+    }
+
+    /// <summary>
+    /// config.json was missing, empty, only zero bytes or invalid at start and the copy from before the last save (<see cref="BackupPath"/>)
+    /// was taken instead; a broken file was put aside as <c>config.json.broken-&lt;time&gt;</c>. The HUD says so once.
+    /// </summary>
+    public bool RestoredFromBackup { get; private set; }
+
     private AppConfig Load()
     {
         var read = ReadFile(out var json, out var error);
         if (read == ReadResult.Missing)
         {
+            // ReplaceFile renames the old file to .bak before the new one takes its place: a reset right in between leaves only the .bak.
+            if (RestoreFromBackup(broken: false) is { } restored) return restored;
+            if (MissingAfterEarlierInstall() is { } locked) return locked;
             var fresh = new AppConfig();
             TrySave(fresh);
             return fresh;
@@ -501,20 +934,22 @@ public sealed class ConfigStore
 
         try
         {
-            var config = Parse(json!) ?? new AppConfig();
+            var config = ParseUsable(json!);
             _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
-            if (ReadRecoveryNotes() is { } notes)
-            {
-                Apply(config, notes);
-                Current = config;
-                MergeRecoveryNotes(save: true);
-            }
+            config = AdoptNewerTemps(config);
+            ApplyRecoveryNotes(config);
             return config;
         }
         catch (JsonException ex)
         {
-            // Keep the user's broken file around and do not write defaults over it: the lock and the parental rules are in there.
-            Console.Error.WriteLine($"[config] {FilePath} is invalid ({ex.Message}); starting locked");
+            Console.Error.WriteLine(DurableFile.IsBlank(json)
+                ? $"[config] {FilePath} is empty or only zero bytes (a save cut off by a reset or power loss?)"
+                : $"[config] {FilePath} is invalid ({ex.Message})");
+            // The copy from before the last save keeps the lock and the parental rules; the broken file is put aside, never overwritten.
+            if (RestoreFromBackup(broken: true) is { } restored) return restored;
+            // No usable copy: keep the user's broken file where it is and do not write defaults over it (the lock and the parental rules
+            // are in there). The store runs locked until the file is repaired or removed.
+            Console.Error.WriteLine($"[config] no usable backup ({BackupPath}); starting locked");
             KeepBadCopy(json!);
             Fault = ConfigFault.Invalid;
             _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
@@ -522,6 +957,393 @@ public sealed class ConfigStore
             if (ReadRecoveryNotes() is { } notes) Apply(locked, notes);
             return locked;
         }
+    }
+
+    /// <summary>
+    /// config.json and every copy of it are gone, but <see cref="EarlierInstallTraces"/> finds that CouchHUD was set up here: the store runs
+    /// locked (<see cref="ConfigFault.Missing"/>) and writes no defaults, so deleting the settings (or a reset that lost them) is no first start
+    /// with an open couch, no parental controls and the setup assistant. Null when nothing points to an earlier install (a real first start).
+    /// </summary>
+    private AppConfig? MissingAfterEarlierInstall()
+    {
+        if (EarlierInstallTraces(System.IO.Path.GetDirectoryName(FilePath)!) is not { } trace) return null;
+        Console.Error.WriteLine($"[config] {FilePath} and its backup are missing, but CouchHUD was set up here before ({System.IO.Path.GetFileName(trace)}); starting locked, not as a first start");
+        Fault = ConfigFault.Missing;
+        _lastSeenWrite = DateTime.MinValue;
+        var locked = FaultConfig();
+        if (ReadRecoveryNotes() is { } notes) Apply(locked, notes);
+        return locked;
+    }
+
+    /// <summary>
+    /// The first file in <paramref name="directory"/> that only an earlier run of CouchHUD with settings leaves behind: a copy of a broken
+    /// config.json, its recovery or restore marker, a play time account (also its copy or a retired one), a code brake, the key of the signed
+    /// files. Null when there is none: a new install, or a data folder removed on purpose. Files a start writes before the settings exist
+    /// (the crash counter, the watcher's state) do not count. A file in the folder's place, or a folder that is itself a junction or a link
+    /// (also one whose target is gone), counts as well (returns <paramref name="directory"/>): a new install leaves neither, and what such a
+    /// link shows is whatever its maker points it at.
+    /// </summary>
+    public static string? EarlierInstallTraces(string directory)
+    {
+        string[] patterns = ["config.json.broken-*", "config.json.recovery", "config.json.restored", "playtime*.json*", "lockout*.json*", "parental.key"];
+        try
+        {
+            FileAttributes attributes;
+            try
+            {
+                // The entry itself, not what a link points to.
+                attributes = File.GetAttributes(directory);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                return null;
+            }
+            if ((attributes & FileAttributes.Directory) == 0 || (attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                Console.Error.WriteLine($"[config] {directory} is no plain folder ({attributes}): counted as an earlier install");
+                return directory;
+            }
+            foreach (var pattern in patterns)
+                if (Directory.EnumerateFiles(directory, pattern).FirstOrDefault() is { } found) return found;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The folder cannot be listed: that is no proof of a new install either.
+            Console.Error.WriteLine($"[config] could not look for an earlier install in {directory}: {ex.Message}");
+            return directory;
+        }
+        return null;
+    }
+
+    private void ApplyRecoveryNotes(AppConfig config)
+    {
+        if (ReadRecoveryNotes() is not { } notes) return;
+        Apply(config, notes);
+        Current = config;
+        MergeRecoveryNotes(save: true);
+    }
+
+    /// <summary>
+    /// Takes the newest valid copy (<see cref="BestCopy"/>): its content goes back in place of config.json (written through to the disk); a
+    /// broken config.json (<paramref name="broken"/>) becomes <c>config.json.broken-&lt;time&gt;</c> in the same step. Null when there is no
+    /// usable copy or it could not be put in place (then only what the other CouchHUD process restored meanwhile counts).
+    /// </summary>
+    private AppConfig? RestoreFromBackup(bool broken)
+    {
+        if (BestCopy() is not { } copy) return null;
+        var (text, config, source) = copy;
+        var temp = $"{FilePath}.{Guid.NewGuid():N}.tmp";
+        string? aside = null;
+        try
+        {
+            DurableFile.WriteThrough(temp, System.Text.Encoding.UTF8.GetBytes(text));
+            if (broken)
+            {
+                // The HUD and its watcher start together: if the other one restored it (or a save landed) since we read it, that file stays.
+                if (UsableNow() is { } theirs)
+                {
+                    TryDelete(temp);
+                    return theirs;
+                }
+                aside = BrokenName();
+                // One step: the broken file becomes the .broken copy, the copy's content takes its place.
+                File.Replace(temp, FilePath, aside, ignoreMetadataErrors: true);
+            }
+            else
+            {
+                File.Move(temp, FilePath);
+            }
+            DurableFile.FlushRenames(FilePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[config] could not put the backup in place: {ex.Message}");
+            TryDelete(temp);
+            return UsableNow();
+        }
+        Console.Error.WriteLine(aside is null
+            ? $"[config] {FilePath} was missing, restored from {source}"
+            : $"[config] {FilePath} restored from {source}, the broken file is kept as {aside}");
+        RestoredFromBackup = true;
+        _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
+        WriteRestoredMarker(source, aside);
+        if (aside is not null) PruneBadCopies();
+        // The copy is the file now: it becomes the .bak as well (a temp file that won must not lose against an older .bak next time).
+        if (!string.Equals(source, BackupPath, StringComparison.OrdinalIgnoreCase)) RefreshBackup(System.Text.Encoding.UTF8.GetBytes(text));
+        ApplyRecoveryNotes(config);
+        return config;
+    }
+
+    /// <summary>config.json as it is now, when it is usable (another process restored or saved it); null otherwise.</summary>
+    private AppConfig? UsableNow()
+    {
+        if (ReadFile(out var now, out _) != ReadResult.Ok) return null;
+        try
+        {
+            var config = ParseUsable(now!);
+            _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
+            return config;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The newest valid copy: the .bak, or a temp file a cut-off save left behind (<c>config.json.*.tmp</c>) when it is newer than the
+    /// .bak. A reset between the two renames of ReplaceFile leaves no config.json, the old state in the .bak and the new one in the temp file.
+    /// </summary>
+    private (string Text, AppConfig Config, string Source)? BestCopy()
+    {
+        (string Text, AppConfig Config, string Source, DateTime Time)? best = null;
+        foreach (var path in LeftoverTemps().Prepend(BackupPath))
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                var time = File.GetLastWriteTimeUtc(path);
+                if (best is { } b && time <= b.Time) continue;
+                var text = ReadShared(path);
+                best = (text, ParseUsable(text), path, time);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                // A temp file still being written by the other process, or one cut off: not a copy to restore.
+                if (path == BackupPath) Console.Error.WriteLine($"[config] the backup {BackupPath} cannot be used either: {ex.Message}");
+            }
+        }
+        return best is { } found ? (found.Text, found.Config, found.Source) : null;
+    }
+
+    /// <summary>Temp files of saves next to config.json (also those of the .bak, <c>config.json.bak.*.tmp</c>).</summary>
+    private IEnumerable<string> LeftoverTemps()
+    {
+        try
+        {
+            return Directory.GetFiles(System.IO.Path.GetDirectoryName(FilePath)!, System.IO.Path.GetFileName(FilePath) + ".*.tmp");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Removes temp files older than <paramref name="age"/> (younger ones may belong to a save of the other process right now). A complete
+    /// one from before this boot that is newer than the file it was meant to replace stays (<see cref="NewerValidTemp"/>): it is a save whose
+    /// rename the reset lost, and it is taken at the next start if taking it failed this time. One dated in the future is never taken
+    /// (<see cref="NewerValidTemp"/>) and goes. Also the old files a swap had to put aside while a reader held the .bak (<c>….bak.*.old</c>).
+    /// </summary>
+    private void CleanLeftoverTemps(TimeSpan age)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var temp in LeftoverTemps())
+        {
+            try
+            {
+                var time = File.GetLastWriteTimeUtc(temp);
+                if (time <= now && now - time <= age) continue;
+                if (time <= now && NewerValidTemp(temp) is not null)
+                {
+                    Console.Error.WriteLine($"[config] keeping {temp}: it is newer than the file it was meant to replace");
+                    continue;
+                }
+                File.Delete(temp);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Next start.
+            }
+        }
+        // Without config.json the old file may only exist under that name (ReplaceFile stopped half way): it stays then.
+        if (!File.Exists(FilePath)) return;
+        try
+        {
+            foreach (var old in Directory.GetFiles(System.IO.Path.GetDirectoryName(FilePath)!, System.IO.Path.GetFileName(BackupPath) + ".*.old"))
+                if (now - SafeWriteTime(old) > age) TryDelete(old);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Next start.
+        }
+    }
+
+    /// <summary>The file a leftover temp file was meant to replace: the .bak for <c>config.json.bak.*.tmp</c>, else config.json.</summary>
+    private string TargetOf(string temp) =>
+        System.IO.Path.GetFileName(temp).StartsWith(System.IO.Path.GetFileName(BackupPath) + ".", StringComparison.OrdinalIgnoreCase) ? BackupPath : FilePath;
+
+    /// <summary>
+    /// When this Windows session started (a little earlier, for the rounding between the two clocks). A rename is only lost to a reset,
+    /// so only a temp file from before it can be such a save; one from this boot may belong to a save running right now in another
+    /// CouchHUD process (between writing and renaming), and taking it could lay an older state over one saved since.
+    /// </summary>
+    private readonly Func<DateTime> _bootTime;
+
+    private static DateTime WindowsBootTime() => DateTime.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64) - TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// The text of <paramref name="temp"/> when it is complete (usable settings), from before this boot (<see cref="_bootTime"/>), not dated in
+    /// the future (clock drift: it would win at every start and roll back every later save) and newer than the file it was meant to replace;
+    /// null otherwise. Such a file is a finished save whose rename was lost to a reset. A save cut off while writing is not valid JSON and
+    /// does not count. Only the user writes in this folder, and the user can change config.json directly anyway: taking a temp file opens
+    /// nothing new.
+    /// </summary>
+    private string? NewerValidTemp(string temp)
+    {
+        try
+        {
+            var time = File.GetLastWriteTimeUtc(temp);
+            if (time > DateTime.UtcNow || time >= _bootTime()) return null;
+            var target = TargetOf(temp);
+            if (File.Exists(target) && time <= File.GetLastWriteTimeUtc(target)) return null;
+            var text = ReadShared(temp);
+            ParseUsable(text);
+            return text;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The newest of the leftover temp files for <paramref name="target"/> that <see cref="NewerValidTemp"/> takes, with its name and the time
+    /// of the target it was weighed against (<see cref="DateTime.MinValue"/> when there is none).
+    /// </summary>
+    private (string Path, string Text, DateTime TargetTime)? NewestValidTemp(string target)
+    {
+        var targetTime = File.Exists(target) ? SafeWriteTime(target) : DateTime.MinValue;
+        foreach (var temp in LeftoverTemps().Where(t => TargetOf(t) == target).OrderByDescending(SafeWriteTime))
+            if (NewerValidTemp(temp) is { } text) return (temp, text, targetTime);
+        return null;
+    }
+
+    /// <summary>Right before the swap: the temp file is still there and nobody saved the target since it was weighed.</summary>
+    private static bool StillTakes((string Path, string Text, DateTime TargetTime) found, string target) =>
+        File.Exists(found.Path) && (File.Exists(target) ? SafeWriteTime(target) : DateTime.MinValue) == found.TargetTime;
+
+    private static DateTime SafeWriteTime(string path)
+    {
+        try
+        {
+            return File.GetLastWriteTimeUtc(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return DateTime.MinValue;
+        }
+    }
+
+    /// <summary>
+    /// config.json is usable, but a reset may have lost the rename of the last save: then the file is valid but old, and the complete temp
+    /// file of that save (newer, from before this boot) lies next to it. That one wins (a stricter rule saved right before the reset must
+    /// not get lost) and is put in place, then removed; the same for the .bak and its temp file. Returns the settings that count.
+    /// </summary>
+    private AppConfig AdoptNewerTemps(AppConfig config)
+    {
+        if (NewestValidTemp(FilePath) is { } newer)
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(newer.Text);
+            var temp = $"{FilePath}.{Guid.NewGuid():N}.tmp";
+            try
+            {
+                DurableFile.WriteThrough(temp, bytes);
+                if (!StillTakes(newer, FilePath))
+                {
+                    // Saved meanwhile by another CouchHUD process: that state is newer than the temp file and stays.
+                    TryDelete(temp);
+                    return config;
+                }
+                config = ParseUsable(newer.Text);
+                MoveOver(temp, FilePath);
+                _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
+                Console.Error.WriteLine($"[config] {FilePath} was older than the save {newer.Path} a reset left behind; that save is in place now");
+                TryDelete(newer.Path);
+                RefreshBackup(bytes);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The newer settings count all the same; the temp file stays (see CleanLeftoverTemps) and the next save writes them.
+                Console.Error.WriteLine($"[config] using the newer save {newer.Path}, but could not put it in place: {ex.Message}");
+                TryDelete(temp);
+            }
+        }
+        if (NewestValidTemp(BackupPath) is { } backup && StillTakes(backup, BackupPath))
+        {
+            Console.Error.WriteLine($"[config] {BackupPath} was older than the copy {backup.Path} a reset left behind; taking that one");
+            if (RefreshBackup(System.Text.Encoding.UTF8.GetBytes(backup.Text))) TryDelete(backup.Path);
+        }
+        return config;
+    }
+
+    private void WriteRestoredMarker(string source, string? aside)
+    {
+        try
+        {
+            var notice = new RestoredNotice(DateTimeOffset.Now, System.IO.Path.GetFileName(source), aside is null ? null : System.IO.Path.GetFileName(aside));
+            DurableFile.WriteThrough(RestoredMarkerPath, System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(notice, JsonOptions)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[config] could not write the restore marker: {ex.Message}");
+        }
+    }
+
+    /// <summary>Writes <paramref name="bytes"/> (what config.json holds now) through to the .bak, so the copy is never older than the file.</summary>
+    private bool RefreshBackup(byte[] bytes) => DurableFile.RefreshBackup(FilePath, bytes);
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Leftover temp file: harmless, cleaned at a later start.
+        }
+    }
+
+    /// <summary>
+    /// Keeps only the newest <see cref="MaxBadCopies"/> copies of broken files: <c>config.json.broken-*</c> and the <c>config.json.*.bad</c>
+    /// of older versions together.
+    /// </summary>
+    private void PruneBadCopies()
+    {
+        try
+        {
+            var dir = System.IO.Path.GetDirectoryName(FilePath)!;
+            var name = System.IO.Path.GetFileName(FilePath);
+            var all = Directory.GetFiles(dir, name + ".broken-*").Concat(Directory.GetFiles(dir, name + ".*.bad"))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(File.GetLastWriteTimeUtc)
+                .ToList();
+            foreach (var old in all.Take(Math.Max(0, all.Count - MaxBadCopies))) TryDelete(old);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Stays for now.
+        }
+    }
+
+    /// <summary>A new name for a broken copy: <c>config.json.broken-&lt;time&gt;</c>, never one that exists.</summary>
+    private string BrokenName()
+    {
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture);
+        var name = $"{FilePath}.broken-{stamp}";
+        for (var n = 2; File.Exists(name); n++) name = $"{FilePath}.broken-{stamp}-{n}";
+        return name;
+    }
+
+    /// <summary>
+    /// <see cref="Parse"/> for a file that must hold settings: an empty file, one of zero bytes or the JSON <c>null</c> is broken, never
+    /// "all defaults" (that would be no lock and no parental controls).
+    /// </summary>
+    internal static AppConfig ParseUsable(string json)
+    {
+        if (DurableFile.IsBlank(json)) throw new JsonException("the file is empty");
+        return Parse(json) ?? throw new JsonException("the file holds no settings");
     }
 
     /// <summary>
@@ -533,9 +1355,8 @@ public sealed class ConfigStore
         try
         {
             var dir = System.IO.Path.GetDirectoryName(FilePath)!;
-            var pattern = System.IO.Path.GetFileName(FilePath) + ".*.bad";
-            var existing = Directory.GetFiles(dir, pattern).OrderBy(File.GetLastWriteTimeUtc).ToList();
-            foreach (var f in existing)
+            var pattern = System.IO.Path.GetFileName(FilePath) + ".broken-*";
+            foreach (var f in Directory.GetFiles(dir, pattern))
             {
                 try
                 {
@@ -546,21 +1367,10 @@ public sealed class ConfigStore
                     // Cannot compare with this one: look at the next.
                 }
             }
-            var backup = $"{FilePath}.{DateTime.Now:yyyyMMdd-HHmmss-fff}.bad";
-            File.WriteAllText(backup, json);
+            var backup = BrokenName();
+            DurableFile.WriteThrough(backup, System.Text.Encoding.UTF8.GetBytes(json));
             Console.Error.WriteLine($"[config] backed up to {backup}");
-            existing.Add(backup);
-            foreach (var old in existing.Take(Math.Max(0, existing.Count - MaxBadCopies)))
-            {
-                try
-                {
-                    File.Delete(old);
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    // Stays for now.
-                }
-            }
+            PruneBadCopies();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -578,7 +1388,72 @@ public sealed class ConfigStore
         if (config is null) return null;
         var now = DateTimeOffset.UtcNow;
         foreach (var device in config.RemoteDevices ?? []) device.LastUsed ??= now;
+        MigrateSaveLimits(config, json);
+        MigrateSkinIds(config);
+        MigrateAgeRatingSystem(config, json);
         return config;
+    }
+
+    /// <summary>
+    /// Skins renamed in 0.5 (<see cref="Skins.SkinCatalog.MigrateId"/>): the skin and sound set of the household and of every profile
+    /// move to the new id. The next save writes the new ids; until then every read comes to the same result.
+    /// </summary>
+    internal static void MigrateSkinIds(AppConfig config)
+    {
+        config.Skin = Skins.SkinCatalog.MigrateId(config.Skin)!;
+        config.SoundSet = Skins.SkinCatalog.MigrateId(config.SoundSet)!;
+        foreach (var profile in config.Profiles ?? [])
+        {
+            if (profile?.Data?.Settings is not { } settings) continue;
+            settings.Skin = Skins.SkinCatalog.MigrateId(settings.Skin);
+            settings.SoundSet = Skins.SkinCatalog.MigrateId(settings.SoundSet);
+        }
+    }
+
+    /// <summary>
+    /// Once: limits from a file without <see cref="AppConfig.SaveLimitsDecimal"/> were binary MB and go up to the next offered decimal
+    /// limit (SaveGameService.FromBinaryMb), so a game that was backed up before still is. The marker is set with it, and the next save
+    /// writes both; until then every read comes to the same result.
+    /// </summary>
+    internal static void MigrateSaveLimits(AppConfig config, string json)
+    {
+        if (HasProperty(json, nameof(AppConfig.SaveLimitsDecimal))) return;
+        config.AutoBackupMaxGameMb = Saves.SaveGameService.FromBinaryMb(config.AutoBackupMaxGameMb, Saves.SaveGameService.GamePresetsMb,
+            Saves.SaveGameService.MinGameMb, Saves.SaveGameService.MaxGameMb);
+        config.AutoBackupMaxTotalMb = Saves.SaveGameService.FromBinaryMb(config.AutoBackupMaxTotalMb, Saves.SaveGameService.TotalPresetsMb,
+            Saves.SaveGameService.MinTotalMb, Saves.SaveGameService.MaxTotalMb);
+        config.SaveLimitsDecimal = true;
+    }
+
+    /// <summary>
+    /// Once: a file from before the rating systems with an age limit set went by the USK, so it keeps the USK (and does not become
+    /// looser by the Windows region). Without a limit nothing changes ("auto").
+    /// </summary>
+    internal static void MigrateAgeRatingSystem(AppConfig config, string json)
+    {
+        // Exactly the key the case-sensitive deserializer reads: a differently cased one was ignored, so the file has no system yet.
+        if (HasProperty(json, "ageRatingSystem", StringComparison.Ordinal)) return;
+        if (!config.AllProfiles.Any(p => p.Rules.MaxAge > 0)) return;
+        config.AgeRatingSystem = CouchHud.Core.Parental.AgeRatings.Usk;
+        config.AgeRatingSystemResolved = CouchHud.Core.Parental.AgeRatings.Usk;
+    }
+
+    private static bool HasProperty(string json, string name, StringComparison comparison = StringComparison.OrdinalIgnoreCase)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return false;
+            foreach (var property in doc.RootElement.EnumerateObject())
+            {
+                if (string.Equals(property.Name, name, comparison)) return true;
+            }
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private RecoveryNotes? ReadRecoveryNotes()
@@ -662,8 +1537,11 @@ public sealed class ConfigStore
 
     /// <summary>
     /// Changes the configuration and saves it. Saving is tried several times (see <see cref="SaveAttempts"/>): another process or a
-    /// virus scanner may hold the file for a moment. Returns false when it could not be saved (the change stays in memory); callers
-    /// that must not claim success then use <see cref="UpdateOrThrow"/>.
+    /// virus scanner may hold the file for a moment. Returns false when it could not be saved: a file that could not be written keeps
+    /// the change in memory, while an unusable file (<see cref="Fault"/> set) refuses it, the stand-in stays as it is and only the
+    /// recovery fields are taken (see <see cref="RefuseWhileFaulted"/>). Callers that must not claim success then use
+    /// <see cref="UpdateOrThrow"/>; callers that change state outside the file (the service's codes and mode) refuse up front while
+    /// <see cref="Fault"/> is set, so the two cannot drift apart.
     /// </summary>
     public bool Update(Action<AppConfig> change)
     {
@@ -672,18 +1550,34 @@ public sealed class ConfigStore
             if (Fault is not null) TryRecover();
             else ReloadIfChangedOnDisk();
             if (Fault is null) MergeRecoveryNotes(save: false);
+            else return RefuseWhileFaulted(change);
             change(Current);
-            var saved = TrySave(Current);
-            // The file stays as it is while it is unusable: only the few recovery fields go to a side file.
-            if (Fault is not null) WriteRecoveryNotes();
-            return saved;
+            return TrySave(Current);
         }
+    }
+
+    /// <summary>
+    /// A change while the file is unusable: nothing is saved, and the stand-in (<see cref="FaultConfig"/>) stays as it is in memory as well (a
+    /// change applied to it before the refusal would open in this run what it locks, e.g. switch the couch lock off). The change runs on a
+    /// copy; only the few recovery fields are taken from it, into the stand-in and the side file. Called under the lock.
+    /// </summary>
+    private bool RefuseWhileFaulted(Action<AppConfig> change)
+    {
+        var scratch = Parse(JsonSerializer.Serialize(Current, JsonOptions)) ?? FaultConfig();
+        change(scratch);
+        Current.ShellRemovedReason = scratch.ShellRemovedReason;
+        Current.PendingShellRestore = scratch.PendingShellRestore;
+        WriteRecoveryNotes();
+        LastSaveError = FilePath + " is unusable";
+        return false;
     }
 
     /// <summary>Like <see cref="Update"/>, but a change that could not be saved throws: a step that reports "done" must have saved.</summary>
     public void UpdateOrThrow(Action<AppConfig> change)
     {
-        if (!Update(change)) throw new IOException(Strings.Get("config.notSaved", LastSaveError ?? FilePath));
+        if (Update(change)) return;
+        // While the file is unusable nothing is saved on purpose: that is not a file held by another program.
+        throw new IOException(Fault is not null ? Strings.Get("config.notSavedFault") : Strings.Get("config.notSaved", LastSaveError ?? FilePath));
     }
 
     /// <summary>Why the last save failed (null after a save that worked).</summary>
@@ -700,12 +1594,9 @@ public sealed class ConfigStore
     /// <summary>
     /// ReplaceFile when the target exists: unlike a move over the file it succeeds while a reader has the file open with the right to
     /// delete it (our own reads do, see <see cref="ReadShared"/>); a move over an open file is "access denied" whatever is shared.
+    /// The file it replaces stays as <see cref="BackupPath"/>: the copy <see cref="Load"/> takes when a reset leaves config.json broken.
     /// </summary>
-    private static void SwapIn(string temp, string target)
-    {
-        if (File.Exists(target)) File.Replace(temp, target, null, ignoreMetadataErrors: true);
-        else File.Move(temp, target);
-    }
+    private static void SwapIn(string temp, string target) => DurableFile.SwapIn(temp, target, DurableFile.BackupOf(target));
 
     internal Action<TimeSpan> Pause { get; set; } = Thread.Sleep;
 
@@ -715,14 +1606,23 @@ public sealed class ConfigStore
         var read = ReadFile(out var json, out _);
         if (read == ReadResult.Missing)
         {
-            Current = new AppConfig();
+            // A usable copy from before is taken first (a broken file is only ever kept without one). Without one, removing the file is no
+            // way out of the locked state while traces of the earlier install are there (the copy of the broken file among them): to start
+            // over, the data folder goes as a whole.
+            if (RestoreFromBackup(broken: false) is { } restored) Current = restored;
+            else if (EarlierInstallTraces(System.IO.Path.GetDirectoryName(FilePath)!) is not null)
+            {
+                Fault = ConfigFault.Missing;
+                return;
+            }
+            else Current = new AppConfig();
             Fault = null;
             return;
         }
         if (read != ReadResult.Ok) return;
         try
         {
-            Current = Parse(json!) ?? new AppConfig();
+            Current = ParseUsable(json!);
             _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
             Fault = null;
             Console.WriteLine($"[config] {FilePath} is usable again");
@@ -739,7 +1639,7 @@ public sealed class ConfigStore
         {
             if (!File.Exists(FilePath) || File.GetLastWriteTimeUtc(FilePath) <= _lastSeenWrite) return;
             var json = ReadShared(FilePath);
-            Current = Parse(json) ?? Current;
+            Current = ParseUsable(json);
             _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
@@ -770,10 +1670,14 @@ public sealed class ConfigStore
             {
                 try
                 {
-                    File.WriteAllText(temp, json);
+                    // Written through to the disk before it replaces the file: a reset right after must not leave zero bytes behind.
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                    DurableFile.WriteThrough(temp, bytes);
                     MoveOver(temp, FilePath);
                     _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);
                     LastSaveError = null;
+                    // The .bak holds the state before this save now; it gets the new one too, so a restore never undoes a stricter rule.
+                    RefreshBackup(bytes);
                     return true;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -791,7 +1695,8 @@ public sealed class ConfigStore
             Console.Error.WriteLine($"[config] could not save {FilePath} after {Math.Max(1, SaveAttempts)} tries: {ex.Message}");
             try
             {
-                File.Delete(temp);
+                // Without config.json (a swap stopped half way) the temp file is the newest state there is: it stays for the restore at start.
+                if (File.Exists(FilePath)) File.Delete(temp);
             }
             catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
             {

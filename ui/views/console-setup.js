@@ -21,7 +21,7 @@ import { currentView, pop, renderHints } from '../core/nav.js';
 import { state } from '../core/state.js';
 import { confirmDialog } from '../components/overlay.js';
 import { ensureUnlocked, isLocked, onApprovalAnnounced } from '../components/passcode.js';
-import { lockStepStatus, setupCouchLock } from '../core/lock-rules.js';
+import { beginSetupHold, lockStepStatus, setupCouchLock } from '../core/lock-rules.js';
 import { sound } from '../sound.js';
 
 const MARK = { done: '✓', ok: '✓', todo: '•', unknown: '?', na: '–', running: '…', skipped: '–', failed: '✕', aborted: '–' };
@@ -147,11 +147,22 @@ function stepsPage({ id, title, intro, notes, startLabel, steps, restartAsk, res
     },
 
     async start() {
+      // The lock step must not lock the HUD in the middle of the setup: the couch stays open until the end. Without that hold, and on the
+      // stand-in of broken settings (the host refuses the hold there too), nothing runs: the reason is shown and the overview stays.
+      if (!(await this.unlock())) return;
+      const begun = await beginSetupHold({ readSecurity: () => api.getSecurity(), hold: () => api.holdUnlockForSetup(true) });
+      if (begun.security) state.info.configFault = !!begun.security.configFault;
+      if (!begun.ok) {
+        if (begun.error) console.warn(`console setup not started: ${errorText(begun.error)}`);
+        const reason = begun.reason === 'configFault' ? t('wizard.configFault') : begun.reason === 'locked' ? t('consoleSetup.notUnlocked') : t('consoleSetup.notStarted', { error: errorText(begun.error) });
+        toast(reason, 7000);
+        phase = 'overview';
+        this.paint();
+        return;
+      }
       phase = 'running';
       cancel = false;
       this.paint();
-      // The lock step must not lock the HUD in the middle of the setup: the couch stays open until the end.
-      await attempt(() => api.holdUnlockForSetup(true), undefined, { quietLocked: true });
       for (const row of rows) {
         if (cancel) {
           if (!SATISFIED.has(row.status)) {

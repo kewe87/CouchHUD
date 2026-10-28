@@ -1,8 +1,9 @@
 // CaseHUD: the LCDs in fans and pumps, controlled from the couch. CaseHUD is its own program (installed and started from
-// here, talked to through its local API by the host); this page only shows and sets things. The design editor stays on
-// the PC ("Open on the PC").
+// here, talked to through its local API by the host); this page chooses and operates: power, scenes, rotation, automation,
+// sets, per display brightness/theme/mode, lighting on/off/brightness/effect. Everything that builds or sets up (designs,
+// mounting, effect parameters, devices, automation rules, community designs) stays in CaseHUD's window ("Open on the PC").
 //
-// Every screen of this file is a list of rows, some of them tiles in a grid (displays, designs), and moves like the
+// Every screen of this file is a list of rows, some of them tiles in a grid (displays), and moves like the
 // other pages: up/down between rows, left/right inside a row of tiles, A runs, B goes back.
 
 import { iconEl } from '../core/glyph-icons.js';
@@ -18,15 +19,14 @@ import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
 import { settler } from './casehud-settle.js';
 import { lightingPage } from './casehud-lighting.js';
+import { activeSceneId, conflictNames, sceneLabel } from '../core/casehud-rules.js';
 
 /** Last answer of the host (install state, running state, status, update, progress). */
 state.caseHud = null;
 
 const PREVIEW_MS = 3000;
-const ROTATIONS = [0, 90, 180, 270];
 const MODES = ['hud', 'media', 'off'];
 const TILE_COLUMNS = 3;
-const DESIGN_COLUMNS = 4;
 
 const modeText = (mode) => ({ hud: t('casehud.mode.hud'), media: t('casehud.mode.media'), off: t('casehud.mode.off') })[mode] ?? mode;
 const themeText = (theme) => ({ dark: t('casehud.theme.dark'), light: t('casehud.theme.light') })[theme] ?? theme;
@@ -75,7 +75,7 @@ addQuickRows(() => {
     {
       icon: '↻',
       label: t('casehud.quick.next'),
-      detail: s.status.rotation?.scene ? sceneName(s.status.rotation.scene) : t('casehud.title'),
+      detail: activeSceneId(s.status, state.scenes) ? sceneName(activeSceneId(s.status, state.scenes)) : t('casehud.title'),
       keepOpen: true,
       run: async () => {
         if ((await attempt(() => api.caseHudNextScene(), t('casehud.failed'))) !== undefined) await reload();
@@ -114,10 +114,10 @@ function remember(key, data) {
 }
 
 async function loadPreview(img, spec) {
-  const key = `${spec.kind}:${spec.id}:${spec.size ?? ''}:${spec.theme ?? ''}`;
+  const key = `${spec.id}:${spec.size ?? ''}`;
   if (previews.has(key)) img.src = previews.get(key);
   if (spec.live || !previews.has(key)) {
-    const data = await api.caseHudPreview(spec.kind, spec.id, spec.size, spec.theme).catch(() => null);
+    const data = await api.caseHudPreview(spec.id, spec.size).catch(() => null);
     if (data) {
       remember(key, data);
       if (img.isConnected) img.src = data;
@@ -130,7 +130,7 @@ async function loadPreview(img, spec) {
 
 /**
  * A page of rows. `rows()` gives [{ section } | { items: [item], tiles?: columns }]; an item is
- * { icon, label, detail, preview?, run?, adjust?(delta, page), hint?, highlight?, card?, pill?, swatch? }.
+ * { icon, label, detail, preview?, run?, adjust?(delta, page), hint?, highlight?, card?, pill? }.
  */
 export function listPage({ id, title, rows, hints, extraKeys, onEnter, onClose, head }) {
   return {
@@ -173,12 +173,9 @@ export function listPage({ id, title, rows, hints, extraKeys, onEnter, onClose, 
           continue;
         }
         const item = row.items[0];
-        const swatch = item.swatch ? el('span', { className: 'ch-swatch' }) : null;
-        if (swatch) swatch.style.background = item.swatch;
         const node = el('div', { className: `check-row update-row${item.highlight ? ' highlight' : ''}${item.card ? ' ch-card' : ''}${item.run || item.adjust ? '' : ' static'}` },
           el('span', { className: 'check-box' }, iconEl(item.icon ?? '·')),
           el('span', { className: 'check-main' }, el('strong', { textContent: item.label }), item.detail ? el('small', { textContent: item.detail }) : null),
-          swatch,
           item.pill ? el('span', { className: 'pill', textContent: item.pill }) : null);
         this.nodes.set(item, node);
         content.push(node);
@@ -221,15 +218,13 @@ export function listPage({ id, title, rows, hints, extraKeys, onEnter, onClose, 
       onClose?.call(this);
     },
     /** A step of a settling value: only the texts of its row change (no new build, no new preview requests). */
-    patchRow(item, { detail, pill, swatch } = {}) {
+    patchRow(item, { detail, pill } = {}) {
       const node = this.nodes?.get(item);
       if (!node) return;
       const small = node.querySelector('.check-main small');
       if (detail !== undefined && small) small.textContent = detail;
       const p = node.querySelector('.pill');
       if (pill !== undefined && p) p.textContent = pill;
-      const sw = node.querySelector('.ch-swatch');
-      if (swatch !== undefined && sw) sw.style.background = swatch;
     },
     get item() {
       return this.layout?.[this.r]?.[this.c];
@@ -308,7 +303,7 @@ export async function act(call, { guard = true } = {}) {
   return result;
 }
 
-const sceneName = (id) => state.scenes?.find((s) => s.id === id)?.name ?? id;
+const sceneName = (id) => sceneLabel(id, state.scenes);
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -384,7 +379,7 @@ const updateRow = (s) => s.update?.available ? [{
   run: s.update.installable ? updateNow : () => toast(t('casehud.unverifiable'))
 }] : [];
 
-/** CaseHUD's own window on the PC: the design editor, the first-start notice, the lighting notice, the fan controller. */
+/** CaseHUD's own window on the PC: designs, effects, devices, automation rules, the first-start and lighting notices. */
 export async function openCaseHudGui() {
   if (!(await unlocked())) return;
   if ((await attempt(() => api.caseHudOpenGui(), t('casehud.failed'))) !== undefined) toast(t('casehud.guiOpened'));
@@ -397,6 +392,32 @@ const guiRow = () => ({
   hint: t('casehud.openGui'),
   run: openCaseHudGui
 });
+
+/** Where the editors used to be: one line saying that building happens in CaseHUD's window, and A opens it. */
+export const pcHintRow = () => ({
+  items: [{
+    icon: '✎',
+    label: t('casehud.pcHint'),
+    hint: t('casehud.pcHintOpen'),
+    run: openCaseHudGui
+  }]
+});
+
+/** Programs that may hold CaseHUD's devices (e.g. another RGB tool): a short warning; closing them is done in CaseHUD's window. */
+const conflictRow = (st) => {
+  const names = conflictNames(st?.conflicts);
+  if (!names.length) return null;
+  return {
+    items: [{
+      icon: '!',
+      label: t('casehud.conflicts', { names: names.join(', ') }),
+      detail: t('casehud.conflictsDetail'),
+      highlight: true,
+      hint: t('casehud.pcHintOpen'),
+      run: openCaseHudGui
+    }]
+  };
+};
 
 // ---------------------------------------------------------------------------
 // CaseHUD's API switch (Settings › Interfaces in CaseHUD, off by default)
@@ -555,9 +576,8 @@ function panelItem(p) {
     id: p.id,
     label: p.name,
     detail: problem ? errorText(problem) : `${modeText(p.mode)} · ${p.brightness} %`,
-    badge: p.rotation ? `${p.rotation}°` : null,
     dim: !!problem,
-    preview: { kind: 'panel', id: p.id, size: 240, live: true },
+    preview: { id: p.id, size: 240, live: true },
     run: () => push(panelPage(p.id))
   };
 }
@@ -566,6 +586,8 @@ function runningRows(s) {
   const st = s.status;
   const rows = [];
   if (needsDisclaimer(st)) return disclaimerRows(s);
+  const conflicts = conflictRow(st);
+  if (conflicts) rows.push(conflicts);
   rows.push({ section: t('casehud.displays') });
   if (st.panels.length) rows.push({ tiles: TILE_COLUMNS, items: st.panels.map(panelItem) });
   else rows.push({ items: [{ icon: '·', label: t('casehud.noDisplays'), detail: t('casehud.noDisplaysDetail') }] });
@@ -586,7 +608,7 @@ function runningRows(s) {
     items: [{
       icon: '🎬',
       label: t('casehud.scene'),
-      detail: st.rotation?.scene ? sceneName(st.rotation.scene) : t('casehud.sceneNone'),
+      detail: activeSceneId(st, state.scenes) ? sceneName(activeSceneId(st, state.scenes)) : t('casehud.sceneNone'),
       hint: t('casehud.sceneChoose'),
       run: chooseScene
     }]
@@ -601,6 +623,20 @@ function runningRows(s) {
       run: () => act(() => api.caseHudRotation(!st.rotation?.enabled))
     }]
   });
+  // Automation (scenes by rule, e.g. while a game runs): only on and off here; the rules are edited in CaseHUD's window.
+  if (st.automation) {
+    const on = !!st.automation.enabled;
+    rows.push({
+      items: [{
+        icon: '⚙',
+        label: t('casehud.automation'),
+        detail: on ? (st.automation.activeRule >= 0 ? t('casehud.automationHolding') : t('casehud.automationOn')) : t('casehud.automationOff'),
+        pill: on ? t('casehud.on') : t('casehud.off'),
+        hint: on ? t('casehud.automationTurnOff') : t('casehud.automationTurnOn'),
+        run: () => act(() => api.caseHudAutomation(!on))
+      }]
+    });
+  }
   rows.push({
     items: [{
       icon: '⏭',
@@ -616,15 +652,6 @@ function runningRows(s) {
       detail: t('casehud.setAllDetail'),
       hint: t('casehud.setAll'),
       run: chooseSetForAll
-    }]
-  });
-  rows.push({
-    items: [{
-      icon: '☁',
-      label: t('casehud.community'),
-      detail: t('casehud.communityDetail'),
-      hint: t('casehud.community'),
-      run: () => push(communityPage())
     }]
   });
   // Lighting: only builds whose status carries `lighting` have the endpoint.
@@ -660,7 +687,8 @@ function runningRows(s) {
       run: async () => { await attempt(() => api.caseHudIdentify(null), t('casehud.failed')); }
     }]
   });
-  rows.push({ items: [guiRow()] });
+  // Designs, effects, devices and community designs: CaseHUD's window (the row opens it).
+  rows.push(pcHintRow());
   rows.push({ items: [apiOnRow()] });
 
   rows.push({ section: t('casehud.statusSection') });
@@ -699,7 +727,7 @@ async function chooseScene() {
   const scenes = await attempt(() => api.caseHudScenes(), t('casehud.failed'));
   if (!scenes?.length) return toast(t('casehud.noScenes'));
   state.scenes = scenes;
-  const active = scenes.find((s) => s.active)?.id;
+  const active = activeSceneId(state.caseHud?.status, scenes);
   const id = await chooseDialog(t('casehud.scene'), scenes.map((s) => ({ label: s.name, icon: s.active ? '✓' : '', value: s.id })), active);
   if (id === undefined) return;
   await act(() => api.caseHudActivateScene(id), { guard: false });
@@ -763,7 +791,7 @@ export function caseHudPage() {
 
 const findPanel = (id) => state.caseHud?.status?.panels?.find((p) => p.id === id);
 
-export function cycle(list, value, delta) {
+function cycle(list, value, delta) {
   const i = Math.max(0, list.indexOf(value));
   return list[(i + delta + list.length) % list.length];
 }
@@ -773,7 +801,7 @@ function panelPage(panelId) {
     if (!(await unlocked())) return;
     await act(() => api.caseHudPatchPanel(panelId, change), { guard: false });
   };
-  // Brightness and rotation end in the display's flash: steps only change the row, the value goes out when the input settles or on A.
+  // Brightness ends in the display's flash: steps only change the row, the value goes out when the input settles or on A.
   const settle = settler();
   const step = async (page, item, key, reported, next, show) => {
     const current = settle.value(key, reported);
@@ -789,16 +817,6 @@ function panelPage(panelId) {
     id: 'casehud-panel',
     title: findPanel(panelId)?.name ?? t('casehud.title'),
     onClose: () => settle.flushAll(),
-    onEnter() {
-      // The design's name instead of its id.
-      if (!designCache.length && !this.asked) {
-        this.asked = true;
-        attempt(() => api.caseHudDesigns()).then((list) => {
-          designCache = list ?? [];
-          this.refresh();
-        });
-      }
-    },
     head() {
       const p = findPanel(panelId);
       return p ? el('p', { className: 'meta', textContent: `${p.model} · ${p.w}×${p.h}` }) : null;
@@ -809,16 +827,7 @@ function panelPage(panelId) {
       const problem = p.error;
       return [
         { section: t('casehud.display') },
-        { tiles: 1, items: [{ id: p.id, label: p.name, detail: problem ? errorText(problem) : p.model, preview: { kind: 'panel', id: p.id, size: 320, live: true }, dim: !!problem }] },
-        {
-          items: [{
-            icon: '🎨',
-            label: t('casehud.design'),
-            detail: designName(p.design),
-            hint: t('casehud.designChoose'),
-            run: () => push(designPage(p))
-          }]
-        },
+        { tiles: 1, items: [{ id: p.id, label: p.name, detail: problem ? errorText(problem) : p.model, preview: { id: p.id, size: 320, live: true }, dim: !!problem }] },
         {
           items: [{
             icon: '☀',
@@ -831,18 +840,6 @@ function panelPage(panelId) {
             },
             run: () => settle.has('brightness') ? settle.flush('brightness') : patch({ brightness: p.brightness >= 100 ? 10 : Math.min(100, p.brightness + 30) }),
             hint: t('casehud.brighter')
-          }]
-        },
-        {
-          items: [{
-            icon: '⟳',
-            label: t('casehud.rotationPanel'),
-            detail: `${settle.value('rotation', p.rotation)}°`,
-            adjust(d, page) {
-              return step(page, this, 'rotation', p.rotation, (v) => cycle(ROTATIONS, v, d), (v) => ({ detail: `${v}°` }));
-            },
-            run: () => settle.has('rotation') ? settle.flush('rotation') : patch({ rotation: cycle(ROTATIONS, p.rotation, 1) }),
-            hint: t('casehud.rotate')
           }]
         },
         {
@@ -873,7 +870,9 @@ function panelPage(panelId) {
             hint: t('casehud.identify'),
             run: () => attempt(() => api.caseHudIdentify(p.id), t('casehud.failed'))
           }]
-        }
+        },
+        // Design and mounting of this display: CaseHUD's window.
+        pcHintRow()
       ];
     },
     hints() {
@@ -886,116 +885,3 @@ function panelPage(panelId) {
 }
 
 export const bar = (value) => '▮'.repeat(Math.round(value / 20)) + '▯'.repeat(5 - Math.round(value / 20));
-
-let designCache = [];
-const designName = (id) => designCache.find((d) => d.id === id)?.name ?? id;
-
-// ---------------------------------------------------------------------------
-// Design grid: only designs that fit this display's shape; X = style set, Y = light/dark (the display's theme).
-
-function designPage(panel) {
-  const filter = { set: 'all' };
-  let all = [];
-  let loaded = false;
-  return listPage({
-    id: 'casehud-designs',
-    title: t('casehud.design'),
-    onEnter() {
-      if (loaded) return;
-      loaded = true;
-      attempt(() => api.caseHudDesigns(), t('casehud.failed')).then((list) => {
-        all = list ?? [];
-        designCache = all;
-        this.refresh();
-      });
-    },
-    head() {
-      return el('p', { className: 'meta', textContent: `${panel.w}×${panel.h} · ${filter.set === 'all' ? t('casehud.allSets') : filter.set} · ${themeText((findPanel(panel.id) ?? panel).theme)}` });
-    },
-    rows() {
-      const current = findPanel(panel.id) ?? panel;
-      // The same shape (the canvas size of a design differs from the display's pixels): square designs for a square display.
-      const ratio = current.w / current.h;
-      const list = all.filter((d) => Math.abs(d.w / d.h - ratio) < 0.02 && (filter.set === 'all' || d.set === filter.set));
-      if (!loaded || !all.length) return [{ items: [{ icon: '⟳', label: t('casehud.loading') }] }];
-      if (!list.length) return [{ items: [{ icon: '·', label: t('casehud.noDesigns'), detail: t('casehud.noDesignsDetail') }] }];
-      const rows = [];
-      for (let i = 0; i < list.length; i += DESIGN_COLUMNS) {
-        rows.push({
-          tiles: DESIGN_COLUMNS,
-          items: list.slice(i, i + DESIGN_COLUMNS).map((d) => ({
-            id: d.id,
-            label: d.name,
-            detail: d.set,
-            badge: d.id === current.design ? '✓' : null,
-            preview: { kind: 'design', id: d.id, size: 200, theme: current.theme },
-            run: async () => {
-              if (!(await unlocked())) return;
-              if ((await act(() => api.caseHudPatchPanel(panel.id, { design: d.id }), { guard: false })) !== undefined) toast(t('casehud.designSet', { name: d.name }));
-            }
-          }))
-        });
-      }
-      return rows;
-    },
-    extraKeys(action) {
-      const sets = ['all', ...new Set(all.map((d) => d.set))];
-      if (action === 'x') filter.set = cycle(sets, filter.set, 1);
-      else if (action === 'y') {
-        const current = findPanel(panel.id) ?? panel;
-        sound.move();
-        return act(() => api.caseHudPatchPanel(panel.id, { theme: current.theme === 'dark' ? 'light' : 'dark' }));
-      } else return undefined;
-      this.r = 0;
-      this.c = 0;
-      sound.move();
-      return render();
-    },
-    hints() {
-      return [['X', t('casehud.filterSet')], ['Y', t('casehud.filterTheme')]];
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Community designs
-
-function communityPage() {
-  let list = null;
-  return listPage({
-    id: 'casehud-community',
-    title: t('casehud.community'),
-    onEnter() {
-      if (list) return;
-      list = [];
-      attempt(() => api.caseHudCommunity(), t('casehud.failed')).then((l) => {
-        list = l ?? [];
-        this.loaded = true;
-        this.refresh();
-      });
-    },
-    rows() {
-      if (!this.loaded) return [{ items: [{ icon: '⟳', label: t('casehud.loading') }] }];
-      if (!list.length) return [{ items: [{ icon: '·', label: t('casehud.communityEmpty') }] }];
-      const rows = [{ section: t('casehud.communityHint') }];
-      for (let i = 0; i < list.length; i += DESIGN_COLUMNS) {
-        rows.push({
-          tiles: DESIGN_COLUMNS,
-          items: list.slice(i, i + DESIGN_COLUMNS).map((d) => ({
-            id: d.id,
-            label: d.name,
-            detail: t('casehud.by', { author: d.author }),
-            preview: { kind: 'community', id: d.id, size: 200 },
-            hint: t('casehud.import'),
-            run: async () => {
-              if (!(await unlocked())) return;
-              if (!(await confirmDialog(t('casehud.importConfirm', { name: d.name, author: d.author }), t('casehud.import')))) return;
-              if ((await attempt(() => api.caseHudImport(d.id), t('casehud.failed'))) !== undefined) toast(t('casehud.imported', { name: d.name }));
-            }
-          }))
-        });
-      }
-      return rows;
-    }
-  });
-}

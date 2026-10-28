@@ -10,25 +10,69 @@ namespace CouchHud.Shell.Services;
 public sealed class ControllerMouse : IDisposable
 {
     private const double DeadZone = 0.18;
+    // Full deflection: this many pixels per second at least, or the area's width in about 1.2 seconds on a big screen.
+    private const double MinSpeed = 1750;
+    // Wheel units per second at full deflection (120 = one notch).
+    private const double ScrollSpeed = 2500;
     private readonly Func<(double X, double Y, double ScrollY)> _sticks;
-    private readonly Timer _timer;
-    private double _carryX, _carryY, _carryScroll;
+    private readonly AutoResetEvent _wake = new(false);
+    private readonly Thread _thread;
+    private volatile bool _active;
+    private volatile bool _disposed;
+    private volatile bool _paused;
+    private volatile Bounds? _bounds;
+    private double _x, _y, _carryScroll;
+    private int _sentX = int.MinValue, _sentY = int.MinValue;
+
+    /// <summary>An area in screen pixels (right and bottom exclusive).</summary>
+    public sealed record Bounds(int Left, int Top, int Right, int Bottom)
+    {
+        public int Width => Right - Left;
+
+        public bool Contains(int x, int y) => x >= Left && x < Right && y >= Top && y < Bottom;
+    }
 
     public ControllerMouse(Func<(double X, double Y, double ScrollY)> sticks)
     {
         _sticks = sticks;
-        _timer = new Timer(_ => Tick(), null, Timeout.Infinite, Timeout.Infinite);
+        // Its own thread with a high-resolution timer: a thread-pool timer of 16 ms really ticks every 15.6 or 31.2 ms, and a cursor
+        // that moves a fixed step per tick then stutters. Here every step is scaled by the time that really passed.
+        _thread = new Thread(Loop) { IsBackground = true, Name = "Controller mouse", Priority = ThreadPriority.AboveNormal };
+        _thread.Start();
     }
 
-    public bool Active { get; private set; }
+    public bool Active => _active;
 
     /// <summary>Sticks stay off the cursor (a TV page steers by keys; its buttons are handled by the browser).</summary>
-    public bool Paused { get; set; }
+    public bool Paused
+    {
+        get => _paused;
+        set
+        {
+            _paused = value;
+            if (!_disposed) _wake.Set();
+        }
+    }
+
+    /// <summary>
+    /// The cursor stays inside this area (the couch browser's page), so a click always lands on the page and the wheel scrolls the
+    /// page, never the HUD around it. Null: the whole screen (a launcher's window).
+    /// </summary>
+    public Bounds? Area
+    {
+        get => _bounds;
+        set
+        {
+            _bounds = value;
+            if (!_disposed) _wake.Set();
+        }
+    }
 
     public void Start()
     {
-        Active = true;
-        _timer.Change(0, 16);
+        if (_disposed) return;
+        _active = true;
+        _wake.Set();
     }
 
     private long _lastSteer = long.MinValue / 2;
@@ -38,9 +82,170 @@ public sealed class ControllerMouse : IDisposable
 
     public void Stop()
     {
-        Active = false;
-        _timer.Change(Timeout.Infinite, Timeout.Infinite);
+        _active = false;
     }
+
+    private void Loop()
+    {
+        var timer = CreateWaitableTimerExW(IntPtr.Zero, null, CreateWaitableTimerHighResolution, TimerAllAccess);
+        try
+        {
+            Run(timer);
+        }
+        finally
+        {
+            if (timer != IntPtr.Zero) CloseHandle(timer);
+        }
+    }
+
+    private void Run(IntPtr timer)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var last = clock.Elapsed;
+        var wasActive = false;
+        while (!_disposed)
+        {
+            // Stopped, or paused (a TV page steers by keys): sleep until something changes, no timer ticking for nothing.
+            if (!_active || _paused)
+            {
+                wasActive = false;
+                _wake.WaitOne();
+                continue;
+            }
+            if (!wasActive)
+            {
+                wasActive = true;
+                last = clock.Elapsed;
+                _sentX = _sentY = int.MinValue;
+            }
+            // About 125 steps a second.
+            if (timer != IntPtr.Zero)
+            {
+                var due = -80_000L; // 8 ms, relative, in 100 ns units
+                if (SetWaitableTimer(timer, ref due, 0, IntPtr.Zero, IntPtr.Zero, false)) WaitForSingleObject(timer, 100);
+                else Thread.Sleep(8);
+            }
+            else
+            {
+                Thread.Sleep(8);
+            }
+            var now = clock.Elapsed;
+            var seconds = Math.Clamp((now - last).TotalSeconds, 0, 0.05);
+            last = now;
+            try
+            {
+                Tick(seconds);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[mouse] {ex.Message}");
+            }
+        }
+    }
+
+    private void Tick(double seconds)
+    {
+        if (_paused) return;
+        var area = _bounds;
+        if (!GetCursorPos(out var cursor)) return;
+        // The real mouse moved the cursor (or this is the first step): go on from where it is.
+        if (_sentX == int.MinValue || Math.Abs(cursor.X - _sentX) > 2 || Math.Abs(cursor.Y - _sentY) > 2)
+        {
+            _x = cursor.X + 0.5;
+            _y = cursor.Y + 0.5;
+        }
+        var (x, y, scroll) = _sticks();
+        var (dx, dy) = (Curve(x), Curve(-y));
+        var screen = Screen();
+        var speed = Math.Max(MinSpeed, (area?.Width ?? screen.Width) / 1.2);
+        _x += dx * speed * seconds;
+        _y += dy * speed * seconds;
+        // While the stick moves it: inside the area by a pixel, so the click never hits its border (a real mouse stays free).
+        if (dx != 0 || dy != 0)
+        {
+            var limit = area ?? screen;
+            _x = Math.Clamp(_x, limit.Left + 1, limit.Right - 2);
+            _y = Math.Clamp(_y, limit.Top + 1, limit.Bottom - 2);
+        }
+        var px = (int)Math.Floor(_x);
+        var py = (int)Math.Floor(_y);
+        if (px != cursor.X || py != cursor.Y) MoveCursor(px, py);
+        if (dx != 0 || dy != 0 || Curve(scroll) != 0) Interlocked.Exchange(ref _lastSteer, Environment.TickCount64);
+        _sentX = px;
+        _sentY = py;
+        _carryScroll += Curve(scroll) * ScrollSpeed * seconds;
+        var wheel = (int)_carryScroll;
+        _carryScroll -= wheel;
+        // The wheel only where the cursor is allowed (the page): a real mouse that moved it off the page does not scroll the HUD or another program.
+        if (wheel != 0 && (area is null || area.Contains(px, py))) Send(MouseWheel, 0, 0, wheel);
+    }
+
+    /// <summary>Moves the cursor, remembered as CouchHUD's own input (like every SendInput): it never counts as someone at the PC.</summary>
+    private static void MoveCursor(int x, int y)
+    {
+        KeyboardInput.MarkInjected();
+        SetCursorPos(x, y);
+        KeyboardInput.MarkInjected();
+    }
+
+    /// <summary>Where the cursor is, in the same coordinates as <see cref="Area"/> and SetCursorPos (this process's DPI view).</summary>
+    public static bool CursorPosition(out int x, out int y)
+    {
+        var ok = GetCursorPos(out var p);
+        (x, y) = (p.X, p.Y);
+        return ok;
+    }
+
+    private static Bounds Screen()
+    {
+        var left = GetSystemMetrics(SmXVirtualScreen);
+        var top = GetSystemMetrics(SmYVirtualScreen);
+        return new Bounds(left, top, left + Math.Max(1, GetSystemMetrics(SmCxVirtualScreen)), top + Math.Max(1, GetSystemMetrics(SmCyVirtualScreen)));
+    }
+
+    /// <summary>Puts the cursor in the middle of the area when it is outside (the controller just went to the page). True: it was moved.</summary>
+    public bool CenterIfOutside()
+    {
+        if (_bounds is not { } area || !GetCursorPos(out var cursor) || area.Contains(cursor.X, cursor.Y)) return false;
+        MoveCursor((area.Left + area.Right) / 2, (area.Top + area.Bottom) / 2);
+        return true;
+    }
+
+    private const int SmXVirtualScreen = 76, SmYVirtualScreen = 77, SmCxVirtualScreen = 78, SmCyVirtualScreen = 79;
+    private const uint CreateWaitableTimerHighResolution = 0x00000002, TimerAllAccess = 0x1F0003;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CursorPoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out CursorPoint point);
+
+    // SetCursorPos, not an absolute SendInput: it works in the same (DPI-virtualized) coordinates as GetCursorPos and the window's
+    // PointToScreen, so the cursor lands on the pixel the area says, on every monitor; and no pointer acceleration applies.
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWaitableTimerExW(IntPtr attributes, string? name, uint flags, uint access);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWaitableTimer(IntPtr timer, ref long dueTime, int period, IntPtr completion, IntPtr arg, [MarshalAs(UnmanagedType.Bool)] bool resume);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
     /// <summary>Buttons in mouse mode. Returns true when handled.</summary>
     public bool Button(string button)
@@ -63,26 +268,7 @@ public sealed class ControllerMouse : IDisposable
         }
     }
 
-    private void Tick()
-    {
-        if (Paused) return;
-        var (x, y, scroll) = _sticks();
-        var (dx, dy) = (Curve(x), Curve(-y));
-        if (dx != 0 || dy != 0 || Curve(scroll) != 0) Interlocked.Exchange(ref _lastSteer, Environment.TickCount64);
-        // Fast across the screen with the stick pushed, precise near the centre.
-        _carryX += dx * 28;
-        _carryY += dy * 28;
-        _carryScroll += Curve(scroll) * 40;
-        var mx = (int)_carryX;
-        var my = (int)_carryY;
-        var wheel = (int)_carryScroll;
-        _carryX -= mx;
-        _carryY -= my;
-        _carryScroll -= wheel;
-        if (mx != 0 || my != 0) Send(MouseMove, mx, my, 0);
-        if (wheel != 0) Send(MouseWheel, 0, 0, wheel);
-    }
-
+    // Fast across the screen with the stick pushed, precise near the centre.
     private static double Curve(double v)
     {
         var a = Math.Abs(v);
@@ -105,6 +291,8 @@ public sealed class ControllerMouse : IDisposable
         }
     }
 
+    public static void LeftClick() => Click(MouseLeftDown, MouseLeftUp);
+
     private static void Click(uint down, uint up)
     {
         Send(down, 0, 0, 0);
@@ -119,7 +307,15 @@ public sealed class ControllerMouse : IDisposable
         KeyboardInput.SendInput(1, [input], Marshal.SizeOf<KeyboardInput.INPUT>());
     }
 
-    public void Dispose() => _timer.Dispose();
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _active = false;
+        _wake.Set();
+        // The loop ends within one step (at most the 100 ms timer wait); only then is the event gone.
+        if (Thread.CurrentThread != _thread && _thread.Join(TimeSpan.FromSeconds(1))) _wake.Dispose();
+    }
 }
 
 /// <summary>Keyboard input into whatever window has the focus (phone typing into a login field).</summary>

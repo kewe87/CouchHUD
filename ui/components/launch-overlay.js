@@ -40,7 +40,7 @@ function build(item) {
         title,
         el('p', { className: 'launch-status' }, el('span', { className: 'launch-ring' }), `${verb(item)} `, el('span', { className: 'launch-dots', textContent: '…' })),
         el('div', { className: 'launch-bar' }, el('i')),
-        el('p', { className: 'launch-hint' }, el('span', { className: 'glyph btn-b', textContent: glyph('B') }), t('launchOverlay.hide')))));
+        el('p', { className: 'launch-hint' }, el('span', { className: 'glyph btn-b', dataset: { glyph: 'B' }, textContent: glyph('B') }), t('launchOverlay.hide')))));
 }
 
 /** Shows the transition for `item`; a second call replaces the first. */

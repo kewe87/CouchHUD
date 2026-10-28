@@ -24,8 +24,16 @@ public sealed class ParentalConfig
     public int PerGameMinutes { get; set; }
     /// <summary>Games that start only with the parents' code.</summary>
     public List<string> LockedItems { get; set; } = [];
-    /// <summary>Games rated this age or older are locked (USK 6/12/16/18), 0 = off.</summary>
+    /// <summary>
+    /// Games rated this age or older are locked, 0 = off. An age, not a system's code: a step of the active rating system (USK 6/12/16/18,
+    /// PEGI 3/7/12/16/18, ESRB E 6, E10+ 10, T 13, M 17, AO 18, see <see cref="AgeRatings"/>), so a switch of the system keeps a safe
+    /// value. Read through <see cref="AgeLimit"/>.
+    /// </summary>
     public int MaxAge { get; set; }
+
+    /// <summary>The limit that counts: 0 off, a step as stored, anything else (an edited file) the strictest step there is.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int AgeLimit => AgeRatings.NormalizeLimit(MaxAge);
     /// <summary>With an age limit: games without a known rating need the parents' code too.</summary>
     public bool BlockUnknownAge { get; set; } = true;
     /// <summary>Apps (browser, streaming …) count as play time and must be measurable; otherwise they are free.</summary>
@@ -149,7 +157,13 @@ public sealed class PlayLedger
 
     private enum LoadResult { Ok, Missing, Corrupt, BadSignature }
 
-    private static string BackupOf(string file) => file + ".bak";
+    private static string BackupOf(string file) => CouchHud.Core.Files.DurableFile.BackupOf(file);
+
+    /// <summary>
+    /// Whether a missing file counts as tampering: it was written before (<paramref name="started"/>), or its copy from before is
+    /// still there while the file itself is gone. A brand-new account (a profile just created) has neither and starts at zero.
+    /// </summary>
+    public static bool ShouldExist(string file, bool started) => started || File.Exists(BackupOf(file));
 
     /// <summary>Reads and checks one file.</summary>
     private LoadResult TryLoad(string file, byte[]? key, out FileData data)
@@ -158,7 +172,8 @@ public sealed class PlayLedger
         if (!File.Exists(file)) return LoadResult.Missing;
         try
         {
-            var read = JsonSerializer.Deserialize<FileData>(File.ReadAllText(file)) ?? new();
+            // The JSON null is no account (nothing played): it is a broken file like an empty one, so the copy from before counts.
+            var read = JsonSerializer.Deserialize<FileData>(File.ReadAllText(file)) ?? throw new JsonException("the file holds no play time");
             if (key is not null && !MacValid(read)) return LoadResult.BadSignature;
             data = read;
             return LoadResult.Ok;
@@ -254,18 +269,10 @@ public sealed class PlayLedger
             foreach (var old in _data.Days.Keys.Where(k => DateOnly.TryParse(k, out var d) && d < today.AddDays(-21)).ToList()) _data.Days.Remove(old);
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
-                var temp = _file + ".tmp";
                 _data.Mac = _key is null ? null : Mac(_data);
                 // Written through to the disk before it replaces the old file, which stays as .bak: a power cut
                 // in the middle leaves one of the two intact instead of an empty or half-written day.
-                using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    stream.Write(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(_data)));
-                    stream.Flush(flushToDisk: true);
-                }
-                if (File.Exists(_file)) File.Replace(temp, _file, BackupOf(_file));
-                else File.Move(temp, _file, overwrite: true);
+                CouchHud.Core.Files.DurableFile.WriteAllText(_file, JsonSerializer.Serialize(_data));
                 Dirty = false;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -278,7 +285,10 @@ public sealed class PlayLedger
 
 public enum ParentalWarning { Minutes15, Minutes5, Expired }
 
-/// <summary>Limiter says what is closest: "window", "day" or "game".</summary>
+/// <summary>
+/// Limiter says what is closest: "window", "day" or "game". <see cref="RemainingSeconds"/> is never negative: time played
+/// past the limit (the grace period before a game is closed still counts) shows as 0, not as minus.
+/// </summary>
 public sealed record ParentalStatus(
     bool Enabled,
     int? RemainingSeconds,
@@ -287,7 +297,11 @@ public sealed record ParentalStatus(
     double UsedSeconds,
     int? DayLimitMinutes,
     int BonusMinutes,
-    bool ClockJumped);
+    bool ClockJumped)
+{
+    /// <summary>A limit applies and its time is used up (or the window is closed, or the account was tampered with).</summary>
+    public bool TimeUp => Enabled && (RemainingSeconds is <= 0 || !InWindow);
+}
 
 public sealed record StartCheck(bool Ok, string? Reason, string Message);
 
@@ -413,6 +427,8 @@ public sealed partial class ParentalService
             inWindow = offset < Math.Min(length, 86400);
             Consider(inWindow ? length - offset : 0, "window");
         }
+        // Played past the limit (the grace period before closing counts on): that is "0 left", never a negative account.
+        if (remaining < 0) remaining = 0;
         return new ParentalStatus(true, remaining, limiter, inWindow, used, limit > 0 ? limit : null, bonus, _clock.Jumped);
     }
 
@@ -479,9 +495,9 @@ public sealed partial class ParentalService
         if (!c.Enabled) return null;
         if (IsLocked(c, item, all)) return "locked";
         var isGame = item.Type == ItemType.Game;
-        if (isGame && c.MaxAge > 0)
+        if (isGame && c.AgeLimit > 0)
         {
-            if (age is { } a) return a >= c.MaxAge ? "age" : null;
+            if (age is { } a) return a >= c.AgeLimit ? "age" : null;
             if (c.BlockUnknownAge) return "unknown-age";
         }
         if (!GameSessionTracker.CanDetect(item) && (isGame || c.CountApps)) return "undetectable";

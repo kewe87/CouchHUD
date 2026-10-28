@@ -4,6 +4,7 @@ using CouchHud.Core.Assistant;
 using CouchHud.Core.Config;
 using CouchHud.Shell.UiHost;
 using CouchHud.Core.Localization;
+using CouchHud.Core.Skins;
 
 namespace CouchHud.Shell.Services;
 
@@ -42,11 +43,17 @@ public sealed class HudTools(Hud hud) : IToolHost
 
     private async Task<string> RunAsync(string name, JsonElement args)
     {
+        // A protected profile waits for its code at the picker: the assistant and MCP do nothing at all until it is entered (review M1).
+        hud.RequireProfileChosen();
         // A locked couch: the assistant and MCP may look things up and start a game or app, nothing else.
         if (hud.Locked && !ToolCatalog.AllowedWhileLocked(name))
         {
             throw new InvalidOperationException(Strings.Get("tools.locked"));
         }
+        // Switched off areas (FeatureAreas): their tools and their entries are not there for the assistant and MCP either.
+        if (!hud.Areas.AllowsTool(name) || (Opt(args, "id") is { } itemId && hud.HiddenByArea(itemId))
+            || (name == "set_setting" && Opt(args, "key") is { } settingKey && !hud.Areas.AllowsSetting(settingKey)))
+            throw new InvalidOperationException(Strings.Get("areas.off"));
         object? result = name switch
         {
             "search_library" => Search(args),
@@ -58,7 +65,7 @@ public sealed class HudTools(Hud hud) : IToolHost
             "rescan_library" => new { entries = (await hud.GetLibraryAsync(true)).Count(i => !i.Hidden) },
             "get_settings" => hud.GetSettings(forUi: false),
             "set_setting" => await SetSettingAsync(args),
-            "list_skins" => BuiltinSkins.Select(id => new { id, name = id }).Concat(hud.ListSkins().Select(s => new { id = s.Id, name = s.Name })),
+            "list_skins" => ListSkins(),
             "set_skin" => SetSkin(args),
             "get_session" => hud.SessionDto() ?? new { running = false },
             "get_weather" => await hud.GetWeatherAsync() ?? (object)new { error = Strings.Get("tools.noWeatherPlace") },
@@ -137,10 +144,20 @@ public sealed class HudTools(Hud hud) : IToolHost
         return new { key, value = value.GetRawText() };
     }
 
+    /// <summary>Built-in skins with their name in the current language and the other names they answer to, then the user skins.</summary>
+    private IEnumerable<object> ListSkins() =>
+        BuiltinSkins.Select(id => (object)new
+        {
+            id,
+            name = SkinCatalog.BuiltinName(id, Strings.Language),
+            aliases = new[] { SkinCatalog.BuiltinName(id, "de"), SkinCatalog.BuiltinName(id, "en") }.Distinct().ToArray()
+        }).Concat(hud.ListSkins().Select(s => (object)new { id = s.Id, name = s.Name, aliases = Array.Empty<string>() }));
+
     private object SetSkin(JsonElement args)
     {
-        var id = Str(args, "id");
-        if (!BuiltinSkins.Contains(id) && hud.ListSkins().All(s => s.Id != id)) throw new ArgumentException(Strings.Get("tools.noSkin", id));
+        var asked = Str(args, "id");
+        // An id (also one from before 0.5) or a skin's name in either language.
+        var id = SkinCatalog.Resolve(asked, hud.ListSkins()) ?? throw new ArgumentException(Strings.Get("tools.noSkin", asked));
         hud.SetSkin(id);
         hud.Notify("skin", id);
         return new { skin = id };

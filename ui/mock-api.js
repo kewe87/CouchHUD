@@ -1,5 +1,8 @@
 import { caseHudMock, setMockInstallApi } from './mock-casehud.js';
+import { vpnMock } from './mock-vpn.js';
+import { tvMock } from './mock-tv.js';
 import { demoMode, applyDemo } from './mock-demo.js';
+import { RATING_CHOICES, convertLimit, limitLabel, ratingSteps } from './core/age-rating-rules.js';
 
 // Stand-in for the host bridge so the UI can be developed in a plain browser
 // (node scripts/preview-server.js). Never loaded inside the app.
@@ -26,6 +29,9 @@ const steam = (appid, name, lastPlayedDaysAgo) => ({
   type: 'game',
   name,
   lastPlayed: lastPlayedDaysAgo == null ? 0 : Date.now() - lastPlayedDaysAgo * day,
+  // Play time for the "Continue playing" row: games played lately have a total and a last session.
+  playtimeMinutes: lastPlayedDaysAgo == null ? 0 : Math.round(600 / (lastPlayedDaysAgo + 1)) + 35,
+  lastSessionMinutes: lastPlayedDaysAgo == null ? 0 : 25 + (appid % 50),
   favorite: false,
   art: {
     cover: [`${CDN}/${appid}/library_600x900.jpg`],
@@ -100,15 +106,87 @@ const wifi = {
     { ssid: 'Vodafone Hotspot', signal: 18, secured: false, security: 'open', supported: true }
   ]
 };
-const listeners = { unlocked: [], session: [], audio: [], toast: [], updates: [], catalogUpdates: [], selfUpdate: [], assistant: [], remote: [], notification: [], parental: [], browser: [], browserui: [], pad: [], btRecovery: [] };
+const mockProfiles = [{ id: 'default', name: 'CouchHUD', avatar: 'fox', color: '#3fa9f5', restricted: false, hasCode: false, isDefault: true, active: true }];
+const mockProfile = (id) => {
+  const p = mockProfiles.find((x) => x.id === id);
+  if (!p) throw new Error('unknown profile');
+  return p;
+};
+const mockProfilesView = () => ({
+  active: mockProfiles.find((p) => p.active)?.id ?? 'default',
+  picker: false,
+  pickRequired: false,
+  max: 8,
+  parentalEnabled: false,
+  childrenGuarded: false,
+  exhausted: false,
+  gameRunning: false,
+  profiles: mockProfiles.map((p) => ({ ...p, isProtected: p.hasCode, need: p.active ? 'same' : p.hasCode ? 'profileCode' : 'free' }))
+});
+const listeners = { downloads: [], uninstalledArt: [], unlocked: [], session: [], audio: [], toast: [], screenshot: [], updates: [], catalogUpdates: [], selfUpdate: [], assistant: [], remote: [], notification: [], parental: [], browser: [], browserui: [], browserdialog: [], pad: [], btRecovery: [], homeAssistantSignIn: [], battery: [] };
 // ?nopad: no controller and Bluetooth off (the code prompt's help for keyboard and mouse); ?btcountdown: the automatic switch-on asks.
 const noPad = new URLSearchParams(location.search).has('nopad');
 let btOn = !noPad;
 let btAutoOn = true;
 let btDeclined = false;
 if (new URLSearchParams(location.search).has('btcountdown')) setTimeout(() => listeners.btRecovery.forEach((cb) => cb({ phase: 'countdown', seconds: 10 })), 2500);
+// Batteries (like BatteryMonitor.cs): a laptop at 78 %, controller 1 at medium, a Bluetooth controller and headphones with a percent.
+// ?nobattery: a desktop (no system battery); ?charging: on the charger; ?lowbattery: everything low, the host's toasts follow once.
+const batteryQuery = new URLSearchParams(location.search);
+const lowBattery = batteryQuery.has('lowbattery');
+const padLevel = lowBattery ? 'low' : 'medium';
+const battery = () => ({
+  system: batteryQuery.has('nobattery') ? null
+    : batteryQuery.has('charging') ? { percent: 64, charging: true, pluggedIn: true, low: false }
+      : { percent: lowBattery ? 12 : 78, charging: false, pluggedIn: false, low: lowBattery },
+  pads: noPad ? [] : [{ index: 0, level: padLevel }],
+  devices: noPad || !btOn ? [] : [
+    { id: 'bt1', name: 'Xbox Wireless Controller', kind: 'controller', percent: lowBattery ? 10 : 60 },
+    { id: 'bt2', name: 'Sony WH-1000XM5', kind: 'headphones', percent: 80 }
+  ]
+});
+if (lowBattery) {
+  setTimeout(() => {
+    listeners.toast.forEach((cb) => cb(t('mock.batteryLowSystem', { percent: 12 })));
+    setTimeout(() => listeners.toast.forEach((cb) => cb(t('mock.batteryLowPad', { index: 1 }))), 3600);
+  }, 3000);
+}
 const profiles = {};
 let dl = 0.31;
+
+// Downloads tab and the games that are not installed (made-up names; covers are generated from the name).
+const finishedDownloads = [];
+const requestedDownloads = new Map();
+const downloadCenter = () => {
+  dl = Math.min(1, dl + 0.04);
+  const now = Date.now();
+  const running = [
+    { id: 'steam:1091500', kind: 'game', source: 'steam', name: 'Cyberpunk 2077', state: 'downloading', progress: dl, bytesDone: Math.round(dl * 18_400_000_000), bytesTotal: 18_400_000_000, isUpdate: true, detail: null, updatedAt: now },
+    { id: 'update:windows', kind: 'windows', source: 'windows', name: t('mock.dlWindows'), state: 'installing', progress: 0.62, bytesDone: 0, bytesTotal: 0, isUpdate: true, detail: null, updatedAt: now },
+    ...[...requestedDownloads.values()],
+    { id: 'steam:1086940', kind: 'game', source: 'steam', name: "Baldur's Gate 3", state: 'queued', progress: 0, bytesDone: 0, bytesTotal: 2_100_000_000, isUpdate: true, detail: null, updatedAt: now },
+    { id: 'steam:2358720', kind: 'game', source: 'steam', name: 'Black Myth: Wukong', state: 'paused', progress: 0.42, bytesDone: 54_000_000_000, bytesTotal: 128_000_000_000, isUpdate: false, detail: null, updatedAt: now }
+  ];
+  const finished = [
+    ...finishedDownloads,
+    { id: 'catalog:plugin:wand', kind: 'plugin', source: 'plugin', name: 'Wand', state: 'done', progress: 1, bytesDone: 0, bytesTotal: 0, isUpdate: true, detail: null, updatedAt: now - 3_600_000 },
+    { id: 'update:apps', kind: 'app', source: 'winget', name: t('mock.dlApps'), state: 'failed', progress: null, bytesDone: 0, bytesTotal: 0, isUpdate: true, detail: t('mock.dlAppsFailed'), updatedAt: now - 7_200_000 }
+  ].filter((e) => !dismissedDownloads.has(e.id));
+  const active = running.filter((e) => ['waiting', 'downloading', 'installing', 'inClient'].includes(e.state));
+  const known = active.filter((e) => e.progress != null);
+  return {
+    entries: [...running, ...finished],
+    summary: { active: active.length, finished: finished.length, progress: known.length ? known.reduce((s, e) => s + e.progress, 0) / known.length : null }
+  };
+};
+const dismissedDownloads = new Set();
+const UNINSTALLED_NAMES = ['Sternenfahrt', 'Nebelwald', 'Eisenbahn-Tycoon', 'Kristallgrotte', 'Pixel-Rallye', 'Turm der Winde', 'Leuchtfeuer', 'Mondbasis 7', 'Sandsturm', 'Funkstille',
+  'Wolkenreiter', 'Tiefsee-Expedition', 'Uhrwerk', 'Glutkern', 'Polarlicht', 'Ruinensucher', 'Schattenpfad', 'Blechdose', 'Inselbauer', 'Zeitreise-Agentur'];
+const uninstalled = Array.from({ length: 140 }, (_, i) => {
+  const epic = i % 4 === 3;
+  const name = `${UNINSTALLED_NAMES[i % UNINSTALLED_NAMES.length]}${i >= UNINSTALLED_NAMES.length ? ` ${Math.floor(i / UNINSTALLED_NAMES.length) + 1}` : ''}`;
+  return { id: epic ? `epic:Demo${i}` : `steam:${900000 + i}`, source: epic ? 'epic' : 'steam', name, art: { cover: [], hero: [], logo: [], icon: [] } };
+}).sort((a, b) => a.name.localeCompare(b.name));
 const display = {
   current: { width: 3840, height: 2160, hz: 60 },
   modes: [[3840, 2160, 120], [3840, 2160, 60], [2560, 1440, 120], [2560, 1440, 60], [1920, 1080, 120], [1920, 1080, 60]].map(([width, height, hz]) => ({ width, height, hz })),
@@ -116,6 +194,7 @@ const display = {
   hdrOn: false
 };
 // Preview: screenshots drawn as gradients (the real app shows the image files).
+let mockCodeEntry = false;
 const fakeShot = (title, hue) => 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},70%,45%)"/><stop offset="1" stop-color="hsl(${hue + 50},60%,15%)"/></linearGradient></defs><rect width="160" height="90" fill="url(#g)"/><text x="8" y="80" font-family="sans-serif" font-size="9" fill="white" opacity="0.8">${title}</text></svg>`);
 const plugins = [
   lz({
@@ -147,12 +226,14 @@ const wandRows = () => [
 const gameFolders = ['D:\\Games'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const saveBackups = [
+  { id: '2026-10-20_22-15_auto.zip', created: Date.now() - 2 * 3600_000, sizeBytes: 1_190_000, fileCount: 14, safety: false, complete: true, auto: true },
   { id: '2026-10-18_21-40.zip', created: Date.now() - 86400_000, sizeBytes: 1_180_000, fileCount: 14, safety: false, complete: true },
   { id: '2026-10-15_20-00_unvollstaendig.zip', created: Date.now() - 4 * 86400_000, sizeBytes: 300_000, fileCount: 3, safety: false, complete: false },
   { id: '2026-10-12_19-05.zip', created: Date.now() - 7 * 86400_000, sizeBytes: 1_020_000, fileCount: 13, safety: false, complete: true }
 ];
 const saveDir = 'C:\\Users\\kewe87\\AppData\\Roaming\\CouchHud\\Backups';
-const saveSettings = { backupDir: saveDir, defaultBackupDir: saveDir, keep: 5, includeConfig: false };
+const saveSettings = { backupDir: saveDir, defaultBackupDir: saveDir, keep: 5, includeConfig: false, autoBackup: true, autoKeep: 3, autoMaxGameMb: 1000, autoMaxTotalMb: 10000 };
+const saveTotalBytes = () => saveBackups.reduce((sum, b) => sum + b.sizeBytes, 0);
 const notes = [
   lz({ id: 'n1', source: 'windows', app: demoMode ? 'Messenger' : 'WhatsApp', time: Date.now() - 12 * 60_000, read: false }, { title: () => t('mock.noteMomTitle'), body: () => t('mock.noteMomBody') }),
   lz({ id: 'n2', source: 'couchhud', app: 'CouchHUD', title: library[0].name, time: Date.now() - 3 * 3_600_000, read: true }, { body: () => t('mock.notePlayed') }),
@@ -190,6 +271,13 @@ const browser = {
 const security = { policies: 'none', couchLock: 'code', hasPasscode: true, blockTaskManager: true, asShell: true, autoLogon: true, autoLogonUser: 'player', passwordlessOnly: false, accountPassword: true, user: 'player', service: { state: 'running', label: 'running', version: '0.4.1', expected: true, healthy: true, alarm: false, problem: false, repair: false, repairScript: true } };
 let passcode = null;
 let unlockedUntil = 0;
+// The page's state as the host reports it, with the lock state (the recent sites show only at the open couch).
+let recentShown = false;
+const browserSnapshot = () => {
+  const locked = !(security.couchLock === 'off' || !security.asShell || Date.now() < unlockedUntil);
+  const parentalOn = !!parental.enabled;
+  return { ...structuredClone(browser), locked, recentHidden: locked || (parentalOn && !recentShown), recentNeedsParent: !locked && parentalOn && !recentShown, history: settings.browserHistory !== false };
+};
 
 const launchers = [
   { id: 'steam', name: 'Steam', exe: 'C:\\Program Files (x86)\\Steam\\steam.exe', mode: 'standby', running: true },
@@ -220,7 +308,9 @@ const services = { taskInstalled: false, policyHelper: false, policiesSet: false
 let updates = {
   windows: [
     lz({ id: 'kb1', source: 'windows', sizeBytes: 812_000_000, important: true }, { name: () => t('mock.winUpdateName') }),
-    { id: 'kb2', source: 'windows', name: 'NVIDIA - Display - 32.0.15.7700', sizeBytes: 905_000_000, important: false }
+    { id: 'kb2', source: 'windows', name: 'NVIDIA - Display - 32.0.15.7700', sizeBytes: 905_000_000, important: false },
+    // A Defender definition: the host sends no size (min and max far apart), and this one is already downloaded.
+    { id: 'kb3', source: 'windows', name: 'Security Intelligence Update for Microsoft Defender Antivirus - KB2267602', sizeBytes: null, important: true, downloaded: true }
   ],
   apps: [
     { id: 'Discord.Discord', source: 'winget', name: 'Discord', version: '1.0.9163', available: '1.0.9164' },
@@ -260,7 +350,38 @@ const ha = [
   { id: 'binary_sensor.door', domain: 'binary_sensor', name: '', state: 'off', deviceClass: 'door', controllable: false }
 ];
 ha.forEach((e) => { if (haNames[e.id]) lz(e, { name: haNames[e.id] }); });
-const settings = { language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), homeAssistantUrl: 'http://homeassistant.local:8123', homeAssistantTokenSet: true, homeAssistantPinned: ['scene.kino', 'light.tv_led'], sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, artworkCacheMb: 42, caseHudInstallAutostart: true, caseHudInstallFps: false, caseHudInstallApi: true, caseHudGamingLease: true, bluetoothAutoOn: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: false, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
+ha.forEach((e) => { e.area = 'living'; });
+// A big home for the picker: ten rooms, about 1600 entities, mostly sensors (like real installations).
+// i18n-used: mock.haArea.living mock.haArea.kitchen mock.haArea.bedroom mock.haArea.hall mock.haArea.bath mock.haArea.office mock.haArea.kids mock.haArea.basement mock.haArea.garden mock.haArea.garage
+// i18n-used: mock.haKind.light mock.haKind.switch mock.haKind.cover mock.haKind.media_player mock.haKind.fan mock.haKind.lock mock.haKind.climate mock.haKind.script mock.haKind.automation mock.haKind.button mock.haKind.sensor mock.haKind.binary_sensor
+const HA_AREAS = ['living', 'kitchen', 'bedroom', 'hall', 'bath', 'office', 'kids', 'basement', 'garden', 'garage'];
+const HA_KINDS = [['light', 4], ['switch', 4], ['cover', 2], ['media_player', 1], ['fan', 1], ['lock', 1], ['climate', 1], ['script', 2], ['automation', 10], ['button', 6], ['sensor', 110], ['binary_sensor', 18]];
+const haAll = [...ha];
+HA_AREAS.forEach((area, a) => HA_KINDS.forEach(([domain, n]) => {
+  if (domain === 'lock' && !['hall', 'garage'].includes(area)) return;
+  for (let i = 1; i <= n; i++) {
+    const sensor = domain === 'sensor' || domain === 'binary_sensor';
+    const e = {
+      id: `${domain}.${area}_${i}`, domain, area,
+      state: sensor ? (domain === 'sensor' ? String((18 + ((a * 7 + i) % 9) + i / 10).toFixed(1)) : 'off') : (i + a) % 3 ? 'off' : 'on',
+      unit: domain === 'sensor' ? '°C' : undefined, deviceClass: domain === 'sensor' ? 'temperature' : domain === 'binary_sensor' ? 'motion' : undefined,
+      controllable: !sensor && domain !== 'climate' && domain !== 'lock',
+      // Device settings Home Assistant hides (child lock, LED) are no suggestion.
+      hidden: domain === 'switch' && i === 4
+    };
+    const areaKey = `mock.haArea.${area}`;
+    const kindKey = `mock.haKind.${domain}`;
+    lz(e, { name: () => `${t(areaKey)} ${t(kindKey)} ${i}` });
+    haAll.push(e);
+  }
+}));
+const HA_SUGGESTED = ['light', 'switch', 'climate', 'cover', 'media_player', 'scene', 'script', 'fan', 'lock'];
+const haAreaName = (area) => {
+  const key = `mock.haArea.${area}`;
+  return t(key);
+};
+const haView = (e) => ({ ...e, area: e.area ? haAreaName(e.area) : undefined });
+const settings = { padGlyphs: new URLSearchParams(location.search).get('glyphs') ?? 'auto', areas: new URLSearchParams(location.search).get('areas')?.split(',') ?? ['games', 'apps', 'browser', 'news'], language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), homeAssistantUrl: 'http://homeassistant.local:8123', homeAssistantTokenSet: true, homeAssistantPinned: ['scene.kino', 'light.tv_led'], homeAssistantEntities: new URLSearchParams(location.search).has('haempty') ? [] : [...ha.map((e) => e.id), 'light.gartenhaus'], sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, browserHistory: true, guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, artworkCacheBytes: 42_000_000, caseHudInstallAutostart: true, caseHudInstallFps: false, caseHudInstallApi: true, caseHudGamingLease: true, vpnInGuide: true, tvInGuide: true, tvOnWithCouchHud: false, tvOffWithPc: false, bluetoothAutoOn: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: new URLSearchParams(location.search).has('pauseInMenu'), screenshotCombo: true, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
   aiProvider: 'anthropic', aiModel: '', anthropicKeySet: true, openAiKeySet: false,
   aiModels: { anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'], openai: ['gpt-5', 'gpt-5-mini'] },
   mcpEnabled: true, mcpLan: true, mcpPort: 8765, mcpToken: '3f9c1e7a5b2d48e6a0c4f1b7d9e2a6c8b5f0e3d1a7c9b2e4',
@@ -322,8 +443,29 @@ if (previewQuery.has('fresh')) {
 // In the preview: window.couchhudMockParental({ remainingSeconds: 840, expired: true }) simulates the clock.
 const parental = {
   enabled: new URLSearchParams(location.search).has('parental'), weekdayMinutes: 120, weekendMinutes: 180, windowStart: -1, windowEnd: -1,
-  perGameMinutes: 0, maxAge: 0, lockedItems: ['steam:271590'], usedMinutes: 45, bonusMinutes: 0, expired: false, remainingOverride: null
+  perGameMinutes: 0, maxAge: Number(new URLSearchParams(location.search).get('maxAge') ?? 0) || 0, lockedItems: ['steam:271590'], usedMinutes: 45, bonusMinutes: 0, expired: false, remainingOverride: null,
+  // The rating system ("auto" by the region; ?region=US|FR|JP in the preview stands in for the Windows region).
+  ratingSystem: new URLSearchParams(location.search).get('ratingSystem') ?? 'auto',
+  // The system the limit was saved under (?ratingSaved=usk with ?region=US shows the "region changed" hint).
+  ratingSaved: new URLSearchParams(location.search).get('ratingSaved') ?? ''
 };
+// Like AgeRatings.ForRegion: DE the USK, US and CA the ESRB, Europe PEGI, else the strictest.
+const mockRegion = (new URLSearchParams(location.search).get('region') ?? 'DE').toUpperCase();
+const regionSystem = () => (mockRegion === 'DE' ? 'usk' : ['US', 'CA'].includes(mockRegion) ? 'esrb'
+  : ['AT', 'FR', 'GB', 'NL', 'IT', 'ES', 'PL', 'CH', 'SE', 'BE'].includes(mockRegion) ? 'pegi' : 'strictest');
+const activeRatingSystem = () => (['usk', 'pegi', 'esrb'].includes(parental.ratingSystem) ? parental.ratingSystem : parental.ratingSystem === 'auto' ? regionSystem() : 'strictest');
+// The demo's Steam entries carry three ratings (as the store's "ratings" block): the one that counts depends on the system.
+const DEMO_RATINGS = { usk: 16, pegi: 18, esrb: 17 };
+const demoRating = () => {
+  const system = activeRatingSystem();
+  if (DEMO_RATINGS[system]) return { age: DEMO_RATINGS[system], system };
+  return { age: Math.max(...Object.values(DEMO_RATINGS)), system: 'pegi' };
+};
+const mockAgeLabel = ({ age, system }) => (system === 'esrb' ? `ESRB ${({ 3: 'EC', 6: 'E', 10: 'E10+', 13: 'T', 17: 'M', 18: 'AO' })[age]}` : limitLabel(system, age) ?? `${system.toUpperCase()} ${age}`);
+// Like AgeRatings.JudgedSystems: under "auto" a region that names another system than the saved one.
+const savedRatingSystem = () => (parental.ratingSystem === 'auto' && parental.ratingSaved && parental.ratingSaved !== activeRatingSystem() ? parental.ratingSaved : null);
+// Like AgeRatings.LimitFor: above the system's top step the limit is that step (a stored 18 under the ESRB is M).
+const shownLimit = () => (parental.maxAge ? Math.min(parental.maxAge, Math.max(...ratingSteps(activeRatingSystem()))) : 0);
 const parentalState = () => {
   const limit = parental.weekdayMinutes;
   const remaining = parental.remainingOverride ?? (limit ? (limit + parental.bonusMinutes - parental.usedMinutes) * 60 : null);
@@ -331,7 +473,9 @@ const parentalState = () => {
   return {
     enabled: parental.enabled, enforced, advisory: parental.enabled && !enforced ? (security.couchLock === 'off' ? 'noLock' : 'notShell') : null,
     hasParentCode: security.couchLock !== 'off', weekdayMinutes: parental.weekdayMinutes, weekendMinutes: parental.weekendMinutes,
-    windowStart: parental.windowStart, windowEnd: parental.windowEnd, perGameMinutes: parental.perGameMinutes, maxAge: parental.maxAge,
+    windowStart: parental.windowStart, windowEnd: parental.windowEnd, perGameMinutes: parental.perGameMinutes, maxAge: shownLimit(),
+    ratingSystem: parental.ratingSystem, ratingSystemActive: activeRatingSystem(), ratingSystemRegion: regionSystem(), ratingSystemSaved: savedRatingSystem(),
+    maxAgeSaved: savedRatingSystem() && parental.maxAge ? Math.min(parental.maxAge, Math.max(...ratingSteps(savedRatingSystem()))) : null, anyAgeLimit: parental.maxAge > 0,
     lockedItems: [...parental.lockedItems], remainingSeconds: parental.enabled ? remaining : null, limiter: parental.enabled && remaining != null ? 'day' : null,
     inWindow: true, usedMinutes: parental.usedMinutes, bonusMinutes: parental.bonusMinutes, clockJumped: false,
     expired: parental.expired, closing: false, closeFailed: false, graceSeconds: 60, blockUnknownAge: parental.blockUnknownAge ?? true, countApps: parental.countApps ?? true, tampered: !!parental.tampered, timeZoneChanged: false, codeProblem: null, game: session?.name ?? null
@@ -351,6 +495,18 @@ window.couchhudMockParental = (patch = {}) => {
   Object.assign(parental, Object.fromEntries(Object.entries(patch).filter(([k]) => k in parental && k !== 'remainingOverride')));
   emit('parental', { kind: patch.kind ?? 'status', minutes: patch.minutes });
 };
+
+// In the preview and the browser check (scripts/browser-ui-check.mjs): what the host would report about the page.
+// window.couchhudMockBrowser('browserdialog', { id: 1, kind: 'confirm', message: 'Leave?', host: 'example.org' })
+window.couchhudMockBrowser = (name, payload) => {
+  if (name === 'refuseFocus') return void (browser.refuseFocus = !!payload);
+  if (listeners[name] && name.startsWith('browser')) emit(name, payload);
+};
+
+// Startup options per entry, as the host keeps them in its overrides.
+const launchOverrides = {};
+const infoOverrides = {};
+const storeMatches = {};
 
 window.couchhud = {
   getLibrary: async () => library.map((i) => ({ ...i })),
@@ -408,10 +564,44 @@ window.couchhud = {
     { name: q, region: t('mock.regionBavaria'), latitude: 48.1, longitude: 11.6 },
     { name: t('mock.placeEast', { name: q }), region: t('mock.regionSaxony'), latitude: 51.0, longitude: 13.7 }
   ],
-  getHomeEntities: async () => structuredClone(ha),
+  getHomeEntities: async () => {
+    const byId = new Map(haAll.map((e) => [e.id, e]));
+    const chosen = settings.homeAssistantEntities.map((id) => byId.get(id)).filter(Boolean).map((e) => ({ ...haView(e), selected: true }));
+    const pins = settings.homeAssistantPinned.filter((id) => !settings.homeAssistantEntities.includes(id)).map((id) => byId.get(id)).filter(Boolean).map((e) => ({ ...haView(e), selected: false }));
+    return structuredClone([...chosen, ...pins]);
+  },
+  getHomeCatalog: async () => structuredClone({
+    entities: haAll.map((e) => ({ ...haView(e), suggested: !e.hidden && HA_SUGGESTED.includes(e.domain) })),
+    selected: settings.homeAssistantEntities,
+    areas: true
+  }),
+  testHomeAssistant: async () => haAll.length,
+  // The host opens Home Assistant's sign-in page in the couch browser; the preview signs in after a moment.
+  signInHomeAssistant: async (url) => {
+    log('signInHomeAssistant', url);
+    settings.homeAssistantUrl = url;
+    setTimeout(() => {
+      Object.assign(settings, { homeAssistantSignedIn: true, homeAssistantTokenSet: false });
+      emit('homeAssistantSignIn', { ok: true });
+    }, 1500);
+    return { ok: true };
+  },
+  signOutHomeAssistant: async () => {
+    log('signOutHomeAssistant');
+    settings.homeAssistantSignedIn = false;
+    return { ok: true, revoked: true };
+  },
+  onHomeAssistantSignIn: (cb) => listeners.homeAssistantSignIn.push(cb),
+  setHomeSelection: async (ids) => {
+    const clean = [...new Set((Array.isArray(ids) ? ids : []).filter((id) => typeof id === 'string' && /^[a-z_]+\.[a-z0-9_]+$/.test(id)))].slice(0, 500);
+    settings.homeAssistantEntities = clean;
+    settings.homeAssistantPinned = settings.homeAssistantPinned.filter((id) => clean.includes(id));
+    log('setHomeSelection', clean.length);
+    return clean;
+  },
   activateHomeEntity: async (id) => {
-    const e = ha.find((x) => x.id === id);
-    if (['light', 'switch'].includes(e.domain)) e.state = e.state === 'on' ? 'off' : 'on';
+    const e = haAll.find((x) => x.id === id);
+    if (['light', 'switch', 'fan'].includes(e.domain)) e.state = e.state === 'on' ? 'off' : 'on';
     if (e.domain === 'media_player') e.state = e.state === 'playing' ? 'paused' : 'playing';
     log('activateHomeEntity', id);
     return null;
@@ -419,8 +609,8 @@ window.couchhud = {
   pinHomeEntity: async (id) => {
     const i = settings.homeAssistantPinned.indexOf(id);
     if (i >= 0) settings.homeAssistantPinned.splice(i, 1);
-    else settings.homeAssistantPinned.push(id);
-    return i < 0;
+    else if (settings.homeAssistantEntities.includes(id)) settings.homeAssistantPinned.push(id);
+    return i < 0 && settings.homeAssistantPinned.includes(id);
   },
   getStoreInfo: async (id) => ({
     description: '',
@@ -439,8 +629,53 @@ window.couchhud = {
       genres: [t('mock.genreAction'), t('mock.genreRpg')],
       installDir: `D:\\SteamLibrary\\steamapps\\common\\${item.name}`,
       sizeBytes: 52_428_800_000,
-      canUninstall: item.source !== 'custom'
+      canUninstall: item.source !== 'custom',
+      customLaunch: Object.keys(launchOverrides[id] ?? {}).length > 0,
+      // The rating the age limit uses (a kept stricter one first); the demo gives Steam entries a 16.
+      ageRating: storeMatches[id]?.floor ?? (item.source === 'steam' ? demoRating().age : null),
+      // The label in the active system; none for a kept floor (shown as an age).
+      ageLabel: storeMatches[id]?.floor == null && item.source === 'steam' ? mockAgeLabel(demoRating()) : null,
+      storePending: false,
+      ...(infoOverrides[id] ?? {})
     };
+  },
+  getItemInfo: async (id) => {
+    const item = library.find((i) => i.id === id);
+    const d = await window.couchhud.getDetails(id);
+    const s = storeMatches[id] ?? {};
+    return {
+      description: d.description, developers: d.developers, publishers: d.publishers, releaseDate: d.releaseDate, genres: d.genres,
+      custom: Object.keys(infoOverrides[id] ?? {}),
+      store: item.source === 'steam'
+        ? { mode: 'steam', appId: item.id.slice(6), name: null, ageFloor: null }
+        : { mode: s.match === 'none' ? 'none' : s.match ? 'manual' : 'auto', appId: s.match && s.match !== 'none' ? s.match : null, name: s.name ?? null, ageFloor: s.floor ?? null }
+    };
+  },
+  setItemInfo: async (id, changes) => {
+    const o = infoOverrides[id] ?? {};
+    for (const [k, v] of Object.entries(changes)) {
+      if (v == null || !String(v).trim()) delete o[k];
+      else o[k] = ['developers', 'publishers', 'genres'].includes(k) ? String(v).split(/[,;]/).map((x) => x.trim()).filter(Boolean) : String(v).trim();
+    }
+    infoOverrides[id] = o;
+    log('setItemInfo', id, changes);
+    return window.couchhud.getItemInfo(id);
+  },
+  searchStore: async (query) => {
+    await sleep(400);
+    log('searchStore', query);
+    return [
+      { appId: '1145360', name: 'Hades' },
+      { appId: '1145350', name: 'Hades II' },
+      { appId: '2201080', name: `${query} (2023)` }
+    ];
+  },
+  setStoreMatch: async (id, match, name) => {
+    const before = storeMatches[id] ?? {};
+    // Without parental controls the stricter rating stays (demo: an 18 from before).
+    storeMatches[id] = { match, name: match && match !== 'none' ? name : null, floor: parental.enabled ? null : (before.floor ?? 18) };
+    log('setStoreMatch', id, match, name);
+    return window.couchhud.getItemInfo(id);
   },
   uninstall: async (id) => (log('uninstall', id), null),
   getSaveInfo: async (id) => {
@@ -477,11 +712,11 @@ window.couchhud = {
     if (i >= 0) saveBackups.splice(i, 1);
     return i >= 0;
   },
-  getSaveSettings: async () => ({ ...saveSettings, custom: saveSettings.backupDir !== saveSettings.defaultBackupDir }),
+  getSaveSettings: async () => ({ ...saveSettings, custom: saveSettings.backupDir !== saveSettings.defaultBackupDir, totalBytes: saveTotalBytes() }),
   setSaveSetting: async (key, value) => {
     if (key === 'backupDir') saveSettings.backupDir = value || saveSettings.defaultBackupDir;
     else saveSettings[key] = value;
-    return { ...saveSettings, custom: saveSettings.backupDir !== saveSettings.defaultBackupDir };
+    return { ...saveSettings, custom: saveSettings.backupDir !== saveSettings.defaultBackupDir, totalBytes: saveTotalBytes() };
   },
   getSettings: async () => ({ ...settings, isShell, configPath: 'C:\\Users\\kewe87\\AppData\\Roaming\\CouchHud\\config.json', logPath: 'C:\\Users\\kewe87\\AppData\\Local\\CouchHud\\logs' }),
   setSetting: async (key, value) => {
@@ -575,6 +810,37 @@ window.couchhud = {
     log('editLaunch', id, args, cwd);
     return { ...item };
   },
+  getLaunchOptions: async (id) => {
+    const item = library.find((i) => i.id === id);
+    const o = launchOverrides[id] ?? {};
+    const exe = item.launch.kind === 'exe';
+    const argsMode = item.launch.embedded ? 'none' : o.target ? 'override' : exe ? (item.source === 'custom' ? 'own' : 'override') : item.source === 'steam' ? 'steam' : item.source === 'custom' ? 'none' : 'launcher';
+    const folder = item.installDir ?? (exe ? item.launch.target.replace(/[\\/][^\\/]*$/, '') : `D:\\SteamLibrary\\steamapps\\common\\${item.name}`);
+    return {
+      argsMode,
+      args: o.args ?? (o.target ? [] : item.launch.args ?? []),
+      workingDirectory: o.cwd ?? (o.target ? null : item.launch.workingDirectory ?? null),
+      programFolder: (o.target ?? (exe ? item.launch.target : '')).replace(/[\\/][^\\/]*$/, '') || null,
+      targetAllowed: !item.launch.embedded && !(item.source === 'custom' && !exe),
+      target: o.target ?? null,
+      installFolder: folder,
+      custom: Object.keys(o).length > 0,
+      steamAppId: item.id.startsWith('steam:') ? item.id.slice(6) : null
+    };
+  },
+  setLaunchOverride: async (id, changes) => {
+    const o = launchOverrides[id] ?? {};
+    if ('target' in changes) {
+      if (changes.target) o.target = changes.target;
+      else for (const k of Object.keys(o)) delete o[k];
+    }
+    if ('args' in changes) o.args = changes.args ? changes.args.match(/"[^"]*"|\S+/g)?.map((a) => a.replace(/^"|"$/g, '')) ?? [] : undefined;
+    if ('cwd' in changes) o.cwd = changes.cwd || undefined;
+    for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
+    launchOverrides[id] = o;
+    log('setLaunchOverride', id, changes);
+    return window.couchhud.getLaunchOptions(id);
+  },
   setEntryEdge: async (id, edge) => {
     const item = library.find((i) => i.id === id);
     if (item) item.launch = { ...item.launch, embedded: !edge };
@@ -653,7 +919,7 @@ window.couchhud = {
     item.favorite = !item.favorite;
     return item.favorite;
   },
-  systemInfo: async () => ({ platform: 'browser', version: 'preview', dev: true, nativeInput: false, isShell, sounds: true, skin, language: settings.language, homeAssistant: true, weather: true, trailerPreviews: true, assistant: !!settings.aiProvider, uiHdr: settings.uiHdr, hdrOn: new URLSearchParams(location.search).has('hdr'), soundVolume: settings.soundVolume, soundSet: settings.soundSet, audioMode: settings.audioMode, musicVolume: settings.musicVolume, integrationMode: settings.integrationMode, acceptedTerms: settings.acceptedTerms, setupWizardDone: settings.setupWizardDone, screensaverMinutes: settings.screensaverMinutes, screensaverStyle: settings.screensaverStyle, displayOffMinutes: settings.displayOffMinutes, pixelShift: settings.pixelShift, reduceMotion: settings.reduceMotion, pointer: settings.pointer, mouseUnlocked: settings.mouseUnlocked }),
+  systemInfo: async () => ({ platform: 'browser', version: 'preview', dev: true, nativeInput: false, padKind: new URLSearchParams(location.search).get('pad') === 'ps' ? 'playstation' : 'xbox', padGlyphs: settings.padGlyphs, isShell, sounds: true, skin, language: settings.language, homeAssistant: true, weather: true, trailerPreviews: true, assistant: !!settings.aiProvider, uiHdr: settings.uiHdr, hdrOn: new URLSearchParams(location.search).has('hdr'), soundVolume: settings.soundVolume, soundSet: settings.soundSet, audioMode: settings.audioMode, musicVolume: settings.musicVolume, integrationMode: settings.integrationMode, acceptedTerms: settings.acceptedTerms, setupWizardDone: settings.setupWizardDone, areas: [...settings.areas], screensaverMinutes: settings.screensaverMinutes, screensaverStyle: settings.screensaverStyle, displayOffMinutes: settings.displayOffMinutes, pixelShift: settings.pixelShift, reduceMotion: settings.reduceMotion, pointer: settings.pointer, mouseUnlocked: settings.mouseUnlocked }),
   listSkins: async () => [],
   setSkin: async (id) => (skin = id),
   setShell: async (install) => {
@@ -669,14 +935,21 @@ window.couchhud = {
   onNav: noop,
   onLibrary: noop,
   onPad: (cb) => listeners.pad.push(cb),
+  onPadKind: noop,
+  onBattery: (cb) => listeners.battery.push(cb),
   onBluetoothRecovery: (cb) => listeners.btRecovery.push(cb),
   onSession: (cb) => listeners.session.push(cb),
   onAudio: (cb) => listeners.audio.push(cb),
   onToast: (cb) => listeners.toast.push(cb),
+  onScreenshot: (cb) => listeners.screenshot.push(cb),
   onUpdates: (cb) => listeners.updates.push(cb),
   onCatalogUpdates: (cb) => listeners.catalogUpdates.push(cb),
+  onDownloads: (cb) => listeners.downloads.push(cb),
+  onUninstalledArt: (cb) => listeners.uninstalledArt.push(cb),
   onSelfUpdate: (cb) => listeners.selfUpdate.push(cb),
   ...caseHudMock(),
+  ...vpnMock(),
+  ...tvMock(),
   onAssistant: (cb) => listeners.assistant.push(cb),
   onRemote: (cb) => listeners.remote.push(cb),
   onFocus: noop,
@@ -687,18 +960,65 @@ window.couchhud = {
   onAdminApproval: noop,
   onBrowser: (cb) => listeners.browser.push(cb),
   onBrowserUi: (cb) => listeners.browserui.push(cb),
+  onBrowserDialog: (cb) => listeners.browserdialog.push(cb),
   onNotification: (cb) => listeners.notification.push(cb),
   getDisplay: async () => structuredClone(display),
   getProfile: async (id) => ({ profile: structuredClone(profiles[id] ?? {}), modes: structuredClone(display.modes), hdrSupported: true, devices: structuredClone(audio.devices) }),
   setProfile: async (id, p) => ((profiles[id] = p), { profile: structuredClone(p), modes: structuredClone(display.modes), hdrSupported: true, devices: structuredClone(audio.devices) }),
-  capture: async (kind) => log('capture', kind),
-  getDownloads: async () => {
-    dl = Math.min(1, dl + 0.07);
-    return [
-      { appId: '1091500', name: 'Cyberpunk 2077', state: 'downloading', progress: dl, bytesDone: Math.round(dl * 18_400_000_000), bytesTotal: 18_400_000_000, isUpdate: true },
-      { appId: '1086940', name: "Baldur's Gate 3", state: 'queued', progress: 0, bytesDone: 0, bytesTotal: 2_100_000_000, isUpdate: true },
-      { appId: '2358720', name: 'Black Myth: Wukong', state: 'paused', progress: 0.42, bytesDone: 54_000_000_000, bytesTotal: 128_000_000_000, isUpdate: false }
-    ];
+  capture: async (kind, source) => {
+    log('capture', kind, source);
+    // Like the host: the screenshot reports itself (toast with the picture), refused while a code entry is open.
+    if (kind === 'screenshot') {
+      const payload = mockCodeEntry
+        ? { ok: false, text: t('mock.shotRefused') }
+        : { ok: true, text: t('mock.shotSaved', { name: session?.name ?? 'CouchHUD' }), url: fakeShot(session?.name ?? 'CouchHUD', 210) };
+      setTimeout(() => listeners.screenshot.forEach((cb) => cb(payload)), 450);
+      return payload;
+    }
+    return null;
+  },
+  codeEntryState: async (open) => {
+    mockCodeEntry = open === true;
+    return null;
+  },
+  pairingState: async () => null,
+  getDownloadCenter: async () => downloadCenter(),
+  dismissDownload: async (id) => {
+    if (id == null) {
+      finishedDownloads.length = 0;
+      ['catalog:plugin:wand', 'update:apps'].forEach((x) => dismissedDownloads.add(x));
+    } else {
+      dismissedDownloads.add(id);
+      requestedDownloads.delete(id);
+      const at = finishedDownloads.findIndex((e) => e.id === id);
+      if (at >= 0) finishedDownloads.splice(at, 1);
+    }
+    return downloadCenter();
+  },
+  getUninstalled: async ({ offset = 0, limit = 56, source = null, query = null } = {}) => {
+    await new Promise((r) => setTimeout(r, 300));
+    const q = (query ?? '').toLowerCase();
+    const list = uninstalled.filter((g) => !requestedDownloads.has(g.id) && (!source || g.source === source) && (!q || g.name.toLowerCase().includes(q)));
+    const start = Math.max(0, Math.min(offset, Math.max(0, list.length - 1)));
+    const counts = { steam: uninstalled.filter((g) => g.source === 'steam').length, epic: uninstalled.filter((g) => g.source === 'epic').length };
+    return { total: list.length, offset: start, items: list.slice(start, start + Math.min(limit, 120)), counts, scanning: false, scannedAt: Date.now() };
+  },
+  cancelDownload: async (id) => {
+    log('cancelDownload', id);
+    return downloadCenter();
+  },
+  openClientDownloads: async (source) => {
+    if (source !== 'steam') throw new Error(t('mock.dlUnknown'));
+    log('openClientDownloads', source);
+    return downloadCenter();
+  },
+  installGame: async (id) => {
+    const game = uninstalled.find((g) => g.id === id);
+    if (!game) throw new Error(t('mock.dlUnknown'));
+    requestedDownloads.set(id, { id, kind: 'game', source: game.source, name: game.name, state: game.source === 'steam' ? 'waiting' : 'inClient', progress: null, bytesDone: 0, bytesTotal: 0, isUpdate: false, detail: null, updatedAt: Date.now() });
+    log('installGame', id);
+    setTimeout(() => listeners.downloads.forEach((cb) => cb(downloadCenter())), 50);
+    return downloadCenter();
   },
   setDisplayMode: async (width, height, hz) => ((display.current = { width, height, hz }), structuredClone(display)),
   setHdr: async (on) => ((display.hdrOn = on), structuredClone(display)),
@@ -757,8 +1077,8 @@ window.couchhud = {
   scanBluetooth: async () => {
     await new Promise((r) => setTimeout(r, 1500));
     return [
-      { id: 'bt1', name: 'Xbox Wireless Controller', paired: true, connected: true, lowEnergy: true, kind: 'controller' },
-      { id: 'bt2', name: 'Sony WH-1000XM5', paired: true, connected: false, lowEnergy: false, kind: 'headphones' },
+      { id: 'bt1', name: 'Xbox Wireless Controller', paired: true, connected: true, lowEnergy: true, kind: 'controller', battery: lowBattery ? 10 : 60 },
+      { id: 'bt2', name: 'Sony WH-1000XM5', paired: true, connected: true, lowEnergy: false, kind: 'headphones', battery: 80 },
       { id: 'bt3', name: 'DualSense Wireless Controller', paired: false, connected: false, lowEnergy: false, kind: 'controller' },
       { id: 'bt4', name: 'JBL Flip 6', paired: false, connected: false, lowEnergy: false, kind: 'speaker' }
     ];
@@ -810,6 +1130,12 @@ window.couchhud = {
   onSkin: noop,
   onHdr: noop,
   onSettings: noop,
+  onAreas: noop,
+  setFeatureAreas: async (enabled) => {
+    if (!['games', 'apps', 'browser'].some((a) => enabled.includes(a))) throw new Error(t('mock.areasNeedOne'));
+    settings.areas = ['games', 'apps', 'browser', 'news'].filter((a) => enabled.includes(a));
+    return { areas: [...settings.areas] };
+  },
   assistantInfo: async () => ({ configured: !!settings.aiProvider, provider: settings.aiProvider, model: settings.aiModel || settings.aiModels[settings.aiProvider]?.[0] }),
   resetAssistant: async () => null,
   confirmAssistant: async (id, ok) => pendingConfirm?.(ok),
@@ -882,33 +1208,48 @@ window.couchhud = {
     settings.integrationMode = mode;
     return { mode, undone };
   },
-  getBrowser: async () => structuredClone(browser),
+  getBrowser: async () => browserSnapshot(),
+  revealBrowserRecent: async () => ((recentShown = true), browserSnapshot()),
   openBrowser: async (text) => {
     log('openBrowser', text);
     if (text) Object.assign(browser, { open: true, url: text.includes('.') && !text.includes(' ') ? `https://${text.replace(/^https?:\/\//, '')}` : `https://duckduckgo.com/?q=${encodeURIComponent(text)}`, title: text, canGoBack: true });
-    emit('browser', structuredClone(browser));
+    emit('browser', browserSnapshot());
     emit('browserui', 'show');
   },
   // The native page does not exist in the preview: the placeholder shows where it would be.
   browserLayout: async (x, y, w, h, visible) => log('browserLayout', visible ? [x, y, w, h].map(Math.round).join(',') : 'hidden'),
-  browserFocus: async (page) => log('browserFocus', page),
+  // Like the host: the page gets the controller only while it is open (and on screen); the answer is the controller's place.
+  browserFocus: async (page) => (log('browserFocus', page), page && browser.open && !browser.refuseFocus),
+  browserDialogAnswer: async (id, ok, text) => log('browserDialogAnswer', id, ok, text ?? null),
+  browserType: async (text, enter) => log('browserType', text, enter),
   browserCommand: async (command) => {
     log('browserCommand', command);
     if (command === 'close') {
       Object.assign(browser, { open: false, url: '', title: '' });
-      emit('browser', structuredClone(browser));
+      emit('browser', browserSnapshot());
       emit('browserui', 'closed');
     }
   },
-  setBrowserZoom: async (zoom) => ((browser.zoom = zoom), structuredClone(browser)),
-  addBookmark: async (name, url) => (browser.bookmarks.push({ name, url }), structuredClone(browser)),
-  removeBookmark: async (url) => ((browser.bookmarks = browser.bookmarks.filter((b) => b.url !== url)), structuredClone(browser)),
+  setBrowserZoom: async (zoom) => ((browser.zoom = zoom), browserSnapshot()),
+  addBookmark: async (name, url) => (browser.bookmarks.push({ name, url }), browserSnapshot()),
+  removeBookmark: async (url) => ((browser.bookmarks = browser.bookmarks.filter((b) => b.url !== url)), browserSnapshot()),
   getParental: async () => parentalState(),
   setParental: async (key, value) => {
+    if (key === 'ratingSystem') {
+      // As the host: a known choice, an unlocked couch, the parents' code with parental controls on; every limit moves down, never looser.
+      if (!RATING_CHOICES.includes(value)) throw new Error('ratingSystem');
+      if (!parentalUnlocked()) throw new Error(t('mock.unlockFirst'));
+      if (parental.enabled) takeGrant();
+      parental.ratingSystem = value;
+      parental.maxAge = convertLimit(parental.maxAge, activeRatingSystem());
+      parental.ratingSaved = activeRatingSystem();
+      return parentalState();
+    }
     takeGrant();
     if (key === 'enabled' && value && security.couchLock === 'off') throw new Error(t('mock.parentalNeedsLock'));
     if (key === 'window') [parental.windowStart, parental.windowEnd] = value;
     else parental[key === 'enabled' ? 'enabled' : key] = value;
+    if (key === 'maxAge' && parental.maxAge > 0) parental.ratingSaved = activeRatingSystem();
     return parentalState();
   },
   setParentalItemLock: async (id, locked) => {
@@ -942,6 +1283,24 @@ window.couchhud = {
   parentalReset: async () => (takeGrant(), parentalState()),
   parentalAcceptClock: async () => (takeGrant(), parentalState()),
   parentalAdoptZone: async () => (takeGrant(), parentalState()),
+  // Profiles in the preview: one profile, so no picker at the start; created ones live until the page reloads (the switch reloads it).
+  getProfiles: async () => mockProfilesView(),
+  switchProfile: async (id) => {
+    const switched = !mockProfile(id).active;
+    mockProfiles.forEach((p) => (p.active = p.id === id));
+    return { ok: true, switched };
+  },
+  profileScreen: async () => null,
+  profileIdle: async () => null,
+  addProfile: async (name, avatar, color, restricted) => (mockProfiles.push({ id: `p${mockProfiles.length}`, name, avatar, color, restricted, hasCode: false, isDefault: false, active: false }), mockProfilesView()),
+  renameProfile: async (id, name) => (mockProfile(id).name = name, mockProfilesView()),
+  setProfileLook: async (id, avatar, color) => (Object.assign(mockProfile(id), { avatar, color }), mockProfilesView()),
+  setProfileRestricted: async (id, restricted) => (Object.assign(mockProfile(id), { restricted, hasCode: restricted && mockProfile(id).hasCode }), mockProfilesView()),
+  setProfileCode: async (id, code) => (mockProfile(id).hasCode = !!code, mockProfilesView()),
+  removeProfile: async (id) => (mockProfiles.splice(mockProfiles.indexOf(mockProfile(id)), 1), mockProfilesView()),
+  getProfileRules: async (id) => ({ id, ratingSystemActive: activeRatingSystem(), weekdayMinutes: 0, weekendMinutes: 0, perGameMinutes: 0, maxAge: 0, blockUnknownAge: false, countApps: false, windowStart: -1, windowEnd: -1 }),
+  setProfileRule: async (id) => ({ id, ratingSystemActive: activeRatingSystem(), weekdayMinutes: 0, weekendMinutes: 0, perGameMinutes: 0, maxAge: 0, blockUnknownAge: false, countApps: false, windowStart: -1, windowEnd: -1 }),
+  onProfiles: () => {},
   parentalCloseGame: async () => {
     session = null;
     setTimeout(() => emit('session', null), 300);
@@ -1042,7 +1401,8 @@ window.couchhud = {
     audio.devices.forEach((d) => (d.isDefault = d.id === id));
     return structuredClone(audio);
   },
-  getPads: async () => (noPad ? [] : [{ index: 0, battery: 'medium' }]),
+  getPads: async () => (noPad ? [] : [{ index: 0, battery: padLevel }]),
+  getBattery: async () => battery(),
   rumble: async () => null
 };
 

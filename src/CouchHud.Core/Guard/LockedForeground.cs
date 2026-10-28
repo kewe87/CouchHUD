@@ -85,6 +85,9 @@ public static class LockedForeground
 
     public static IReadOnlyList<string> SystemList => SystemProcesses;
 
+    /// <summary>A known web browser (by process or file name without .exe).</summary>
+    public static bool IsBrowser(string? processName) => In(Browsers, processName);
+
     public static IReadOnlyList<string> NotGameList => NotGames;
 
     /// <summary>The WebView2 helper processes of CouchHud's own windows: the only children of CouchHud that are "own".</summary>

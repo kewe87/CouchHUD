@@ -19,10 +19,16 @@ public sealed class VdfObject : Dictionary<string, object>
 
 public static class Vdf
 {
+    /// <summary>
+    /// Deeper nesting than any Steam file has (localconfig.vdf goes about ten levels deep). The files are written by Steam into
+    /// user-writable folders, so a crafted one must end in a <see cref="FormatException"/>, never in a stack overflow.
+    /// </summary>
+    public const int MaxDepth = 64;
+
     public static VdfObject Parse(string text)
     {
         var reader = new Reader(text);
-        return reader.ReadObject(expectClose: false);
+        return reader.ReadObject(expectClose: false, depth: 0);
     }
 
     private sealed class Reader(string text)
@@ -31,8 +37,9 @@ public static class Vdf
 
         private enum Kind { String, Open, Close }
 
-        public VdfObject ReadObject(bool expectClose)
+        public VdfObject ReadObject(bool expectClose, int depth)
         {
+            if (depth > MaxDepth) throw new FormatException("VDF: nested too deep");
             var obj = new VdfObject();
             while (true)
             {
@@ -52,7 +59,7 @@ public static class Vdf
                 var value = Next() ?? throw new FormatException($"VDF: missing value for {key.Value.Text}");
                 obj[key.Value.Text] = value.Kind switch
                 {
-                    Kind.Open => ReadObject(expectClose: true),
+                    Kind.Open => ReadObject(expectClose: true, depth + 1),
                     Kind.String => value.Text,
                     _ => throw new FormatException($"VDF: unexpected }} after {key.Value.Text}")
                 };

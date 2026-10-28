@@ -284,14 +284,21 @@ public static class UninstallRelease
     public static readonly TimeSpan DefaultCap = TimeSpan.FromMinutes(3);
     public static readonly TimeSpan Poll = TimeSpan.FromSeconds(2);
 
-    /// <returns>"done", "failed", "noService" (nothing to ask), "refused" (the service said no) or "timeout" (still running at the cap).</returns>
+    /// <returns>
+    /// "done", "failed", "noService" (none installed, or none by design), "notRunning" (installed, stopped), "unreachable" (registered and
+    /// running, but the pipe could not be opened: e.g. a caller from a network logon, whom the pipe's access list refuses on purpose),
+    /// "refused" (the service said no) or "timeout" (still running at the cap). The log names the real reason, so a release that did not
+    /// happen is never taken for "there was no service" (VM test 0.5).
+    /// </returns>
     public static async Task<string> RunAsync(Func<Task<OpResult>> release, Func<Task<string?>> releaseStatus, Func<TimeSpan, Task> delay,
         Func<DateTimeOffset> now, TimeSpan cap)
     {
         var started = now();
         var result = await release().ConfigureAwait(false);
         if (result.Ok) return "done";
-        if (result.Failure is FailureKind.NotExpected or FailureKind.NotInstalled or FailureKind.NotRunning or FailureKind.Unreachable) return "noService";
+        if (result.Failure is FailureKind.NotExpected or FailureKind.NotInstalled) return "noService";
+        if (result.Failure == FailureKind.NotRunning) return "notRunning";
+        if (result.Failure == FailureKind.Unreachable) return "unreachable";
         if (result.Failure is FailureKind.Squatted or FailureKind.Inconsistent) return "refused";
         // "failed": the job ended and some account is left; "timeout" (or busy): the job may still run.
         if (result.Failure is not (FailureKind.Timeout or FailureKind.Failed or FailureKind.Retry)) return "refused";

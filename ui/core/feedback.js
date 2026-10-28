@@ -23,6 +23,8 @@ export async function attempt(action, label, { quietLocked = false } = {}) {
     return await action();
   } catch (err) {
     if (quietLocked && err?.locked) return undefined;
+    // A protected profile waits at the picker: the host answers only the picker; everything else is reloaded once it is chosen.
+    if (err?.held) return undefined;
     console.error(err);
     toast(`${label ?? t('feedback.failed')}: ${err?.message || err}`, 5000);
     return undefined;

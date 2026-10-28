@@ -32,10 +32,8 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
     {
         // A true patch: only what was given goes over the wire.
         var body = new Dictionary<string, object>();
-        if (patch.Design is not null) body["design"] = patch.Design;
         if (patch.Mode is not null) body["mode"] = patch.Mode;
         if (patch.Brightness is { } b) body["brightness"] = Math.Clamp(b, 0, 100);
-        if (patch.Rotation is { } r) body["rotation"] = r;
         if (patch.Theme is not null) body["theme"] = patch.Theme;
         return Send<CaseHudPanel>(HttpMethod.Patch, $"panels/{Id(id)}", body, ct);
     }
@@ -43,7 +41,6 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
     public Task IdentifyAsync(string? panelId, CancellationToken ct = default) =>
         Send<JsonElement?>(HttpMethod.Post, panelId is null ? "identify" : $"panels/{Id(panelId)}/identify", null, ct);
 
-    public Task<List<CaseHudDesign>> DesignsAsync(CancellationToken ct = default) => Send<List<CaseHudDesign>>(HttpMethod.Get, "designs", null, ct);
     public Task<List<CaseHudSet>> SetsAsync(CancellationToken ct = default) => Send<List<CaseHudSet>>(HttpMethod.Get, "sets", null, ct);
 
     public Task ApplySetAsync(string set, string theme, IReadOnlyList<string>? panels = null, CancellationToken ct = default) =>
@@ -52,6 +49,9 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
     public Task<List<CaseHudScene>> ScenesAsync(CancellationToken ct = default) => Send<List<CaseHudScene>>(HttpMethod.Get, "scenes", null, ct);
     public Task ActivateSceneAsync(string id, CancellationToken ct = default) => Send<JsonElement?>(HttpMethod.Post, $"scenes/{Id(id)}/activate", null, ct);
     public Task SetRotationAsync(bool enabled, CancellationToken ct = default) => Send<JsonElement?>(HttpMethod.Patch, "rotation", new { enabled }, ct);
+
+    /// <summary>The automation on or off (its rules stay; they are edited in CaseHUD's window). Older builds answer 404 or 405.</summary>
+    public Task SetAutomationAsync(bool enabled, CancellationToken ct = default) => Send<JsonElement?>(HttpMethod.Patch, "automation", new { enabled }, ct);
     public Task NextSceneAsync(CancellationToken ct = default) => Send<JsonElement?>(HttpMethod.Post, "rotation/next", null, ct);
     public Task PowerAsync(bool on, CancellationToken ct = default) => Send<JsonElement?>(HttpMethod.Post, "power", new { on }, ct);
 
@@ -59,8 +59,6 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
     public Task GamingAsync(bool active, string? game = null, int? pid = null, int? leaseSeconds = null, CancellationToken ct = default) =>
         Send<JsonElement?>(HttpMethod.Post, "gaming", active ? new { active, game, pid, leaseSeconds } : new { active }, ct);
 
-    public Task<List<CaseHudCommunityDesign>> CommunityAsync(CancellationToken ct = default) => Send<List<CaseHudCommunityDesign>>(HttpMethod.Get, "community", null, ct);
-    public Task ImportCommunityAsync(string id, CancellationToken ct = default) => Send<JsonElement?>(HttpMethod.Post, $"community/{Id(id)}/import", null, ct);
     public Task SetAwtrixAsync(bool enabled, CancellationToken ct = default) => Send<JsonElement?>(HttpMethod.Patch, "awtrix", new { enabled }, ct);
 
     /// <summary>Lighting (CaseHUD 1.0, only when the status carries <c>lighting</c>).</summary>
@@ -82,20 +80,10 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
         catch (CaseHudException ex) when (ex.Code == "unreachable") { }
     }
 
-    /// <summary>Preview image as PNG bytes. kind: panel, design or community.</summary>
-    public async Task<byte[]> PreviewAsync(string kind, string id, int? size = null, string? theme = null, CancellationToken ct = default)
+    /// <summary>Live image of a display as PNG bytes (the only preview the couch shows).</summary>
+    public async Task<byte[]> PanelPreviewAsync(string id, int? size = null, CancellationToken ct = default)
     {
-        var folder = kind switch
-        {
-            "panel" => "panels",
-            "design" => "designs",
-            "community" => "community",
-            _ => throw new CaseHudException("bad_request", Strings.Get("casehud.badId"))
-        };
-        var query = new List<string>();
-        if (size is { } s) query.Add($"size={Math.Clamp(s, 32, 480)}");
-        if (theme is "dark" or "light") query.Add($"theme={theme}");
-        var path = $"{folder}/{Id(id)}/preview.png" + (query.Count > 0 ? "?" + string.Join('&', query) : "");
+        var path = $"panels/{Id(id)}/preview.png" + (size is { } s ? $"?size={Math.Clamp(s, 32, 480)}" : "");
         return await Fetch(HttpMethod.Get, path, null, MaxImageBytes, ct);
     }
 
@@ -147,7 +135,8 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
 
     /// <summary>
     /// The error of a refused request. 403 <c>api_disabled</c> (the API is switched off in CaseHUD; also with an old token) becomes the
-    /// hint where to switch it on; CaseHUD's own message is not shown for it. Any other 403 ("forbidden" from the Host check) stays generic.
+    /// hint where to switch it on; CaseHUD's own message is not shown for it. <c>unauthorized</c>, <c>forbidden</c> and 404 <c>not_found</c>
+    /// get our own text in the user's language; CaseHUD's English message for them only goes to the log (cleaned and capped).
     /// </summary>
     internal static async Task<CaseHudException> ReadError(HttpResponseMessage response, CancellationToken ct)
     {
@@ -160,6 +149,11 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
             var code = error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString()! : "error";
             var message = error.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString()! : code;
             if (CaseHudState.IsApiDisabled(status, code)) return CaseHudState.ApiOff();
+            if (OwnText(code, status) is { } own)
+            {
+                Console.Error.WriteLine($"[casehud] {status} {CaseHudLighting.SafeMessage(code, 40)}: {CaseHudLighting.SafeMessage(message)}");
+                return new CaseHudException(code, own, status);
+            }
             return new CaseHudException(code, message, status);
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or CaseHudException)
@@ -172,6 +166,15 @@ public sealed class CaseHudClient(HttpClient http, CaseHudApiInfo info)
             }, Strings.Get("casehud.httpStatus", status), status);
         }
     }
+
+    /// <summary>Our text for the refusals whose English message would only puzzle on the couch; null keeps CaseHUD's message.</summary>
+    internal static string? OwnText(string code, int status) => (code, status) switch
+    {
+        ("unauthorized", _) => Strings.Get("casehud.err.unauthorized"),
+        ("forbidden", _) => Strings.Get("casehud.err.forbidden"),
+        ("not_found", _) or (_, 404) => Strings.Get("casehud.err.notFound"),
+        _ => null
+    };
 
     private static async Task<byte[]> ReadLimited(HttpResponseMessage response, long limit, CancellationToken ct)
     {

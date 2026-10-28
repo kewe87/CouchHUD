@@ -50,3 +50,5 @@ body:
       options:
         - label: Der Quellcode ist öffentlich lesbar, und ich darf ihn unter dieser Lizenz weitergeben (auch Grafiken und Schriften). / The source is publicly readable and I may distribute it under this license (including graphics and fonts).
           required: true
+        - label: Name, Grafiken und Logos verwenden keine fremden Marken (z.B. keinen Konsolen-, Hersteller- oder Spielenamen als Skin-Namen). / The name, graphics and logos use no third-party trademarks (e.g. no console, manufacturer or game name as a skin name).
+          required: true

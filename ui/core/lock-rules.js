@@ -11,10 +11,63 @@ export function codeLockHeld(security) {
   return !security.codesInService || security.serviceCodes?.couch !== false;
 }
 
-/** The console setup's lock step: done with the Windows sign-in as the lock or with a code lock that has its code. */
+/**
+ * Before the console setup changes anything: not on the host's stand-in of broken settings (configFault, from a fresh read of the host,
+ * not only from what the page read at its start), and not without the hold that keeps the couch open through the run (its lock step would
+ * otherwise lock the HUD half way). readSecurity() and hold() are the host calls; a refusal of either stops the run before its first step.
+ * Resolves to { ok: true, security } or { ok: false, reason: 'configFault' | 'locked' | 'failed', error }.
+ */
+export async function beginSetupHold({ readSecurity, hold }) {
+  let security;
+  try {
+    security = await readSecurity();
+  } catch (error) {
+    return { ok: false, reason: error?.locked ? 'locked' : 'failed', error };
+  }
+  if (security?.configFault) return { ok: false, reason: 'configFault', security };
+  try {
+    await hold();
+  } catch (error) {
+    return { ok: false, reason: error?.locked ? 'locked' : 'failed', error, security };
+  }
+  return { ok: true, security };
+}
+
+/**
+ * Whether the host runs on the stand-in of broken settings right now (the page reads systemInfo only once at its start: the settings may
+ * have broken or been repaired since). The host's fresh answer counts; a read that fails or does not say keeps what was known.
+ */
+export async function configFaultNow(known, readSecurity) {
+  try {
+    const security = await readSecurity();
+    if (typeof security?.configFault === 'boolean') return security.configFault;
+  } catch {
+    // Locked or not answered: what was known counts.
+  }
+  return !!known;
+}
+
+/**
+ * The console setup's lock step: done with the Windows sign-in as the lock or with a code lock that has its code. Not on the host's
+ * stand-in of broken settings (configFault): its "windows" is the fail-closed lock nobody chose, not a lock that was set up.
+ */
 export function lockStepStatus(security) {
+  if (security?.configFault) return 'todo';
   if (security?.couchLock === 'windows' || codeLockHeld(security)) return 'done';
   return 'todo';
+}
+
+/**
+ * A protected setting (rating system, areas, idle times with guarded profiles …) that the host takes only from an unlocked couch and,
+ * with parental controls on, with the parents' code for exactly this change: first the unlock (the couch code or the Windows sign-in),
+ * then the parents' code, so the save behind it is not refused with "unlock first" after the parents already said yes (finding B1 of
+ * the 0.5 VM test). The dialogs are passed in: ensureUnlocked(reason) and ensureParentGrant(reason, scope), both resolving to true or
+ * false. parentalOn false: the unlock alone.
+ */
+export async function admitProtectedChange({ reason, parentReason = reason, parentalOn, scope, ensureUnlocked, ensureParentGrant }) {
+  if (!(await ensureUnlocked(reason))) return false;
+  if (!parentalOn) return true;
+  return !!(await ensureParentGrant(parentReason, scope));
 }
 
 /**

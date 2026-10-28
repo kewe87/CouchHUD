@@ -81,6 +81,9 @@ public sealed class GameSessionTracker(IProcessProbe probe)
     /// <summary>Raised when another library game shows up next to the current one (started outside CouchHud).</summary>
     public event Action<GameSession>? OtherStarted;
 
+    /// <summary>Raised when such another game is gone (not when it became the current session).</summary>
+    public event Action<GameSession>? OtherEnded;
+
     public void Launched(LibraryItem item, DateTimeOffset now)
     {
         lock (_gate)
@@ -123,12 +126,13 @@ public sealed class GameSessionTracker(IProcessProbe probe)
     private void ScanOthers(DateTimeOffset now, IReadOnlyCollection<LibraryItem>? items, IReadOnlyList<(int Pid, string? Path)> snapshot,
         IReadOnlyDictionary<int, int> parents, IReadOnlyDictionary<int, long> starts, int steam, List<Action> raise)
     {
+        var before = _others;
         if (items is null)
         {
             _others = [];
+            foreach (var gone in before) raise.Add(() => OtherEnded?.Invoke(gone));
             return;
         }
-        var before = _others;
         var found = new List<GameSession>();
         var foundKnown = new Dictionary<string, Dictionary<int, ProcessStamp>>();
         foreach (var item in items.Where(i => i.Type == ItemType.Game))
@@ -141,6 +145,7 @@ public sealed class GameSessionTracker(IProcessProbe probe)
             found.Add(new GameSession(item, earlier?.Started ?? now, pids, External: true, Stamps: known));
             foundKnown[item.Id] = known;
         }
+        foreach (var gone in before.Where(b => !found.Any(f => f.Item.Id == b.Item.Id))) raise.Add(() => OtherEnded?.Invoke(gone));
         if (_current is null && _pending is null && found.Count > 0)
         {
             var adopted = found[0];
@@ -254,7 +259,7 @@ public sealed class GameSessionTracker(IProcessProbe probe)
     private static string WindowsDir => Environment.GetFolderPath(Environment.SpecialFolder.Windows);
 
     /// <summary>The install folder with a trailing separator, so "C:\Games\Foo" never matches "C:\Games\Foobar".</summary>
-    private static string? InstallRoot(LibraryItem item)
+    internal static string? InstallRoot(LibraryItem item)
     {
         var dir = item.InstallDir;
         if (string.IsNullOrWhiteSpace(dir)) return null;

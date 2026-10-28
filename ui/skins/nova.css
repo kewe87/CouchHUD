@@ -120,12 +120,8 @@
 
 /* Tiles: soft depth, reflection, holographic animated ring on focus */
 
-[data-skin="nova"] .tile {
-  box-shadow: 0 1.2rem 2.5rem rgba(0, 0, 0, 0.45);
-}
-
 [data-skin="nova"] .shelf-wrap {
-  padding-bottom: 4rem;
+  padding-bottom: 6rem;
 }
 
 /* Only real cover art is mirrored; the text placeholder would show its title upside down. */
@@ -182,9 +178,8 @@
 [data-skin="nova"] .settings li.focused,
 [data-skin="nova"] .menu li.focused {
   background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.35);
-  box-shadow: 0 0 2rem rgba(138, 180, 255, 0.25);
-  transform: scale(1.02);
+  border-color: rgba(255, 255, 255, 0.6);
+  transform: none;
 }
 
 [data-skin="nova"] .menu li {
@@ -231,6 +226,19 @@
   border-color: transparent;
   color: #0b0d18;
   box-shadow: 0 0 2rem rgba(138, 180, 255, 0.45);
+}
+
+/* Assistant chips: glass like the buttons; focused they turn bright, without the halo (the row clips). */
+[data-skin="nova"] .chips .chip {
+  border: 0.06rem solid var(--glass-border);
+  backdrop-filter: blur(1.2rem);
+}
+
+[data-skin="nova"] .chips .chip.focused {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: transparent;
+  color: #0b0d18;
+  box-shadow: none;
 }
 
 [data-skin="nova"] .detail-title {

@@ -2,6 +2,7 @@
 // gets its own sound set. Skins can also bring their own files (skin.json "sounds").
 
 import { t } from './core/i18n.js';
+import { migrateSkinId } from './core/skin-rules.js';
 
 let ctx = null;
 let master = null;
@@ -31,8 +32,9 @@ export function setSoundVolume(v) {
   if (master) master.gain.value = volume;
 }
 
-/** The skin's set ("default", "ps4", …) and optional files from a user skin: { move: url, … }. */
+/** The skin's set ("default", "deepsea", …) and optional files from a user skin: { move: url, … }. */
 export function setSkinSounds(skinId, files = null) {
+  skinId = migrateSkinId(skinId);
   activeSet = SETS[skinId] ? skinId : 'default';
   customFiles = files && Object.keys(files).length ? files : null;
   updateMusic();
@@ -40,15 +42,16 @@ export function setSkinSounds(skinId, files = null) {
 
 /** null follows the skin; a set id uses that set for every skin. */
 export function setSoundSet(id) {
+  id = migrateSkinId(id);
   forcedSet = id && SETS[id] ? id : null;
   updateMusic();
 }
 
 export const SOUND_SETS = [
   { id: 'default', get label() { return t('sound.default'); } },
-  { id: 'ps4', get label() { return t('sound.ps4'); } },
-  { id: 'xbox', get label() { return t('sound.xbox'); } },
-  { id: 'cyberpunk', get label() { return t('sound.cyberpunk'); } },
+  { id: 'deepsea', get label() { return t('sound.deepsea'); } },
+  { id: 'greenlight', get label() { return t('sound.greenlight'); } },
+  { id: 'neoncity', get label() { return t('sound.neoncity'); } },
   { id: 'nova', get label() { return t('sound.nova'); } }
 ];
 
@@ -75,7 +78,7 @@ function audio() {
   wet.gain.value = 0.35;
   reverb.connect(wet).connect(master);
 
-  // Bitcrusher look-alike: a stepped transfer curve, the 8-bit grit of the cyberpunk set.
+  // Bitcrusher look-alike: a stepped transfer curve, the 8-bit grit of the neoncity set.
   crusher = ctx.createWaveShaper();
   const curve = new Float32Array(1024);
   const steps = 10;
@@ -149,10 +152,12 @@ const SETS = {
     close: [{ f: 830, d: 0.14, g: 0.025, s: 0.6 }],
     notify: [{ f: 988, d: 0.18, g: 0.04 }, { f: 1319, d: 0.28, g: 0.035, t: 0.1 }],
     toggle: [{ f: 1046, d: 0.05, g: 0.03, w: 'triangle' }],
-    boot: [{ f: 392, d: 0.6, g: 0.04 }, { f: 587, d: 0.6, g: 0.035, t: 0.12 }, { f: 784, d: 0.9, g: 0.03, t: 0.24 }]
+    boot: [{ f: 392, d: 0.6, g: 0.04 }, { f: 587, d: 0.6, g: 0.035, t: 0.12 }, { f: 784, d: 0.9, g: 0.03, t: 0.24 }],
+    // Two short clicks of a camera shutter.
+    shutter: [{ noise: true, d: 0.03, g: 0.05, hp: 2500 }, { noise: true, d: 0.05, g: 0.04, hp: 1600, t: 0.08 }]
   },
-  // Soft bells with a room, like the PS4 dashboard.
-  ps4: {
+  // Soft bells with a room, like a classic console menu.
+  deepsea: {
     move: [{ f: 1568, d: 0.08, g: 0.014, fx: 'reverb' }],
     tab: [{ f: 1175, d: 0.16, g: 0.022, fx: 'reverb' }],
     select: [{ f: 1047, d: 0.35, g: 0.035, fx: 'reverb' }, { f: 2094, d: 0.25, g: 0.01, fx: 'reverb' }],
@@ -165,7 +170,7 @@ const SETS = {
     boot: [{ f: 523, d: 1.4, g: 0.03, fx: 'reverb', a: 0.2 }, { f: 784, d: 1.4, g: 0.025, t: 0.3, fx: 'reverb', a: 0.2 }, { f: 1047, d: 1.6, g: 0.02, t: 0.6, fx: 'reverb', a: 0.2 }]
   },
   // Short, crisp clicks and a punchy confirm.
-  xbox: {
+  greenlight: {
     move: [{ noise: true, d: 0.025, g: 0.03, hp: 3500 }, { f: 1800, d: 0.02, g: 0.012, w: 'triangle' }],
     tab: [{ noise: true, d: 0.09, g: 0.025, hp: 1500, lp: 6000 }],
     select: [{ f: 220, d: 0.12, g: 0.07, s: 0.5 }, { noise: true, d: 0.03, g: 0.04, hp: 2500 }],
@@ -178,7 +183,7 @@ const SETS = {
     boot: [{ f: 110, d: 1.0, g: 0.06, s: 2 }, { noise: true, d: 0.9, g: 0.02, hp: 600, a: 0.4 }]
   },
   // Glitchy arps through the bitcrusher.
-  cyberpunk: {
+  neoncity: {
     move: [{ f: 1760, d: 0.03, g: 0.02, w: 'square', fx: 'crush' }],
     tab: [{ f: 880, d: 0.03, g: 0.025, w: 'square', fx: 'crush' }, { f: 1320, d: 0.03, g: 0.025, w: 'square', t: 0.035, fx: 'crush' }],
     select: [440, 660, 880, 1320].map((f, i) => ({ f, d: 0.05, g: 0.03, w: 'sawtooth', t: i * 0.035, fx: 'crush', lp: 5000 })),
@@ -236,7 +241,8 @@ function play(event) {
 
 function synth(event, setId = forcedSet ?? activeSet) {
   const set = SETS[setId] ?? SETS.default;
-  for (const v of set[event] ?? []) voice(v);
+  // A sound only the default set has (the shutter) plays from there in every set.
+  for (const v of set[event] ?? SETS.default[event] ?? []) voice(v);
 }
 
 export const sound = {
@@ -256,6 +262,8 @@ export const sound = {
   notify: () => play('notify'),
   toggle: () => play('toggle'),
   boot: () => play('boot'),
+  /** A screenshot was saved (Guide + Y, guide menu). */
+  shutter: () => play('shutter'),
   /** Preview a set in the settings. */
   preview: (id) => {
     if (!enabled) return;
@@ -272,11 +280,11 @@ const MUSIC = {
   // Warm major sevenths, soft and slow.
   default: { bar: 5, chords: [[261.6, 329.6, 392, 493.9], [220, 261.6, 329.6, 392], [174.6, 220, 261.6, 329.6], [196, 246.9, 293.7, 329.6]], pad: 'triangle', cutoff: 1600, bells: 0.5 },
   // Dreamy arpeggios over airy pads.
-  ps4: { bar: 4.5, chords: [[293.7, 370, 440, 554.4], [246.9, 293.7, 370, 440], [196, 246.9, 293.7, 370], [220, 277.2, 329.6, 493.9]], pad: 'sine', cutoff: 2400, arp: 8, bells: 0.2 },
+  deepsea: { bar: 4.5, chords: [[293.7, 370, 440, 554.4], [246.9, 293.7, 370, 440], [196, 246.9, 293.7, 370], [220, 277.2, 329.6, 493.9]], pad: 'sine', cutoff: 2400, arp: 8, bells: 0.2 },
   // A calm drone with a slowly opening filter.
-  xbox: { bar: 6, chords: [[55, 82.4, 110, 164.8], [55, 82.4, 110, 146.8]], pad: 'sawtooth', cutoff: 500, sweep: true, bells: 0.15 },
+  greenlight: { bar: 6, chords: [[55, 82.4, 110, 164.8], [55, 82.4, 110, 146.8]], pad: 'sawtooth', cutoff: 500, sweep: true, bells: 0.15 },
   // Synthwave: pulsing bass, detuned saws, a crushed arp.
-  cyberpunk: { bar: 3.2, chords: [[220, 261.6, 329.6], [174.6, 220, 261.6], [261.6, 329.6, 392], [196, 246.9, 293.7]], pad: 'sawtooth', cutoff: 1100, bass: true, arp: 8, crush: true },
+  neoncity: { bar: 3.2, chords: [[220, 261.6, 329.6], [174.6, 220, 261.6], [261.6, 329.6, 392], [196, 246.9, 293.7]], pad: 'sawtooth', cutoff: 1100, bass: true, arp: 8, crush: true },
   // Shimmering glass, very slow.
   nova: { bar: 6, chords: [[329.6, 415.3, 493.9, 622.3], [277.2, 329.6, 415.3, 493.9], [220, 277.2, 329.6, 415.3], [246.9, 311.1, 370, 415.3]], pad: 'sine', cutoff: 3200, bells: 0.8, shimmer: true }
 };

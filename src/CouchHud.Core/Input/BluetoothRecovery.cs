@@ -88,6 +88,14 @@ public static class BluetoothRecovery
             return new(RecoveryAction.Countdown, input.AirplaneMode ? "airplane mode with keyboard or mouse in use" : "switched off while keyboard or mouse were in use");
         return new(RecoveryAction.EnableNow, "Bluetooth controller without radio");
     }
+
+    /// <summary>
+    /// Switching Bluetooth off from CouchHUD's own page: is there another way to work the couch afterwards? Yes when more physical
+    /// pads are connected than Windows counts on Bluetooth (<paramref name="physicalPads"/> counts a pad and its Steam Input or
+    /// DS4Windows mirror once, see <see cref="PadMirrors.PhysicalCount"/>), or when the switch-off was confirmed with keyboard or mouse.
+    /// </summary>
+    public static bool OtherInputForSwitchOff(int physicalPads, int bluetoothPads, string? source) =>
+        physicalPads > bluetoothPads || source is "keyboard" or "mouse";
 }
 
 /// <summary>

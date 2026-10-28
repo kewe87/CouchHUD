@@ -102,4 +102,43 @@ public sealed class BrowserUnlockTests
         Assert.Equal(until, d.UnlockedUntil);
         Assert.False(d.Warn);
     }
+
+    [Fact]
+    public void TheWarningCountsDownUntilInputAndIsGoneAfterIt()
+    {
+        var until = Start + BrowserUnlock.Extension;
+        // Idle: no warning before the last 30 s.
+        var early = BrowserUnlock.Next(Start + TimeSpan.FromSeconds(60), until, Start, false, false);
+        Assert.Null(BrowserUnlock.WarningLeft(Start + TimeSpan.FromSeconds(60), early.UnlockedUntil, early.Warned));
+        // 30 s before the end: the warning with the time left, counting down on the following checks.
+        var at = until - BrowserUnlock.WarnBefore;
+        var warn = BrowserUnlock.Next(at, until, Start, false, false);
+        Assert.True(warn.Warn);
+        Assert.Equal(BrowserUnlock.WarnBefore, BrowserUnlock.WarningLeft(at, warn.UnlockedUntil, warn.Warned));
+        var later = BrowserUnlock.Next(at + TimeSpan.FromSeconds(10), warn.UnlockedUntil, Start, false, warn.Warned);
+        Assert.False(later.Warn);
+        Assert.Equal(TimeSpan.FromSeconds(20), BrowserUnlock.WarningLeft(at + TimeSpan.FromSeconds(10), later.UnlockedUntil, later.Warned));
+        // Any key (a real one, or the controller): extended, and the warning is gone.
+        var now = at + TimeSpan.FromSeconds(12);
+        var pressed = BrowserUnlock.Next(now, later.UnlockedUntil, now, false, later.Warned);
+        Assert.False(pressed.Warned);
+        Assert.Equal(now + BrowserUnlock.Extension, pressed.UnlockedUntil);
+        Assert.Null(BrowserUnlock.WarningLeft(now, pressed.UnlockedUntil, pressed.Warned));
+    }
+
+    [Fact]
+    public void PageEventsDoNotEndTheWarning()
+    {
+        // The page goes on playing (title, sound, full screen): none of it is input, the warning stays until the end.
+        var until = Start + BrowserUnlock.Extension;
+        var at = until - BrowserUnlock.WarnBefore;
+        var d = BrowserUnlock.Next(at, until, Start, false, false);
+        for (var now = at; now < until; now += Tick)
+        {
+            d = BrowserUnlock.Next(now, d.UnlockedUntil, Start, false, d.Warned);
+            Assert.True(d.Warned);
+            Assert.NotNull(BrowserUnlock.WarningLeft(now, d.UnlockedUntil, d.Warned));
+        }
+        Assert.Null(BrowserUnlock.WarningLeft(until, d.UnlockedUntil, d.Warned));
+    }
 }

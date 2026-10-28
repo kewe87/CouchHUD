@@ -1,6 +1,6 @@
-/* PS4 Classic: deep blue waves, square tiles in a top row, thin type. */
+/* Deep Sea: deep blue waves, square tiles in a top row, thin type. */
 
-:root[data-skin="ps4"] {
+:root[data-skin="deepsea"] {
   --bg: #001033;
   --fg: #ffffff;
   --muted: rgba(255, 255, 255, 0.7);
@@ -19,13 +19,13 @@
   --focus-scale: 1;
 }
 
-[data-skin="ps4"] body {
+[data-skin="deepsea"] body {
   background: linear-gradient(180deg, #0a3a8c 0%, #022363 45%, #001033 100%);
 }
 
-/* The famous waves: soft light ribbons drifting across the screen. */
-[data-skin="ps4"] #bg::before,
-[data-skin="ps4"] #bg::after {
+/* The waves: soft light ribbons drifting across the screen. */
+[data-skin="deepsea"] #bg::before,
+[data-skin="deepsea"] #bg::after {
   content: "";
   position: absolute;
   left: -30%;
@@ -34,42 +34,42 @@
   border-radius: 50%;
   border-top: 0.15rem solid rgba(160, 210, 255, 0.35);
   background: radial-gradient(ellipse at 50% 0%, rgba(120, 180, 255, 0.18), transparent 60%);
-  animation: ps4-wave 18s ease-in-out infinite alternate;
+  animation: deepsea-wave 18s ease-in-out infinite alternate;
   z-index: 1;
 }
 
-[data-skin="ps4"] #bg::before {
+[data-skin="deepsea"] #bg::before {
   top: 38%;
 }
 
-[data-skin="ps4"] #bg::after {
+[data-skin="deepsea"] #bg::after {
   top: 52%;
   border-top-color: rgba(200, 230, 255, 0.2);
   animation-duration: 24s;
   animation-direction: alternate-reverse;
 }
 
-@keyframes ps4-wave {
+@keyframes deepsea-wave {
   from { transform: translateX(-6%) rotate(-3deg); }
   to { transform: translateX(6%) rotate(3deg); }
 }
 
-[data-skin="ps4"] .bg-layer {
+[data-skin="deepsea"] .bg-layer {
   filter: blur(0.3rem) saturate(0.9);
 }
 
-[data-skin="ps4"] .bg-layer.visible {
+[data-skin="deepsea"] .bg-layer.visible {
   opacity: 0.35;
 }
 
-[data-skin="ps4"] .bg-shade {
+[data-skin="deepsea"] .bg-shade {
   background: linear-gradient(to bottom, rgba(0, 20, 70, 0.3), rgba(0, 16, 51, 0.85));
   z-index: 2;
 }
 
 /* Header */
 
-[data-skin="ps4"] #tab-list li {
+[data-skin="deepsea"] #tab-list li {
   font-weight: 300;
   font-size: 1.2rem;
   letter-spacing: 0.04em;
@@ -78,19 +78,19 @@
 }
 
 /* The active tab is marked by a bar, not only by brightness. */
-[data-skin="ps4"] #tab-list li.active {
+[data-skin="deepsea"] #tab-list li.active {
   border-bottom-color: #fff;
   font-weight: 400;
   text-shadow: 0 0 1rem rgba(160, 210, 255, 0.9);
 }
 
-[data-skin="ps4"] #clock {
+[data-skin="deepsea"] #clock {
   font-weight: 300;
 }
 
-/* Home: content row at the top, info underneath, like the PS4 dashboard. */
+/* Home: content row at the top, info underneath, like a classic console menu. */
 
-[data-skin="ps4"] .home {
+[data-skin="deepsea"] .home {
   flex-direction: column-reverse;
   justify-content: flex-end;
   padding-top: 2.5rem;
@@ -98,51 +98,61 @@
 }
 
 /* The info sits under the row here, so it grows downwards. */
-[data-skin="ps4"] .hero-info {
+[data-skin="deepsea"] .hero-info {
   justify-content: flex-start;
 }
 
-[data-skin="ps4"] .shelf {
+[data-skin="deepsea"] .shelf {
   align-items: flex-start;
   gap: 0.6rem;
 }
 
-[data-skin="ps4"] .shelf .cover,
-[data-skin="ps4"] .tile-special {
+[data-skin="deepsea"] .shelf .cover,
+[data-skin="deepsea"] .tile-special {
   aspect-ratio: 1;
 }
 
-[data-skin="ps4"] .shelf .tile.focused {
+[data-skin="deepsea"] .shelf .tile.focused {
   width: calc(var(--shelf-tile) * 1.75);
   animation: none;
 }
 
-[data-skin="ps4"] .tile {
-  box-shadow: 0 0.3rem 0.8rem rgba(0, 0, 0, 0.35);
+/* "Continue playing": twice as wide as a square tile, as tall; it grows like the others when focused. */
+[data-skin="deepsea"] .shelf .hero-art {
+  aspect-ratio: 2 / 1;
 }
 
-[data-skin="ps4"] .tile.focused {
+[data-skin="deepsea"] .shelf .tile.tile-hero.focused {
+  width: calc(var(--shelf-tile) * 3.5);
+}
+
+/* The row sits right under the header here: there is no room above it for the label, so it stays out. */
+[data-skin="deepsea"] .shelf-label {
+  display: none;
+}
+
+[data-skin="deepsea"] .tile.focused {
   box-shadow:
     0 0 0 0.12rem #fff,
     0 0 1.6rem rgba(140, 190, 255, 0.7);
 }
 
-[data-skin="ps4"] .art-fallback {
+[data-skin="deepsea"] .art-fallback {
   font-weight: 400;
   font-size: 0.9rem;
 }
 
-[data-skin="ps4"] .hero-info h1 {
+[data-skin="deepsea"] .hero-info h1 {
   font-weight: 300;
   font-size: 2.2rem;
   letter-spacing: 0;
 }
 
-[data-skin="ps4"] .meta {
+[data-skin="deepsea"] .meta {
   font-size: 1rem;
 }
 
-[data-skin="ps4"] .tile-special {
+[data-skin="deepsea"] .tile-special {
   border: none;
   background: rgba(255, 255, 255, 0.1);
   font-weight: 300;
@@ -151,83 +161,94 @@
 
 /* Lists and dialogs */
 
-[data-skin="ps4"] .settings li,
-[data-skin="ps4"] .about,
-[data-skin="ps4"] .dialog {
+[data-skin="deepsea"] .settings li,
+[data-skin="deepsea"] .about,
+[data-skin="deepsea"] .dialog {
   border-radius: 0.15rem;
 }
 
-[data-skin="ps4"] .settings li.focused,
-[data-skin="ps4"] .menu li.focused {
+[data-skin="deepsea"] .settings li.focused,
+[data-skin="deepsea"] .menu li.focused {
   background: linear-gradient(90deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0.08));
-  border-color: transparent;
-  box-shadow: 0 0 1.2rem rgba(140, 190, 255, 0.4);
+  border-color: rgba(255, 255, 255, 0.85);
   transform: none;
 }
 
-[data-skin="ps4"] .settings strong,
-[data-skin="ps4"] .menu li {
+[data-skin="deepsea"] .settings strong,
+[data-skin="deepsea"] .menu li {
   font-weight: 400;
 }
 
-[data-skin="ps4"] .dialog {
+[data-skin="deepsea"] .dialog {
   background: rgba(0, 30, 90, 0.95);
 }
 
-/* PlayStation button glyphs: outlined circles with colored symbols. */
+/* Button glyphs: outlined circles with colored letters. */
 
-[data-skin="ps4"] .glyph {
+[data-skin="deepsea"] .glyph {
   background: transparent;
   border: 0.1rem solid rgba(255, 255, 255, 0.7);
   font-size: 0.9rem;
 }
 
-[data-skin="ps4"] .glyph.shoulder,
-[data-skin="ps4"] .btn-≡ {
+[data-skin="deepsea"] .glyph.shoulder,
+[data-skin="deepsea"] .btn-≡ {
   border-radius: 0.3rem;
   font-size: 0.62rem;
   letter-spacing: 0;
 }
 
-[data-skin="ps4"] .btn-a { color: #7fb0ff; }
-[data-skin="ps4"] .btn-b { color: #ff6b6b; }
-[data-skin="ps4"] .btn-x { color: #ff8ad8; }
-[data-skin="ps4"] .btn-y { color: #4fe3b0; }
+[data-skin="deepsea"] .btn-a { color: #7fb0ff; }
+[data-skin="deepsea"] .btn-b { color: #ff6b6b; }
+[data-skin="deepsea"] .btn-x { color: #ff8ad8; }
+[data-skin="deepsea"] .btn-y { color: #4fe3b0; }
 
 /* Detail page */
 
-[data-skin="ps4"] .action {
+[data-skin="deepsea"] .action {
   border-radius: 0.2rem;
   font-weight: 400;
 }
 
-[data-skin="ps4"] .action.focused {
+[data-skin="deepsea"] .action.focused {
   background: #fff;
   color: #001033;
   box-shadow: 0 0 1.4rem rgba(140, 190, 255, 0.6);
   transform: none;
 }
 
-[data-skin="ps4"] .detail-title {
+/* Assistant chips: square-ish like the buttons, the focused one turns white (no glow, the row clips). */
+[data-skin="deepsea"] .chips .chip {
+  border-radius: 0.2rem;
+}
+
+[data-skin="deepsea"] .chips .chip.focused {
+  background: #fff;
+  border-color: #fff;
+  color: #001033;
+  box-shadow: none;
+}
+
+[data-skin="deepsea"] .detail-title {
   font-weight: 300;
 }
 
-/* HDR: deeper PlayStation blue and brighter waves. */
+/* HDR: deeper blue and brighter waves. */
 @supports (color: color(display-p3 1 1 1)) {
-  :root[data-skin="ps4"][data-hdr] {
+  :root[data-skin="deepsea"][data-hdr] {
     --accent: color(display-p3 0.1 0.45 1);
     --accent-glow: color(display-p3 0.3 0.6 1 / 0.75);
   }
 }
 
 /* Generated banner: calm, flat blue-toned gradient with a soft light */
-[data-skin="ps4"] .art-fallback {
+[data-skin="deepsea"] .art-fallback {
   background:
     radial-gradient(90% 70% at 20% 0%, rgba(255, 255, 255, 0.16), transparent 70%),
     linear-gradient(180deg, hsl(var(--h) 45% 40% / 0.5), hsl(var(--h) 55% 14% / 0.7));
 }
 
-[data-skin="ps4"] .gen-mark {
+[data-skin="deepsea"] .gen-mark {
   font-weight: 300;
   opacity: 0.28;
 }

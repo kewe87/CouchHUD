@@ -143,19 +143,26 @@ public class PipeTests
         using var server = factory.Create(first: true);
         using var restricted = RestrictedToken.Create();
         var accept = server.WaitForConnectionAsync();
-        // A restricted token cannot read assembly files: nothing may be loaded while impersonating (a failed load would stick for the
-        // whole test process). So the raw CreateFileW, its stub prepared once outside, instead of NamedPipeClientStream.Connect.
-        RestrictedToken.Open("CouchHud.Service.Test.none").Dispose();
-        Microsoft.Win32.SafeHandles.SafeFileHandle? client = null;
-        WindowsIdentity.RunImpersonated(restricted, () => client = RestrictedToken.Open(name));
-        using var connected = client!;
-        Assert.False(connected.IsInvalid);
-        await accept;
+        // A restricted token cannot read assembly files (the framework folder grants nothing to the restricting SID): nothing may be
+        // loaded or compiled while impersonating, or the load fails, and that failure sticks for the whole test process. Whether a load
+        // was due depended on what the tests running in parallel had touched before: the flaky part. WindowsIdentity.RunImpersonated
+        // runs managed code of its own under the token (execution context, AsyncLocal handler, the callback); OpenAs impersonates by
+        // itself, with every piece compiled beforehand, and only the raw CreateFileW runs as the restricted token.
+        RestrictedToken.Prepare();
+        var (connected, error) = RestrictedToken.OpenAs(restricted, name);
+        using (connected)
+        {
+            Assert.False(connected.IsInvalid, $"CreateFileW as the restricted token failed: Win32 {error}");
+            await accept.WaitAsync(TimeSpan.FromSeconds(10));
 
-        var caller = await Task.Run(() => new PipeCallerIdentifier(new DenyLog(new CapturingSink(), StopwatchClock.Instance)).Identify(server.SafePipeHandle));
-        Assert.NotNull(caller);
-        Assert.True(caller.IsRestricted);
-        Assert.Equal("restricted token", Authorizer.CheckCaller(caller));
+            var sink = new CapturingSink();
+            var caller = await Task.Run(() => new PipeCallerIdentifier(new DenyLog(sink, StopwatchClock.Instance)).Identify(server.SafePipeHandle));
+            Assert.True(caller is not null, "identification failed: " + string.Join(" | ", sink.Lines));
+            Assert.True(caller.IsRestricted);
+            Assert.Equal("restricted token", Authorizer.CheckCaller(caller));
+        }
+        // The test thread runs as itself again.
+        Assert.Null(WindowsIdentity.GetCurrent(ifImpersonating: true));
     }
 
     private static class RestrictedToken
@@ -163,7 +170,10 @@ public class PipeTests
         public static Microsoft.Win32.SafeHandles.SafeAccessTokenHandle Create()
         {
             const uint access = 0x0001 | 0x0002 | 0x0004 | 0x0008;   // ASSIGN_PRIMARY | DUPLICATE | IMPERSONATE | QUERY
-            if (!OpenProcessToken(System.Diagnostics.Process.GetCurrentProcess().Handle, access, out var token)) throw new System.ComponentModel.Win32Exception();
+            // The pseudo-handle, never Process.GetCurrentProcess().Handle: that raw handle belongs to a Process object nothing keeps
+            // alive, and a GC from the tests running in parallel finalized it and closed the handle before OpenProcessToken ran
+            // (ERROR_INVALID_HANDLE, the remaining flaky part).
+            if (!OpenProcessToken(GetCurrentProcess(), access, out var token)) throw new System.ComponentModel.Win32Exception();
             using (token)
             {
                 var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
@@ -185,8 +195,55 @@ public class PipeTests
         }
 
         /// <summary>Opens the client end with exactly the rights the DACL grants, at Identification level.</summary>
-        public static Microsoft.Win32.SafeHandles.SafeFileHandle Open(string pipeName) =>
-            CreateFileW(@"\\.\pipe\" + pipeName, 0x100183, 0, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0x00100000 | 0x00010000 /*SQOS_PRESENT | IDENTIFICATION*/, IntPtr.Zero);
+        public static Microsoft.Win32.SafeHandles.SafeFileHandle Open(string pipeName) => OpenPath(@"\\.\pipe\" + pipeName);
+
+        private static Microsoft.Win32.SafeHandles.SafeFileHandle OpenPath(string path) =>
+            CreateFileW(path, 0x100183, 0, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0x00100000 | 0x00010000 /*SQOS_PRESENT | IDENTIFICATION*/, IntPtr.Zero);
+
+        /// <summary>
+        /// Compiles everything <see cref="OpenAs"/> runs, outside any impersonation: the methods, and the interop stubs by one harmless
+        /// call each (a pipe that does not exist; RevertToSelf while not impersonating changes nothing).
+        /// </summary>
+        public static void Prepare()
+        {
+            const System.Reflection.BindingFlags any = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+            System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(typeof(RestrictedToken).GetMethod(nameof(OpenAs), any)!.MethodHandle);
+            System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(typeof(RestrictedToken).GetMethod(nameof(OpenPath), any)!.MethodHandle);
+            Open("CouchHud.Service.Test.none").Dispose();
+            _ = System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
+            if (!RevertToSelf()) throw new System.ComponentModel.Win32Exception();
+        }
+
+        /// <summary>
+        /// The client end opened as <paramref name="token"/>: impersonate, CreateFileW, revert, on this thread with nothing else in
+        /// between (call <see cref="Prepare"/> first). The handle, and the Win32 error for an invalid one.
+        /// </summary>
+        public static (Microsoft.Win32.SafeHandles.SafeFileHandle Handle, int Error) OpenAs(Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token, string pipeName)
+        {
+            var path = @"\\.\pipe\" + pipeName;
+            if (!ImpersonateLoggedOnUser(token)) throw new System.ComponentModel.Win32Exception();
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle;
+            int error;
+            try
+            {
+                handle = OpenPath(path);
+                error = System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
+            }
+            finally
+            {
+                // A test thread left running as the restricted token would break every later test on it.
+                if (!RevertToSelf()) Environment.FailFast("RevertToSelf failed in the restricted-token pipe test");
+            }
+            return (handle, error);
+        }
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool ImpersonateLoggedOnUser(Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token);
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool RevertToSelf();
 
         [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
         private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
@@ -197,6 +254,9 @@ public class PipeTests
             public IntPtr Sid;
             public uint Attributes;
         }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
 
         [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
         [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]

@@ -1,5 +1,7 @@
 # Skins für CouchHUD
 
+**Deutsch** | [English](SKINS.en.md)
+
 Ein Skin ist ein Stylesheet plus optional eigene Button-Symbole. Er ändert Farben, Schriften, Formen, Abstände, Animationen, wie du willst.
 
 ## Aufbau
@@ -21,6 +23,8 @@ Ein Skin ist ein Stylesheet plus optional eigene Button-Symbole. Er ändert Farb
   "sounds": { "move": "move.ogg", "select": "select.ogg", "back": "back.ogg", "notify": "notify.ogg" }
 }
 ```
+
+`glyphs` ist optional und nur Gestaltung: Welche Symbole erscheinen, bestimmt der Controller (bzw. *Einstellungen › Controller › Tastensymbole*). Ein Eintrag wie `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` oder `PS` gilt nur mit PlayStation-Symbolen, jeder andere nur mit Xbox-Symbolen; sonst zeigt CouchHUD das Standardsymbol der Controller-Art. Die Farben der Tasten bei PlayStation-Symbolen hängen an `:root[data-pad="playstation"]`.
 
 `sounds` ist optional. Mögliche Ereignisse: `move`, `tab`, `select`, `back`, `bump`, `open`, `close`, `notify`, `toggle`, `boot` und `music`. `music` ist ein Hintergrund-Track, der in Schleife läuft, wenn der Nutzer „UI-Sounds und Musik“ gewählt hat; ohne ihn spielt die eingebaute Musik des Skins. Erlaubt sind `.wav`, `.ogg` und `.mp3` aus dem Skin-Ordner. Für fehlende Ereignisse spielt CouchHUD das eingebaute Klangset.
 
@@ -69,7 +73,7 @@ Eigene Schriften und Bilder legst du in den Skin-Ordner und bindest sie relativ 
 | `--font` | Schriftfamilie |
 | `--tile-radius`, `--shelf-tile`, `--focus-scale` | Ecken, Kachelgröße auf Home, Zoom des Fokus |
 
-Für alles andere kannst du die Selektoren aus `ui/styles.css` überschreiben. Die eingebauten Skins in `ui/skins/` (PS4, Xbox, Cyberpunk, Nova) zeigen, wie weit das geht: Die PS4-Skin dreht z.B. das ganze Home-Layout um.
+Für alles andere kannst du die Selektoren aus `ui/styles.css` überschreiben. Die eingebauten Skins in `ui/skins/` (Tiefsee, Grünlicht, Neonstadt, Nova) zeigen, wie weit das geht: Tiefsee (`deepsea.css`) dreht z.B. das ganze Home-Layout um.
 
 ## Mauszeiger
 
@@ -102,3 +106,5 @@ Ohne Windows geht es auch: `node scripts/preview-server.js` startet die Oberflä
 ## Teilen
 
 Ordner als `.zip` packen (mit oder ohne übergeordneten Ordner), auf GitHub mit dem Topic `couchhud-skin` veröffentlichen. Andere installieren ihn in CouchHUD unter *Einstellungen › Darstellung › Neue Skins installieren*.
+
+Für den Katalog: Gib dem Skin einen eigenen Namen, keine fremde Marke (kein Konsolen-, Hersteller- oder Spielename), und verwende keine fremden Logos. Ein Stil darf an etwas erinnern, aber nicht danach heißen.

@@ -57,6 +57,10 @@ public partial class MainWindow : Window
             if (!_dev && e.NewValue is false) TaskbarFullscreen.Mark(new WindowInteropHelper(this).Handle, false);
         };
         Loaded += async (_, _) => await StartWebAsync();
+        // The browser's area on the screen moves with the window (another monitor, another scale): the cursor follows it.
+        SizeChanged += (_, _) => _hud.BrowserGeometryChanged();
+        LocationChanged += (_, _) => _hud.BrowserGeometryChanged();
+        DpiChanged += (_, _) => _hud.BrowserGeometryChanged();
         Closing += OnClosing;
     }
 
@@ -122,6 +126,8 @@ public partial class MainWindow : Window
         core.NavigationStarting += (_, e) =>
         {
             if (!e.Uri.StartsWith(AppOrigin, StringComparison.OrdinalIgnoreCase)) e.Cancel = true;
+            // A new page (also a reload) knows nothing of an open code entry or pairing code: the old reports are void.
+            else _hud.ResetUiScreenState();
         };
         core.FrameNavigationStarting += (_, e) =>
         {
@@ -146,6 +152,12 @@ public partial class MainWindow : Window
 
     private (double X, double Y, double W, double H) _browserRect;
     private bool _browserFull;
+
+    /// <summary>
+    /// In full screen the page leaves this strip at the top to the HUD, which shows "Website – full screen" there. The page cannot paint
+    /// over it, so a code prompt drawn by a page always has the web's mark above it.
+    /// </summary>
+    public const double FullScreenStrip = 30;
 
     /// <summary>The controller steers the page: the keyboard focus is in the page, otherwise in the HUD.</summary>
     public bool BrowserPageFocus { get; set; }
@@ -205,7 +217,7 @@ public partial class MainWindow : Window
         {
             pane.HorizontalAlignment = HorizontalAlignment.Stretch;
             pane.VerticalAlignment = VerticalAlignment.Stretch;
-            pane.Margin = new Thickness(0);
+            pane.Margin = new Thickness(0, FullScreenStrip, 0, 0);
             pane.Width = double.NaN;
             pane.Height = double.NaN;
             return;
@@ -216,6 +228,88 @@ public partial class MainWindow : Window
         pane.Width = _browserRect.W;
         pane.Height = _browserRect.H;
     }
+
+    /// <summary>Where the browser page is on the screen, in pixels (null while it is not shown): the controller's cursor stays inside.</summary>
+    public Services.ControllerMouse.Bounds? BrowserScreenBounds()
+    {
+        if (_browser is not { IsVisible: true } || !_root.IsLoaded || PresentationSource.FromVisual(_root) is null) return null;
+        try
+        {
+            System.Windows.Point a, b;
+            if (_browserFull)
+            {
+                a = _root.PointToScreen(new System.Windows.Point(0, FullScreenStrip));
+                b = _root.PointToScreen(new System.Windows.Point(_root.ActualWidth, _root.ActualHeight));
+            }
+            else
+            {
+                a = _root.PointToScreen(new System.Windows.Point(_browserRect.X, _browserRect.Y));
+                b = _root.PointToScreen(new System.Windows.Point(_browserRect.X + _browserRect.W, _browserRect.Y + _browserRect.H));
+            }
+            var left = (int)Math.Ceiling(a.X);
+            var top = (int)Math.Ceiling(a.Y);
+            var right = (int)Math.Floor(b.X);
+            var bottom = (int)Math.Floor(b.Y);
+            return right - left < 8 || bottom - top < 8 ? null : new Services.ControllerMouse.Bounds(left, top, right, bottom);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(NativePoint point);
+
+    private const uint GaRootOwner = 3, WmClose = 0x0010;
+
+    /// <summary>The window belongs to this one: itself, a child (the web view) or a popup it owns (a page's list or picker).</summary>
+    private bool IsOwn(IntPtr window)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        return hwnd != IntPtr.Zero && window != IntPtr.Zero && GetAncestor(window, GaRootOwner) == hwnd;
+    }
+
+    /// <summary>
+    /// The window in front is a popup or dialog that belongs to this window (a web view's list, picker or dialog), not the window
+    /// itself and not another program; then the controller still belongs to the HUD. Returns that popup, or zero.
+    /// </summary>
+    public IntPtr OwnPopupInFront()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var front = NativeMethods.GetForegroundWindow();
+        return front != hwnd && IsOwn(front) ? front : IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Closes the popup found by <see cref="OwnPopupInFront"/> (like its close button: a dialog counts as cancelled) and takes the
+    /// front back. Checked again right before: the front may have changed meanwhile, and another program's window is never closed.
+    /// </summary>
+    public bool CloseOwnPopup(IntPtr popup)
+    {
+        if (popup == IntPtr.Zero || NativeMethods.GetForegroundWindow() != popup || OwnPopupInFront() != popup) return false;
+        Console.WriteLine("[window] closing a popup of the page");
+        PostMessage(popup, WmClose, IntPtr.Zero, IntPtr.Zero);
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, BringToFront);
+        return true;
+    }
+
+    /// <summary>The window under this screen point (cursor coordinates) is this window, its web view or one of its popups.</summary>
+    public bool OwnsPoint(int x, int y) => IsOwn(WindowFromPoint(new NativePoint { X = x, Y = y }));
 
     /// <summary>Leaving the Browser tab: the page is hidden but stays open.</summary>
     public void HideBrowser()
@@ -249,6 +343,14 @@ public partial class MainWindow : Window
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
         Console.Error.WriteLine($"[web] process failed: {e.ProcessFailedKind}");
+        // Only when the page itself is gone (or about to be reloaded) are its reports of a code entry or pairing code gone with it;
+        // after a GPU, utility or frame exit the page keeps running and does not report again.
+        if (e.ProcessFailedKind is CoreWebView2ProcessFailedKind.RenderProcessExited
+            or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive
+            or CoreWebView2ProcessFailedKind.BrowserProcessExited)
+        {
+            _hud.ResetUiScreenState();
+        }
         if (AllowClose) return;
 
         switch (e.ProcessFailedKind)
@@ -295,6 +397,12 @@ public partial class MainWindow : Window
     {
         // Resolution or monitor change (TV switched on, HDMI replugged): cover the whole screen again.
         if (msg == NativeMethods.WmDisplayChange && !_dev && IsVisible) Dispatcher.BeginInvoke(() => FitToMonitor(primary: true));
+        // Sleep and wake-up (PBT_APMSUSPEND 4, PBT_APMRESUMEAUTOMATIC 0x12): the TV may follow. Both only start work, nothing waits here.
+        if (msg == 0x0218)
+        {
+            if (wParam == (IntPtr)0x12) _hud.OnPowerResumed();
+            else if (wParam == (IntPtr)0x4) _hud.OnPowerSuspending();
+        }
         // The session end was called off after all (wParam false): CouchHud is still here and stays.
         if (msg == NativeMethods.WmEndSession && wParam == IntPtr.Zero)
         {

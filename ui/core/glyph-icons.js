@@ -62,7 +62,8 @@ const PATHS = {
   tv: 'M3 6h18v12H3zM8 21h8M9 3l3 3 3-3',
   grid: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
   volumeLow: 'M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7',
-  mute: 'M4 9h4l5-4v14l-5-4H4zM17 9.5l5 5M22 9.5l-5 5'
+  mute: 'M4 9h4l5-4v14l-5-4H4zM17 9.5l5 5M22 9.5l-5 5',
+  shield: 'M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6zM9 12l2 2 4-4'
 };
 
 const GLYPHS = {
@@ -72,7 +73,7 @@ const GLYPHS = {
   '🎮': 'gamepad', '⚠': 'warn', '⛔': 'block', '☾': 'moon', '⏻': 'power', '✎': 'pencil', '▶': 'play', '⏺': 'record',
   '⬇': 'download', '⤓': 'download', '⬆': 'upload', '↻': 'refresh', '⟳': 'refresh', '↺': 'refresh', '⇄': 'swap',
   '★': 'star', '☆': 'star', '⚙': 'gear', '⌂': 'home', '✦': 'spark', '▤': 'list', '▣': 'window', '♪': 'music',
-  'ᛒ': 'bluetooth', '⏲': 'timer', '▭': 'desktop', '⏸': 'pause', '+': 'plus', '◆': 'dot', '○': 'circle', '⋯': 'dots', '🖴': 'drive', '▦': 'grid', '📺': 'tv', '🎧': 'headphones', '🎬': 'clapper', '📜': 'list', '💡': 'bulb', '🔌': 'plug', '🌀': 'refresh', '🔘': 'circle', '🪟': 'window', '🪄': 'spark', '🎵': 'music', '🌡️': 'thermometer', '🌡': 'thermometer', '🤖': 'robot', '🌤️': 'sun', '🌤': 'sun', '☀️': 'sun', '☀': 'sun', '💧': 'drop', '⚡': 'bolt', '🔋': 'battery', '🚪': 'door', '🏃': 'person'
+  'ᛒ': 'bluetooth', '⏲': 'timer', '▭': 'desktop', '⏸': 'pause', '+': 'plus', '◆': 'dot', '○': 'circle', '⋯': 'dots', '🖴': 'drive', '▦': 'grid', '📺': 'tv', '🎧': 'headphones', '🎬': 'clapper', '📜': 'list', '💡': 'bulb', '🔌': 'plug', '🌀': 'refresh', '🔘': 'circle', '🪟': 'window', '🪄': 'spark', '🎵': 'music', '🌡️': 'thermometer', '🌡': 'thermometer', '🤖': 'robot', '🌤️': 'sun', '🌤': 'sun', '☀️': 'sun', '☀': 'sun', '💧': 'drop', '⚡': 'bolt', '🔋': 'battery', '🚪': 'door', '🏃': 'person', '⛨': 'shield'
 };
 
 const FILLED = new Set(['★', '▶', '⏺', '◆']);

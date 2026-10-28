@@ -5,11 +5,9 @@ import { api } from '../core/api.js';
 import { el, keepInView, setFocused } from '../core/dom.js';
 import { refreshBackground } from '../core/art.js';
 import { attempt, toast } from '../core/feedback.js';
-import { move, push, render } from '../core/nav.js';
+import { move, render } from '../core/nav.js';
 import { sound } from '../sound.js';
 import { openFileBrowser } from './file-browser.js';
-import { detailPage } from '../views/detail.js';
-import { guarded } from './passcode.js';
 import { t } from '../core/i18n.js';
 
 const SLOTS = [
@@ -175,4 +173,4 @@ export function artworkPickerPage(item) {
   };
 }
 
-detailPage.extraActions.push((item) => ({ label: t('artworkPicker.action'), icon: '🖼', run: guarded(t('artworkPicker.title'), () => push(artworkPickerPage(item))) }));
+// Opened from the edit menu (library-tools.js), next to name, texts and store entry.

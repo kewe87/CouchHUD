@@ -5,7 +5,8 @@ using CouchHud.Core.Localization;
 
 namespace CouchHud.Shell.Services;
 
-public sealed record BluetoothDeviceInfo(string Id, string Name, bool Paired, bool Connected, bool LowEnergy, string Kind);
+/// <param name="Battery">Percent from DEVPKEY_Bluetooth_Battery for a connected device that reports it, otherwise null.</param>
+public sealed record BluetoothDeviceInfo(string Id, string Name, bool Paired, bool Connected, bool LowEnergy, string Kind, int? Battery = null);
 
 /// <summary>
 /// Bluetooth from the couch: list, pair and remove headsets and controllers, and turn
@@ -24,8 +25,12 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm) : IBlueto
         "System.Devices.Aep.IsPaired",
         "System.Devices.Aep.IsConnected",
         "System.Devices.Aep.Category",
-        "System.Devices.Aep.ProtocolId"
+        "System.Devices.Aep.ProtocolId",
+        "System.Devices.Aep.ContainerId"
     ];
+
+    /// <summary>DEVPKEY_Bluetooth_Battery: the percent a connected device reports (a byte, 0..100), on its device nodes, not on the endpoint.</summary>
+    private const string BatteryProperty = "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2";
 
     public async Task<(bool Available, bool On)> StateAsync()
     {
@@ -41,7 +46,8 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm) : IBlueto
         "System.Devices.Aep.Category",
         "System.Devices.Aep.Bluetooth.Cod.Major",
         "System.Devices.Aep.Bluetooth.Cod.Minor",
-        "System.Devices.Aep.Bluetooth.Le.Appearance"
+        "System.Devices.Aep.Bluetooth.Le.Appearance",
+        "System.Devices.Aep.ContainerId"
     ];
 
     private readonly object _watchGate = new();
@@ -123,6 +129,75 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm) : IBlueto
         return (paired, connected);
     }
 
+    /// <summary>
+    /// Battery percent of every connected, paired Bluetooth device that reports one (controllers, headsets, mice). Read-only: what
+    /// Windows already knows, no search. Controllers first, then by name.
+    /// </summary>
+    public static async Task<IReadOnlyList<DeviceBattery>> BatteriesAsync()
+    {
+        var query = $"System.Devices.Aep.IsPaired:=System.StructuredQueryType.Boolean#True AND System.Devices.Aep.IsConnected:=System.StructuredQueryType.Boolean#True AND (System.Devices.Aep.ProtocolId:=\"{ClassicProtocol}\" OR System.Devices.Aep.ProtocolId:=\"{LowEnergyProtocol}\")";
+        var devices = await DeviceInformation.FindAllAsync(query, KindProperties, DeviceInformationKind.AssociationEndpoint);
+        var result = new List<DeviceBattery>();
+        foreach (var d in devices)
+        {
+            var props = d.Properties;
+            if (await BatteryOfAsync(props) is not { } percent) continue;
+            var categories = props.TryGetValue("System.Devices.Aep.Category", out var cat) ? cat as string[] : null;
+            var kind = BluetoothDeviceKind.IsController(categories, Number(props, "System.Devices.Aep.Bluetooth.Cod.Major"), Number(props, "System.Devices.Aep.Bluetooth.Cod.Minor"),
+                Number(props, "System.Devices.Aep.Bluetooth.Le.Appearance"), d.Name) ? "controller" : BluetoothDeviceKind.Kind(d.Name);
+            // The endpoint id holds Bluetooth addresses; the UI gets an opaque key instead.
+            result.Add(new DeviceBattery(BatteryRules.DeviceKey(d.Id), d.Name ?? "", kind, percent));
+        }
+        return result
+            .Where(b => b.Name.Length > 0)
+            .OrderByDescending(b => b.Kind == "controller")
+            .ThenBy(b => b.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// The battery of an endpoint: the lowest DEVPKEY_Bluetooth_Battery among the device nodes of its container (a headset's hands-free
+    /// and audio nodes report the same value). Null without a container, without the property, or when the read fails.
+    /// </summary>
+    private static async Task<int?> BatteryOfAsync(IReadOnlyDictionary<string, object> endpoint) =>
+        endpoint.TryGetValue("System.Devices.Aep.ContainerId", out var c) && c is Guid container ? await SafeBatteryOfContainerAsync(container) : null;
+
+    /// <summary>The whole battery enrichment of a scan list; the list itself never waits longer for it.</summary>
+    private static readonly TimeSpan ScanBatteryTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary><see cref="BatteryOfContainerAsync"/> that never throws: any failure is "no battery" for that one device.</summary>
+    private static async Task<int?> SafeBatteryOfContainerAsync(Guid container)
+    {
+        try
+        {
+            return await BatteryOfContainerAsync(container);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[bluetooth] battery: {ex.GetType().Name}");
+            return null;
+        }
+    }
+
+    private static async Task<int?> BatteryOfContainerAsync(Guid container)
+    {
+        if (container == Guid.Empty) return null;
+        try
+        {
+            var nodes = await DeviceInformation.FindAllAsync($"System.Devices.ContainerId:=\"{container:B}\"", [BatteryProperty], DeviceInformationKind.Device);
+            int? lowest = null;
+            foreach (var n in nodes)
+            {
+                if (n.Properties.TryGetValue(BatteryProperty, out var v) && BatteryRules.BluetoothPercent(v) is { } p) lowest = lowest is { } l ? Math.Min(l, p) : p;
+            }
+            return lowest;
+        }
+        catch (Exception ex) when (ex is ArgumentException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            return null;
+        }
+    }
+
     public async Task<int> PairedControllersAsync() => (await ControllersAsync()).Paired;
 
     /// <summary>Airplane mode: more than one radio and every one of them off (with Bluetooth alone it cannot be told apart).</summary>
@@ -179,9 +254,15 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm) : IBlueto
         var watcher = DeviceInformation.CreateWatcher(query, Properties, DeviceInformationKind.AssociationEndpoint);
         var done = new TaskCompletionSource();
 
+        var containers = new Dictionary<string, Guid>();
         watcher.Added += (_, info) =>
         {
-            if (ToInfo(info) is { } device) lock (gate) found[device.Id] = device;
+            if (ToInfo(info) is not { } device) return;
+            lock (gate)
+            {
+                found[device.Id] = device;
+                if (info.Properties.TryGetValue("System.Devices.Aep.ContainerId", out var c) && c is Guid g) containers[device.Id] = g;
+            }
         };
         watcher.Updated += (_, update) =>
         {
@@ -211,15 +292,42 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm) : IBlueto
             await Task.WhenAny(done.Task, Task.Delay(2000));
         }
 
+        List<BluetoothDeviceInfo> list;
         lock (gate)
         {
-            return found.Values
+            list = found.Values
                 .Where(d => d.Name.Length > 0)
                 .OrderByDescending(d => d.Connected)
                 .ThenByDescending(d => d.Paired)
                 .ThenBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
         }
+        // The battery of what is connected, shown next to its name: read side by side, at most ScanBatteryTimeout in all (what has not
+        // answered by then shows no battery), and a device whose read fails in any way just shows none.
+        var reads = new List<(int Index, Task<int?> Read)>();
+        lock (gate)
+        {
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (list[i].Connected && containers.TryGetValue(list[i].Id, out var container)) reads.Add((i, SafeBatteryOfContainerAsync(container)));
+            }
+        }
+        if (reads.Count > 0)
+        {
+            try
+            {
+                await Task.WhenAll(reads.Select(r => r.Read)).WaitAsync(ScanBatteryTimeout);
+            }
+            catch (TimeoutException)
+            {
+                // Keep whatever has arrived.
+            }
+            foreach (var (index, read) in reads)
+            {
+                if (read.IsCompletedSuccessfully && read.Result is { } percent) list[index] = list[index] with { Battery = percent };
+            }
+        }
+        return list;
     }
 
     public async Task<string> PairAsync(string id)

@@ -97,18 +97,31 @@ public sealed class Lockout
 
     private void Load()
     {
-        if (_file is null || !File.Exists(_file)) return;
-        try
+        if (_file is null || !File.Exists(_file) && !File.Exists(CouchHud.Core.Files.DurableFile.BackupOf(_file))) return;
+        // The file, or its copy from before when a reset left the file empty or broken.
+        var text = CouchHud.Core.Files.DurableFile.ReadValid(_file, t => TryParse(t) is not null, out var fromBackup);
+        if (text is not null && TryParse(text) is { } state)
         {
-            var state = System.Text.Json.JsonSerializer.Deserialize<State>(File.ReadAllText(_file));
-            if (state is null) return;
+            if (fromBackup) Console.Error.WriteLine($"[lockout] {Path.GetFileName(_file)} unreadable, using the copy from before");
             _failures = Math.Max(0, state.Failures);
             var latest = clock() + MaxWait;
             _until = state.Until > latest ? latest : state.Until;
+            return;
         }
-        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException)
+        // Neither can be read: no fresh set of tries. The right code still works at once, the next wrong one starts the wait.
+        Console.Error.WriteLine($"[lockout] {Path.GetFileName(_file)} and its copy are unreadable: the next wrong code starts the wait");
+        _failures = FreeTries - 1;
+    }
+
+    private static State? TryParse(string text)
+    {
+        try
         {
-            // An unreadable file must not unlock anything; it just starts counting again.
+            return System.Text.Json.JsonSerializer.Deserialize<State>(text);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
         }
     }
 
@@ -117,8 +130,7 @@ public sealed class Lockout
         if (_file is null) return;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
-            File.WriteAllText(_file, System.Text.Json.JsonSerializer.Serialize(new State(_failures, _until)));
+            CouchHud.Core.Files.DurableFile.WriteAllText(_file, System.Text.Json.JsonSerializer.Serialize(new State(_failures, _until)));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

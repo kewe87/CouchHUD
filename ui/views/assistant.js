@@ -127,6 +127,7 @@ export const assistantView = {
     this.index = Math.min(this.index, this.chips.length - 1);
     this.transcript = el('div', { className: 'chat list-scroll' });
     this.chipNodes = this.chips.map((c) => el('li', { className: `chip${c.primary ? ' primary' : ''}` }, c.icon ? iconEl(c.icon) : null, c.label));
+    this.chipRow = el('ul', { className: 'chips' }, this.chipNodes);
     this.modelTag = el('span', { className: 'chat-model' });
     root.append(el('div', { className: 'assistant-page' },
       el('header', { className: 'assistant-head' },
@@ -135,9 +136,9 @@ export const assistantView = {
           el('h2', { textContent: t('assistant.title') }),
           this.modelTag)),
       this.transcript,
-      el('ul', { className: 'chips' }, this.chipNodes)));
+      this.chipRow));
     this.renderTranscript();
-    this.update();
+    this.update({ instant: true });
   },
   renderTranscript() {
     if (!this.transcript?.isConnected) return;
@@ -155,10 +156,26 @@ export const assistantView = {
     this.transcript.replaceChildren(...nodes);
     this.transcript.scrollTop = this.transcript.scrollHeight;
   },
-  update() {
+  update({ instant = false } = {}) {
     setFocused(this.chipNodes, this.index);
+    this.keepChipInView(instant);
     if (this.modelTag) this.modelTag.textContent = info?.configured ? `${info.provider === 'openai' ? 'OpenAI' : 'Anthropic'} · ${info.model}` : t('assistant.notSetUp');
     renderHints();
+  },
+  /** The chip row never wraps: scroll it so the focused chip sits clear of the faded edges (4rem, see .chips.cut-*). */
+  keepChipInView(instant) {
+    const row = this.chipRow;
+    const chip = this.chipNodes[this.index];
+    if (!row?.isConnected || !chip) return;
+    const edge = 4 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const max = row.scrollWidth - row.clientWidth;
+    let left = row.scrollLeft;
+    if (chip.offsetLeft - edge < left) left = chip.offsetLeft - edge;
+    else if (chip.offsetLeft + chip.offsetWidth + edge > left + row.clientWidth) left = chip.offsetLeft + chip.offsetWidth + edge - row.clientWidth;
+    left = Math.max(0, Math.min(left, max));
+    row.classList.toggle('cut-start', left > 0);
+    row.classList.toggle('cut-end', left < max - 1);
+    row.scrollTo({ left, behavior: instant ? 'instant' : 'smooth' });
   },
   async compose() {
     const text = await openKeyboard({ title: t('assistant.kbTitle'), placeholder: t('assistant.kbPlaceholder') });

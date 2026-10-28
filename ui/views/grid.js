@@ -8,6 +8,7 @@ import { openKeyboard } from '../components/keyboard.js';
 import { collectionMenu, manageCollections } from '../components/collections.js';
 import { changeCollections, collectionById, visibleCount } from '../core/collections.js';
 import { ensureUnlocked, guarded } from '../components/passcode.js';
+import { uninstalledPage } from './uninstalled.js';
 import { api } from '../core/api.js';
 import { state } from '../core/state.js';
 import { sound } from '../sound.js';
@@ -142,6 +143,7 @@ export function gridView(name, getItems, { columns, kind, className, empty, coll
       const f = this.filter;
       const choice = await chooseDialog(t('grid.filter.title', { name }), [
         ...(addKind && !collectionId ? [{ label: t('grid.menu.add'), icon: '+', detail: t('grid.menu.addHint'), value: 'add' }] : []),
+        ...(addKind === 'game' && !collectionId ? [{ label: t('grid.menu.uninstalled'), icon: '⤓', detail: t('grid.menu.uninstalledHint'), value: 'uninstalled' }] : []),
         { label: t('grid.menu.search'), icon: '⌕', detail: f.query ? t('grid.menu.searchCurrent', { query: f.query }) : t('grid.menu.searchHint'), value: 'search' },
         { icon: '⇄', label: t('grid.menu.sort', { sort: sorts().find((s) => s.value === f.sort)?.label }), value: 'sort' },
         { label: f.favorites ? t('grid.menu.showAll') : t('grid.menu.onlyFavorites'), icon: '★', value: 'favorites' },
@@ -153,6 +155,7 @@ export function gridView(name, getItems, { columns, kind, className, empty, coll
       ]);
       switch (choice) {
         case 'add': return addEntryFlow({ kind: addKind });
+        case 'uninstalled': return push(uninstalledPage());
         case 'search': return this.search();
         case 'sort': {
           const sort = await chooseDialog(t('grid.sort.title'), sorts(), f.sort);

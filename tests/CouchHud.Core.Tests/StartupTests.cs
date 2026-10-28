@@ -104,7 +104,7 @@ public class StartupTests
     public void Entries_waiting_for_pc_mode_or_disabled_in_windows_are_not_started_at_boot()
     {
         var registry = new FakeRegistry();
-        registry.Values[@"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"] = new() { ["A"] = @"C:.exe", ["B"] = @"C:.exe", ["C"] = @"C:\c.exe" };
+        registry.Values[@"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"] = new() { ["A"] = @"C:\a.exe", ["B"] = @"C:\b.exe", ["C"] = @"C:\c.exe" };
         registry.Binary[@"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run\C"] = [3, 0, 0, 0];
         var commands = StartupCatalog.CouchCommands(Read(registry), new Dictionary<string, string> { ["Run:B"] = StartupMode.Pc });
         Assert.Equal(["A"], commands.Select(c => c.Entry.Name));

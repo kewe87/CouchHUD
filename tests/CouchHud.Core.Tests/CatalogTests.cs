@@ -151,7 +151,7 @@ public class CatalogTests : IDisposable
         // Signed with the maintainer's key; a changed byte (or line ending) would break this.
         Assert.True(CatalogSignature.Verify(File.ReadAllBytes(file), File.ReadAllText(file + ".sig")));
         var entries = Parse(File.ReadAllText(file));
-        Assert.Equal(["wand", "synthwave"], entries.Select(e => e.Id));
+        Assert.Equal(["wand", "synthwave", "stardust"], entries.Select(e => e.Id));
         Assert.All(entries, e => Assert.Null(e.Problem));
         Assert.Equal("CouchHud.Plugin.Wand", entries[0].Folder);
     }

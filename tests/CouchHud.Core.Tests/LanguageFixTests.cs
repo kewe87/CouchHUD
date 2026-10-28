@@ -55,6 +55,22 @@ public class LanguageFixTests
         Assert.Equal("", Strings.RenderIn("en", ""));
     }
 
+    [Fact]
+    public void A_name_from_outside_that_looks_like_a_reference_stays_text()
+    {
+        // A game name from a file could be made to look like a stored reference to another text.
+        var forged = "\u0001{\"K\":\"hud.configFault\",\"N\":null,\"A\":[]}";
+        var stored = Strings.Ref("downloads.installed", forged);
+        var shown = Strings.RenderIn("en", stored);
+        Assert.Equal(Strings.GetIn("en", "downloads.installed", forged), shown);
+        Assert.DoesNotContain(Strings.GetIn("en", "hud.configFault"), shown);
+        // Not as a whole text either: only strings made by Ref are references.
+        Assert.Equal(forged, Strings.RenderIn("en", forged));
+        // A real reference as an argument still renders.
+        Assert.Equal(Strings.GetIn("en", "downloads.installed", Strings.GetIn("en", "time.minutes", 3)),
+            Strings.RenderIn("en", Strings.Ref("downloads.installed", Strings.Ref("time.minutes", 3))));
+    }
+
     // ---- default news feeds follow the language until the user changes them
 
     [Fact]

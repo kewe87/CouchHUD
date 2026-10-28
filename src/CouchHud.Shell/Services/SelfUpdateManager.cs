@@ -24,7 +24,9 @@ public sealed record SelfUpdateState(
     long? CheckedAt,
     string? Busy,
     /// <summary>noRelease, rateLimit, noAnswer or unreachable: the UI translates these itself; null for other errors (Error holds the text).</summary>
-    string? ErrorCode = null);
+    string? ErrorCode = null,
+    /// <summary>The setup is being downloaded and that can be cancelled now (never after the hand-over to the service).</summary>
+    bool Cancellable = false);
 
 /// <summary>
 /// CouchHUD updating itself from GitHub Releases: a quiet check in the background (never while a game runs),
@@ -42,6 +44,8 @@ public sealed class SelfUpdateManager
     private readonly SemaphoreSlim _gate = new(1, 1);
     private SelfUpdateCheck? _last;
     private string? _busy;
+    /// <summary>Set only while the setup downloads: the one thing a cancel may stop (its slot closes when the hand-over begins).</summary>
+    private DownloadCancel? _download;
 
     public SelfUpdateManager(ConfigStore config, string dataDir, Func<bool> gameRunning, Action<string, string, string> notify, Action<SelfUpdateState> changed)
     {
@@ -71,7 +75,8 @@ public sealed class SelfUpdateManager
             available ? r!.Version.ToString() : null, available ? r!.Notes : null, available ? r!.PageUrl : null,
             available && r!.Installable, ServiceSwitch.InstallFolderIsProtected(),
             available ? r!.Problem : null,
-            _last?.ErrorCode is { } code ? Strings.Get("selfupdate." + code) : _last?.Error, _last?.CheckedAt, _busy, _last?.ErrorCode);
+            _last?.ErrorCode is { } code ? Strings.Get("selfupdate." + code) : _last?.Error, _last?.CheckedAt, _busy, _last?.ErrorCode,
+            Volatile.Read(ref _download)?.Open == true);
     }
 
     private void Publish() => _changed(Describe());
@@ -113,7 +118,7 @@ public sealed class SelfUpdateManager
     /// The setup stops the service and this process and starts the shells again (restart-couchhud.ps1). Returns only when the
     /// service did not take over (refused, failed, or the setup did not end CouchHUD in time).
     /// </summary>
-    public async Task<string> InstallAsync()
+    public async Task<string> InstallAsync(Action? started = null)
     {
         if (_gameRunning()) throw new InvalidOperationException(Strings.Get("selfupdate.notInGame"));
         // Only the installed copy: a setup would put the new version in Program Files, not next to a dev build.
@@ -121,6 +126,8 @@ public sealed class SelfUpdateManager
         if (!await _gate.WaitAsync(0)) throw new InvalidOperationException(Strings.Get("selfupdate.busy"));
         try
         {
+            // Only now this run is the one: a call turned away above never touches what the running one shows.
+            started?.Invoke();
             var release = _last?.UpdateAvailable == true ? _last.Release : null;
             if (release is null) throw new InvalidOperationException(Strings.Get("selfupdate.noneKnown"));
             if (!release.Installable) throw new InvalidOperationException(release.Problem ?? Strings.Get("selfupdate.notInstallable"));
@@ -130,19 +137,44 @@ public sealed class SelfUpdateManager
                 throw new InvalidOperationException(Strings.Get("selfupdate.needsService", Strings.Get(CouchHud.ServiceClient.ServiceTexts.StateKey(status.State))));
             }
 
-            _busy = Strings.Get("selfupdate.downloading", release.Version);
-            Publish();
             VerifiedSetup setup;
-            try
+            // Cancelling stops only the download: the half file goes with its folder (DownloadAsync deletes it), nothing is resumed, and a
+            // new start downloads and verifies the whole setup again. The hand-over and a cancel race for one slot (DownloadCancel): a cancel
+            // that came first stops the update even after the last byte and the hash, one that comes later reports false.
+            using (var cancel = new DownloadCancel())
             {
-                // A fresh, real folder every time (no junction planted in advance).
-                PathSafety.PrepareCleanDirectory(TempDir);
-                setup = await _service.DownloadAsync(release, TempDir);
-            }
-            catch (CatalogException ex)
-            {
-                Console.Error.WriteLine($"[selfupdate] rejected: {ex.Message}");
-                throw new InvalidOperationException(ex.Message);
+                Volatile.Write(ref _download, cancel);
+                _busy = Strings.Get("selfupdate.downloading", release.Version);
+                Publish();
+                try
+                {
+                    // A fresh, real folder every time (no junction planted in advance).
+                    PathSafety.PrepareCleanDirectory(TempDir);
+                    setup = await _service.DownloadAsync(release, TempDir, cancel.Token);
+                    if (!cancel.TryHandOver())
+                    {
+                        // Cancel took the slot first (its flag may not be set yet): cancelled, never handed over.
+                        setup.Dispose();
+                        Console.Error.WriteLine("[selfupdate] download cancelled");
+                        CleanTemp();
+                        throw new InvalidOperationException(Strings.Get("selfupdate.cancelled"));
+                    }
+                }
+                catch (Exception ex) when (cancel.Cancelled && ex is OperationCanceledException or CatalogException)
+                {
+                    Console.Error.WriteLine("[selfupdate] download cancelled");
+                    CleanTemp();
+                    throw new InvalidOperationException(Strings.Get("selfupdate.cancelled"));
+                }
+                catch (CatalogException ex)
+                {
+                    Console.Error.WriteLine($"[selfupdate] rejected: {ex.Message}");
+                    throw new InvalidOperationException(ex.Message);
+                }
+                finally
+                {
+                    Volatile.Write(ref _download, null);
+                }
             }
 
             using (setup)
@@ -181,6 +213,12 @@ public sealed class SelfUpdateManager
             _gate.Release();
         }
     }
+
+    /// <summary>
+    /// Cancels a running download of the setup; false when none runs (not started, or the hand-over has begun). True means the update
+    /// really stops: the slot is taken before the hand-over can take it (<see cref="DownloadCancel"/>).
+    /// </summary>
+    public bool CancelDownload() => Volatile.Read(ref _download)?.Cancel() == true;
 
     /// <summary>Authenticode is not required (the signature of the checksum file is); a signature is logged when there is one.</summary>
     private static void LogAuthenticode(string file)

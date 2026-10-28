@@ -88,7 +88,7 @@ function phonePanel() {
  * paste: a "Paste from PC" key (and Ctrl+V) for tokens, keys and long addresses: the host reads the clipboard (text only, trimmed, at
  * most 4096 characters, never logged; refused while the couch is locked).
  */
-export function openKeyboard({ title = t('keyboard.title'), value = '', placeholder = '', secret = false, hint = '', maxLength = 0, paste = false } = {}) {
+export function openKeyboard({ title = t('keyboard.title'), value = '', placeholder = '', secret = false, hint = '', maxLength = 0, paste = false, web = false } = {}) {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result) => {
@@ -130,7 +130,8 @@ export function openKeyboard({ title = t('keyboard.title'), value = '', placehol
         this.board = el('div', { className: 'osk-board' }, this.keys.map((row) => el('div', { className: 'osk-row' }, row)));
 
         root.append(el('div', { className: 'osk-wrap' },
-          el('div', { className: 'osk' },
+          // A web page's prompt: the web's frame, never the look of CouchHUD's own questions.
+          el('div', { className: web ? 'osk web' : 'osk' },
             el('h2', { className: 'osk-title', textContent: title }),
             this.field,
             hint ? el('p', { className: 'osk-hint', textContent: hint }) : null,

@@ -1,4 +1,4 @@
-// i18n-used: savegames.notBackedUp savegames.notRestored
+// i18n-used: savegames.notBackedUp savegames.notRestored savegames.restoreReason savegames.restoreReasonNamed savegames.deleteReason savegames.deleteReasonNamed
 // Save games: summary on the detail page, backup/restore page, backup offer before uninstalling
 // and the settings block. Locations come from the Ludusavi manifest (community database).
 
@@ -11,9 +11,27 @@ import { sound } from '../sound.js';
 import { t, fmtDateTime } from '../core/i18n.js';
 import { chooseDialog, confirmDialog } from './overlay.js';
 import { openFileBrowser } from './file-browser.js';
-import { isLocked } from './passcode.js';
+import { ensureUnlocked, isLocked } from './passcode.js';
+import { ensureParentGrant, parental, refreshParental } from './parental.js';
+import { admitSaveChange } from '../core/continue-rules.js';
+import { admitProtectedChange } from '../core/lock-rules.js';
+import { GAME_LIMITS_MB, TOTAL_LIMITS_MB, limitChoices } from '../core/size.js';
 
 const dateTime = (ms) => fmtDateTime(ms);
+
+/** Restoring or deleting a backup changes saves for good: the couch must be unlocked, with parental controls also the parents' code. */
+async function admitChange(action, item) {
+  const status = parental.status ?? (await refreshParental());
+  return admitSaveChange({
+    action,
+    id: item.id,
+    parentalOn: !!status?.enabled,
+    reason: t(action === 'restoreSaves' ? 'savegames.restoreReason' : 'savegames.deleteReason'),
+    parentReason: t(action === 'restoreSaves' ? 'savegames.restoreReasonNamed' : 'savegames.deleteReasonNamed', { name: item.name }),
+    ensureUnlocked,
+    ensureParentGrant
+  });
+}
 
 /** One line for the facts list on the detail page; null while unknown or without saves. */
 export function saveSummary(info) {
@@ -37,7 +55,7 @@ function reportErrors(result, what) {
   toast(t(what === 'Sicherung' ? 'savegames.notBackedUp' : 'savegames.notRestored', { count: result.errors.length, error: result.errors[0] }), 7000);
 }
 
-const BIG_BYTES = 1024 ** 3;
+const BIG_BYTES = 1_000_000_000;
 
 /**
  * Backs up the saves. Resolves to { ok, clean }: ok = a ZIP exists, clean = nothing went wrong
@@ -54,6 +72,18 @@ export async function backupNow(item, info = null) {
   if (!result.id) {
     toast(t('savegames.nothingBackedUp', { reason: result.errors?.[0] ?? t('savegames.noFiles') }), 6000);
     return { ok: false, clean: false };
+  }
+  if (result.unchanged && result.complete) {
+    // Nothing changed since the last complete backup: that one still holds, no new version.
+    toast(t('savegames.unchanged'), 4000);
+    return { ok: true, clean: true };
+  }
+  if (result.unchanged) {
+    // The same incomplete state as the last incomplete backup: that one is kept, no new version. Still incomplete, so not clean
+    // (before an uninstall the person confirms).
+    console.warn('Backup incomplete, unchanged:', result.errors);
+    toast(t('savegames.unchangedIncomplete', { reason: result.errors?.[0] ?? t('savegames.errorFallback') }), 9000);
+    return { ok: true, clean: false };
   }
   if (!result.complete || result.errors?.length) {
     console.warn('Backup incomplete:', result.errors);
@@ -88,6 +118,7 @@ export async function offerBackupBeforeUninstall(item) {
   ], 'backup');
   if (choice === 'skip') return true;
   if (choice !== 'backup') return false;
+  // "Unchanged" points to a backup by hand with exactly these files: that one holds the state, nothing new is rotated in.
   const result = await backupNow(item, info);
   if (result.cancelled) return false;
   if (result.clean) return true;
@@ -166,7 +197,7 @@ export function savesPage(item, initial, onChange) {
         return undefined;
       }
       return chooseDialog(title, backups.map((b) => ({
-        label: dateTime(b.created) + (b.safety ? t('savegames.pickAuto') : '') + (b.complete ? '' : t('savegames.pickIncomplete')),
+        label: dateTime(b.created) + (b.safety ? t('savegames.pickAuto') : '') + (b.auto ? t('savegames.pickAfterGame') : '') + (b.complete ? '' : t('savegames.pickIncomplete')),
         detail: t('savegames.pickDetail', { count: b.fileCount, size: formatSize(b.sizeBytes) ?? '' }) + (b.complete ? '' : t('savegames.pickDetailErrors')),
         value: b.id
       })));
@@ -178,6 +209,7 @@ export function savesPage(item, initial, onChange) {
       const b = this.info.backups.find((x) => x.id === id);
       const note = b.complete ? '' : t('savegames.restoreWarn');
       if (!(await confirmDialog(t('savegames.restoreConfirm', { date: dateTime(b.created), note }), t('savegames.restore'), { danger: true }))) return;
+      if (!(await admitChange('restoreSaves', item))) return;
       this.busy = true;
       try {
         toast(t('savegames.restoring'), 15000);
@@ -199,6 +231,7 @@ export function savesPage(item, initial, onChange) {
       const id = await this.pickBackup(t('savegames.pickDelete'));
       if (!id) return;
       if (!(await confirmDialog(t('savegames.deleteConfirm'), t('savegames.deleteButton'), { danger: true }))) return;
+      if (!(await admitChange('deleteSaveBackup', item))) return;
       await attempt(() => api.deleteSaveBackup(item.id, id), t('savegames.deleteFailed'));
       await this.reload();
     },
@@ -245,15 +278,64 @@ export function saveSettingsItems() {
   if (!saveSettings) loadSettings();
   const s = saveSettings;
   const update = async (key, value, text) => {
+    // These settings decide whether backups exist at all: the unlocked couch, with parental controls then the parents' code (the host
+    // checks both again and refuses every one of them on a locked couch, so the unlock comes first).
+    const parentalOn = key !== 'includeConfig' && !!parental.status?.enabled;
+    if (!(await admitProtectedChange({ reason: t('savegames.settingsReason'), parentalOn, scope: { action: 'saveSettings' }, ensureUnlocked, ensureParentGrant }))) return;
     const next = await attempt(() => api.setSaveSetting(key, value), t('savegames.notSaved'));
     if (!next) return;
     saveSettings = next;
     if (text) toast(text);
     render();
   };
+  // The limits are whole megabytes, decimal like every size in the HUD (ByteSize.Mega).
+  const mb = (n) => formatSize(n * 1_000_000);
+  const on = (v) => (v ? t('savegames.on') : t('savegames.off'));
   return [
+    // Simple mode shows only this switch; the limits and the rest are for experts.
+    {
+      kind: 'choice',
+      label: t('savegames.autoLabel'),
+      desc: t('savegames.autoDesc'),
+      value: () => on(saveSettings?.autoBackup ?? true),
+      run: () => update('autoBackup', !(saveSettings?.autoBackup ?? true))
+    },
+    {
+      kind: 'choice',
+      expert: true,
+      label: t('savegames.autoKeepLabel'),
+      desc: t('savegames.autoKeepDesc'),
+      value: () => `${saveSettings?.autoKeep ?? 3}`,
+      run: async () => {
+        const keep = await chooseDialog(t('savegames.autoKeepTitle'), [1, 2, 3, 5, 10].map((n) => ({ label: `${n}`, value: n })), saveSettings?.autoKeep ?? 3);
+        if (keep !== undefined) await update('autoKeep', keep);
+      }
+    },
+    {
+      kind: 'choice',
+      expert: true,
+      label: t('savegames.autoMaxGameLabel'),
+      desc: t('savegames.autoMaxGameDesc'),
+      value: () => mb(saveSettings?.autoMaxGameMb ?? 1000),
+      run: async () => {
+        const v = await chooseDialog(t('savegames.autoMaxGameLabel'), limitChoices(GAME_LIMITS_MB, saveSettings?.autoMaxGameMb).map((n) => ({ label: mb(n), value: n })), saveSettings?.autoMaxGameMb ?? 1000);
+        if (v !== undefined) await update('autoMaxGameMb', v);
+      }
+    },
+    {
+      kind: 'choice',
+      expert: true,
+      label: t('savegames.autoMaxTotalLabel'),
+      desc: s?.totalBytes !== undefined ? t('savegames.autoMaxTotalDesc', { used: formatSize(s.totalBytes) ?? '0 B' }) : t('savegames.loading'),
+      value: () => mb(saveSettings?.autoMaxTotalMb ?? 10000),
+      run: async () => {
+        const v = await chooseDialog(t('savegames.autoMaxTotalLabel'), limitChoices(TOTAL_LIMITS_MB, saveSettings?.autoMaxTotalMb).map((n) => ({ label: mb(n), value: n })), saveSettings?.autoMaxTotalMb ?? 10000);
+        if (v !== undefined) await update('autoMaxTotalMb', v);
+      }
+    },
     {
       kind: 'action',
+      expert: true,
       label: t('savegames.folderLabel'),
       desc: s ? (s.custom ? s.backupDir : t('savegames.folderDefault', { dir: s.backupDir })) : t('savegames.loading'),
       icon: '💾',
@@ -272,6 +354,7 @@ export function saveSettingsItems() {
     },
     {
       kind: 'choice',
+      expert: true,
       label: t('savegames.keepLabel'),
       desc: t('savegames.keepDesc'),
       value: () => `${saveSettings?.keep ?? 5}`,
@@ -282,9 +365,10 @@ export function saveSettingsItems() {
     },
     {
       kind: 'choice',
+      expert: true,
       label: t('savegames.configLabel'),
       desc: t('savegames.configDesc'),
-      value: () => (saveSettings?.includeConfig ? t('savegames.on') : t('savegames.off')),
+      value: () => on(saveSettings?.includeConfig),
       run: () => update('includeConfig', !saveSettings?.includeConfig)
     }
   ];

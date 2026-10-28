@@ -139,9 +139,13 @@ internal sealed class FakeWindowsUpdate : IWindowsUpdateSession
         return Pending.ToList();
     }
 
-    public UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation)
+    /// <summary>Byte counters the fake reports while it "downloads" (done, total), as the agent's IDownloadProgress would.</summary>
+    public (long Done, long Total)? Bytes { get; set; }
+
+    public UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation, Action<long, long>? bytes = null)
     {
         lock (Installs) Installs.Add(ids);
+        if (Bytes is { } b) bytes?.Invoke(b.Done, b.Total);
         Gate?.Wait(TimeSpan.FromSeconds(10));
         progress(50);
         var count = Pending.Count(p => ids is null || ids.Contains(p.Id));

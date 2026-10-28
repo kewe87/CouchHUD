@@ -15,6 +15,8 @@ export const state = {
   panel: null,
   /** Running game as reported by the host: { id, name, started } or null. */
   session: null,
+  /** A protected profile waits at the required profile picker: no guide menu, no other page (components/profiles.js). */
+  pickerHold: false,
   /** Last input device ('pad' or 'keyboard'); hints show matching buttons. */
   inputSource: 'pad',
   // Where the last action came from: 'pad', 'keyboard' or 'mouse' (mouse and touch). Switching Bluetooth off tells the host.

@@ -175,8 +175,20 @@ public class UninstallReleaseTests
         Assert.Equal("timeout", await Run(new OpResult(FailureKind.Timeout, ErrorCodes.Timeout)));
 
     [Fact]
-    public async Task No_service_is_said_so() =>
-        Assert.Equal("noService", await Run(new OpResult(FailureKind.NotRunning, "notRunning")));
+    public async Task No_service_is_said_so()
+    {
+        Assert.Equal("noService", await Run(new OpResult(FailureKind.NotInstalled, "notInstalled")));
+        Assert.Equal("noService", await Run(OpResult.NoService));
+    }
+
+    [Fact]
+    public async Task A_service_that_is_there_but_not_reached_is_not_called_missing()
+    {
+        // VM test 0.5: the cleanup started from a network logon (PowerShell Direct) logged "noService" for a running service whose pipe
+        // refuses network callers on purpose. The log names the real reason now.
+        Assert.Equal("notRunning", await Run(new OpResult(FailureKind.NotRunning, "notRunning")));
+        Assert.Equal("unreachable", await Run(new OpResult(FailureKind.Unreachable, "unreachable")));
+    }
 
     [Fact]
     public async Task A_refusal_or_a_squatter_is_no_release() =>

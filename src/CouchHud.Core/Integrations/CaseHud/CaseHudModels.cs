@@ -102,8 +102,9 @@ public static class CaseHudAutostart
     }
 }
 
+/// <summary>A display of CaseHUD. <see cref="Id"/> stays raw (it addresses the display); <see cref="Name"/> is cleaned for the page.</summary>
 public sealed record CaseHudPanel(
-    string Id, string Name, string Model, int W, int H, bool Connected, string Mode, string Design,
+    string Id, [property: JsonConverter(typeof(CaseHudNameConverter))] string Name, string Model, int W, int H, bool Connected, string Mode, string Design,
     int Brightness, int Rotation, int FanNo, string Error = "", string Theme = "dark");
 
 public sealed record CaseHudSensors(bool Ok, string Error = "");
@@ -112,25 +113,144 @@ public sealed record CaseHudRotation(bool Enabled, string Scene = "");
 public sealed record CaseHudAwtrixDevice(string Name, string Host, string Model, bool Ok);
 public sealed record CaseHudAwtrix(bool Enabled, IReadOnlyList<CaseHudAwtrixDevice>? Devices = null);
 
+/// <summary>
+/// The automation of CaseHUD (scenes by rule, e.g. while a game runs). From the couch it is only switched on or off; the rules are
+/// edited in CaseHUD's window. <see cref="ActiveRule"/> is the index of the rule in charge, -1 for none. Its texts (when, scene) are not taken.
+/// </summary>
+public sealed record CaseHudAutomation(bool Enabled, int ActiveRule = -1);
+
 public sealed record CaseHudStatus(
     string Version, int ApiVersion, CaseHudSensors Sensors, bool Power, CaseHudGaming Gaming,
     CaseHudRotation Rotation, CaseHudAwtrix Awtrix, IReadOnlyList<CaseHudPanel> Panels, string UpdateAvailable = "",
     // CaseHUD 1.0: missing in older builds, so null means "unknown" (not "refused"); see CaseHudLighting.NeedsDisclaimer / Supported.
-    bool? DisclaimerAccepted = null, CaseHudLightingSummary? Lighting = null);
+    bool? DisclaimerAccepted = null, CaseHudLightingSummary? Lighting = null,
+    // Missing in older builds: no automation row then.
+    CaseHudAutomation? Automation = null,
+    // Programs that may hold the same devices (e.g. "OpenRGB.exe"). Untrusted text: cleaned and capped while it is read.
+    [property: JsonConverter(typeof(CaseHudConflictsConverter))] IReadOnlyList<string>? Conflicts = null,
+    // The saved scene on screen (rotation, automation or set by hand), "" for none; the one /scenes marks active. Missing (null) in
+    // older builds: the page falls back to the scene list, then to rotation.scene.
+    [property: JsonConverter(typeof(CaseHudTextConverter))] string? Scene = null);
 
-public sealed record CaseHudDesign(string Id, string Name, string Set, string Theme, bool Builtin, int W, int H);
-public sealed record CaseHudSet(string Set, string Theme, string Name);
-public sealed record CaseHudScene(string Id, string Name, bool Active);
-public sealed record CaseHudCommunityDesign(string Id, string Name, string Author, string Set, string Theme);
-
-/// <summary>Fields of a panel patch; null = leave unchanged.</summary>
-public sealed record CaseHudPanelPatch(string? Design = null, string? Mode = null, int? Brightness = null, int? Rotation = null, string? Theme = null)
+/// <summary>A text field of CaseHUD that is shown: cleaned (<see cref="CaseHudLighting.SafeMessage"/>) and capped at <see cref="MaxLength"/>; anything but a string is null.</summary>
+public sealed class CaseHudTextConverter : JsonConverter<string?>
 {
+    public const int MaxLength = 128;
+
+    public override bool HandleNull => true;
+
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String) return CaseHudLighting.SafeMessage(reader.GetString(), MaxLength);
+        reader.Skip();
+        return null;
+    }
+
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
+    {
+        if (value is null) writer.WriteNullValue();
+        else writer.WriteStringValue(value);
+    }
+}
+
+/// <summary>
+/// A name of CaseHUD for the page (display, scene, set): a string cleaned like a message (<see cref="CaseHudLighting.SafeMessage"/>) and capped
+/// at <see cref="MaxLength"/> text elements; a value that is no string (null too) reads as empty, a missing one stays unset like any missing field. Only names take it, never the ids that address things.
+/// </summary>
+public sealed class CaseHudNameConverter : JsonConverter<string>
+{
+    public const int MaxLength = 64;
+
+    public override bool HandleNull => true;
+
+    public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String) return CaseHudLighting.SafeMessage(reader.GetString(), MaxLength);
+        reader.Skip();
+        return "";
+    }
+
+    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) => writer.WriteStringValue(value ?? "");
+}
+
+/// <summary>A style of CaseHUD. <see cref="Set"/> and <see cref="Theme"/> stay raw (they go back in /sets/apply); <see cref="Name"/> is cleaned for the page.</summary>
+public sealed record CaseHudSet(string Set, string Theme, [property: JsonConverter(typeof(CaseHudNameConverter))] string Name);
+
+/// <summary>A scene of CaseHUD. It is activated by <see cref="Id"/>, which stays raw; <see cref="Name"/> is cleaned for the page.</summary>
+public sealed record CaseHudScene(string Id, [property: JsonConverter(typeof(CaseHudNameConverter))] string Name, bool Active);
+
+/// <summary>
+/// <c>conflicts</c> of the status, read defensively: at most <see cref="MaxCount"/> names of at most <see cref="MaxLength"/> text elements,
+/// control and format characters removed (<see cref="CaseHudLighting.SafeMessage"/>), empty and non-string entries dropped. Anything that is
+/// no list is no conflict. The names are shown as text only.
+/// </summary>
+public sealed class CaseHudConflictsConverter : JsonConverter<IReadOnlyList<string>?>
+{
+    public const int MaxCount = 8;
+    public const int MaxLength = 64;
+
+    public override bool HandleNull => true;
+
+    public override IReadOnlyList<string>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType != JsonTokenType.StartArray)
+        {
+            reader.Skip();
+            return null;
+        }
+        var names = new List<string>();
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                reader.Skip();
+                continue;
+            }
+            if (names.Count >= MaxCount) continue;
+            var name = CaseHudLighting.SafeMessage(reader.GetString(), MaxLength);
+            if (name.Length > 0 && !names.Contains(name, StringComparer.OrdinalIgnoreCase)) names.Add(name);
+        }
+        return names;
+    }
+
+    public override void Write(Utf8JsonWriter writer, IReadOnlyList<string>? value, JsonSerializerOptions options)
+    {
+        if (value is null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+        writer.WriteStartArray();
+        foreach (var name in value) writer.WriteStringValue(name);
+        writer.WriteEndArray();
+    }
+}
+
+/// <summary>Fields of a panel patch from the couch: brightness, theme and mode; null = leave unchanged. Design and mounting are set in CaseHUD's window.</summary>
+public sealed record CaseHudPanelPatch(string? Mode = null, int? Brightness = null, string? Theme = null)
+{
+    public static readonly IReadOnlySet<string> Modes = new HashSet<string>(StringComparer.Ordinal) { "hud", "media", "off" };
+    public static readonly IReadOnlySet<string> Themes = new HashSet<string>(StringComparer.Ordinal) { "dark", "light" };
+
+    /// <summary>
+    /// What the page sent, checked: only mode (hud, media, off), brightness (a whole number, clamped when sent) and theme (dark, light).
+    /// Any other field (design, rotation …) or value throws <see cref="ArgumentException"/>, and so does an empty patch.
+    /// </summary>
     public static CaseHudPanelPatch FromJson(JsonElement e)
     {
-        string? Str(string n) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-        int? Num(string n) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
-        return new CaseHudPanelPatch(Str("design"), Str("mode"), Num("brightness"), Num("rotation"), Str("theme"));
+        if (e.ValueKind != JsonValueKind.Object) throw new ArgumentException("panel: patch must be an object");
+        foreach (var field in e.EnumerateObject())
+            if (field.Name is not ("mode" or "brightness" or "theme")) throw new ArgumentException($"panel: {field.Name} cannot be set here");
+        string? Pick(string n, IReadOnlySet<string> allowed)
+        {
+            if (!e.TryGetProperty(n, out var v)) return null;
+            return v.ValueKind == JsonValueKind.String && allowed.Contains(v.GetString()!) ? v.GetString() : throw new ArgumentException($"panel: unknown {n}");
+        }
+        int? brightness = null;
+        if (e.TryGetProperty("brightness", out var b))
+            brightness = b.ValueKind == JsonValueKind.Number && b.TryGetInt32(out var i) ? i : throw new ArgumentException("panel: brightness must be a whole number");
+        var patch = new CaseHudPanelPatch(Pick("mode", Modes), brightness, Pick("theme", Themes));
+        return patch == new CaseHudPanelPatch() ? throw new ArgumentException("panel: nothing to change") : patch;
     }
 }
 

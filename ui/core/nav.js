@@ -53,8 +53,18 @@ export function render() {
 }
 
 export function renderTabs() {
-  $('#tab-list').replaceChildren(...tabs.map((v, i) =>
+  const list = $('#tab-list');
+  list.replaceChildren(...tabs.map((v, i) =>
     el('li', { className: i === state.tab ? 'active' : '', textContent: v.name })));
+  // Many tabs and a full status on the right: the list is cut and fades at its edges; the active tab is always scrolled into it.
+  const active = list.children[state.tab];
+  if (active) {
+    const left = active.offsetLeft - list.offsetLeft;
+    if (left < list.scrollLeft) list.scrollLeft = left - 16;
+    else if (left + active.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = left + active.offsetWidth - list.clientWidth + 16;
+  }
+  list.classList.toggle('cut-start', list.scrollLeft > 0);
+  list.classList.toggle('cut-end', list.scrollLeft + list.clientWidth < list.scrollWidth - 1);
 }
 
 export function renderHints() {
@@ -116,6 +126,8 @@ export function switchTab(tab) {
 
 /** Opens a page on top of the current one. */
 export function push(page) {
+  // A protected profile waits at the profile picker: no other page opens over it (its code prompts come through their own way).
+  if (state.pickerHold && page.id !== 'profile-picker') return;
   state.stack.push(page);
   sound.select();
   render();

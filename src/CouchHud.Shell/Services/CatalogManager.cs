@@ -46,6 +46,10 @@ public sealed class CatalogManager
 
     public IReadOnlyList<CatalogRow> Updates { get; private set; } = [];
 
+    /// <summary>The display name of an entry of the last loaded index (the downloads page), else the id.</summary>
+    public string NameOf(string id) =>
+        _last?.Entries.FirstOrDefault(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase))?.Name is { Length: > 0 } name ? name : id;
+
     public CatalogManager(ConfigStore config, PluginManager plugins, string dataDir, Func<bool> gameRunning,
         Action<string, string, string> notify, Action<IReadOnlyList<CatalogRow>> updatesChanged)
     {
@@ -97,11 +101,13 @@ public sealed class CatalogManager
         return new CatalogState(rows, result.FromCache, result.FetchedAt, result.Error, app.ToString(), result.ErrorCode);
     }
 
-    public async Task<(string Message, bool RestartNeeded, CatalogState State)> InstallAsync(string id, string kind)
+    public async Task<(string Message, bool RestartNeeded, CatalogState State)> InstallAsync(string id, string kind, Action? started = null)
     {
         if (!await _gate.WaitAsync(0)) throw new InvalidOperationException(Strings.Get("catalog.installRunning"));
         try
         {
+            // Only now this run is the one: a call turned away above never touches what the running one shows.
+            started?.Invoke();
             var result = _last ?? await _service.LoadAsync();
             var wanted = kind == "skin" ? CatalogKind.Skin : CatalogKind.Plugin;
             var entry = result.Entries.Where(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase) && e.Kind == wanted).OrderBy(e => e.Problem is null ? 0 : 1).FirstOrDefault()

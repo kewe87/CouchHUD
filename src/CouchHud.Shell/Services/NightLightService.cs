@@ -74,14 +74,11 @@ public sealed class NightLightService : IDisposable
     private static extern bool SetDeviceGammaRamp(IntPtr dc, ushort[] ramp);
 }
 
-/// <summary>Screenshots and clips through the Xbox Game Bar's own shortcuts.</summary>
+/// <summary>Clips and recordings through the Xbox Game Bar's own shortcuts (screenshots are CouchHUD's own: ScreenCapture).</summary>
 public static class GameBar
 {
-    private const byte VkLWin = 0x5B, VkMenu = 0x12, VkSnapshot = 0x2C, VkG = 0x47, VkR = 0x52;
+    private const byte VkLWin = 0x5B, VkMenu = 0x12, VkG = 0x47, VkR = 0x52;
     private const uint KeyUp = 0x2;
-
-    /// <summary>Win + Alt + Print: screenshot of the game in front.</summary>
-    public static void Screenshot() => Chord(VkSnapshot);
 
     /// <summary>Win + Alt + G: saves the last seconds (needs background recording on in the Game Bar).</summary>
     public static void RecordThat() => Chord(VkG);

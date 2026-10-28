@@ -3,13 +3,14 @@
 import { el } from '../core/dom.js';
 import { api } from '../core/api.js';
 import { attempt, toast } from '../core/feedback.js';
-import { glyph } from '../core/skins.js';
+import { glyph, onGlyphsChanged } from '../core/skins.js';
 import { render, removePage } from '../core/nav.js';
 import { state } from '../core/state.js';
 import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
 import { confirmDialog } from './overlay.js';
 import { CODE_KEYS, padHelp } from '../core/input-help.js';
+import { REPORT_REFRESH_MS, changeReporter, codeEntryTracker } from '../core/screenshot-rules.js';
 
 export const PASSCODE_LENGTH = 6;
 const CODE_BUTTONS = new Set(CODE_KEYS);
@@ -20,14 +21,31 @@ let openPrompt = null;
 const refreshOpenPrompt = () => openPrompt?.refreshHelp();
 api.onPad?.(refreshOpenPrompt);
 api.onBluetoothRecovery?.(refreshOpenPrompt);
+onGlyphsChanged(() => openPrompt?.renderGlyphText());
+
+// The host refuses screenshots while a code entry is on screen: it hears of every one that opens and ends.
+// A report that did not arrive is sent again (changeReporter): the host refuses screenshots until it knows (audit 0.5 A3).
+const codeReport = changeReporter((open) => api.codeEntryState?.(open));
+const codeEntries = codeEntryTracker(codeReport);
+
+/** Tells the host whether a code entry is open (at start: none), and now and then again, changed or not (see changeReporter). */
+export function reportCodeEntries() {
+  codeReport(codeEntries.open > 0);
+  setInterval(() => {
+    codeReport(codeEntries.open > 0);
+    codeReport.refresh();
+  }, REPORT_REFRESH_MS);
+}
 
 /** Asks for a passcode; resolves with the button list, or undefined when cancelled (View or Menu). */
 export function enterPasscode({ title = t('passcode.enter'), hint = '', error = '' } = {}) {
   return new Promise((resolve) => {
     let settled = false;
+    const gone = codeEntries.begin();
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      gone();
       resolve(result);
     };
 
@@ -47,7 +65,8 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
         // Without a controller (Bluetooth off, battery empty) the code still has to be possible: the same buttons by mouse or touch,
         // and the keyboard keys spelled out. Same code, same check in the CouchHUD service, same lockout after wrong tries.
         this.keys = el('div', { className: 'passcode-keys', role: 'group', ariaLabel: t('passcode.onScreen') },
-          CODE_KEYS.map((code) => el('span', { className: `passcode-key key-${code}`, dataset: { code }, textContent: LABEL[code] ?? glyph(code.toUpperCase()) })),
+          // data-glyph: the key follows the controller in use (✕ ○ □ △ with a PlayStation pad), see refreshGlyphs.
+          CODE_KEYS.map((code) => el('span', { className: `passcode-key key-${code}`, dataset: LABEL[code] ? { code } : { code, glyph: code.toUpperCase() }, textContent: LABEL[code] ?? glyph(code.toUpperCase()) })),
           el('span', { className: 'passcode-key passcode-cancel', dataset: { code: 'cancel' }, textContent: t('passcode.hintCancel') }));
         this.helpEl = el('div', { className: 'passcode-nopad', hidden: true });
         root.append(el('div', { className: 'passcode' },
@@ -56,12 +75,20 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
           hint ? el('p', { className: 'meta', textContent: hint }) : null,
           el('div', { className: 'passcode-dots' }, this.dots),
           this.errorEl,
-          el('p', { className: 'passcode-help', textContent: t('passcode.help', { count: PASSCODE_LENGTH }) }),
+          this.buttonsEl = el('p', { className: 'passcode-help' }),
           this.helpEl,
           this.keys,
-          el('p', { className: 'passcode-legend', textContent: t('passcode.keyboard', { a: glyph('A'), b: glyph('B'), x: glyph('X'), y: glyph('Y'), lb: glyph('LB'), rb: glyph('RB') }) })));
+          this.legendEl = el('p', { className: 'passcode-legend' })));
+        this.renderGlyphText();
         this.renderHelp();
         this.update();
+      },
+      /** The texts that name buttons, in the symbols of the controller in use. */
+      renderGlyphText() {
+        if (!this.buttonsEl) return;
+        const [a, b, x, y, lb, rb] = ['A', 'B', 'X', 'Y', 'LB', 'RB'].map(glyph);
+        this.buttonsEl.textContent = t('passcode.help', { count: PASSCODE_LENGTH, a, b, x, y, lb, rb });
+        this.legendEl.textContent = t('passcode.keyboard', { a, b, x, y, lb, rb });
       },
       renderHelp() {
         if (!this.helpEl) return;

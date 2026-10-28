@@ -40,6 +40,17 @@ public class DevSwitchesTests
     }
 
     [Fact]
+    public void The_controls_own_background_colour_is_still_removed_but_not_foreign()
+    {
+        var env = new Dictionary<string, string?> { ["webview2_default_background_color"] = "FFFFFFFF", ["WEBVIEW2_USER_DATA_FOLDER"] = @"C:\x" };
+        var removed = WebViewEnvironment.Scrub(env);
+        Assert.Empty(env);
+        Assert.Equal(2, removed.Count);
+        Assert.Equal(["WEBVIEW2_USER_DATA_FOLDER"], WebViewEnvironment.Foreign(removed));
+        Assert.Empty(WebViewEnvironment.Foreign([WebViewEnvironment.OwnBackgroundColor]));
+    }
+
+    [Fact]
     public void Nothing_to_remove_leaves_the_environment_alone()
     {
         var env = new Dictionary<string, string?> { ["PATH"] = "x", ["TEMP"] = "y" };
@@ -96,6 +107,26 @@ public class DevSwitchesTests
         Assert.False(d.Dev);
         Assert.Null(d.RemoteDebuggingPort);
         Assert.Contains("writable", d.Reason);
+    }
+
+    [Fact]
+    public void An_ignored_unsafe_switch_gets_one_warning_line_without_values()
+    {
+        var warning = DevMode.UnsafeSwitchWarning(AdminOn with { AdminOnly = false, DeveloperMode = 4711, RemoteDebuggingPort = 9222 });
+        Assert.NotNull(warning);
+        Assert.DoesNotContain('\n', warning);
+        Assert.Contains("writable", warning);
+        Assert.Contains(DevMode.RemoteDebuggingPortValue, warning);
+        Assert.DoesNotContain("4711", warning);
+        Assert.DoesNotContain("9222", warning);
+    }
+
+    [Fact]
+    public void No_warning_for_a_safe_or_empty_switch()
+    {
+        Assert.Null(DevMode.UnsafeSwitchWarning(AdminOn with { RemoteDebuggingPort = 9222 }));
+        Assert.Null(DevMode.UnsafeSwitchWarning(MachineDevSwitch.None));
+        Assert.Null(DevMode.UnsafeSwitchWarning(new MachineDevSwitch(false, null, null)));
     }
 
     [Theory]

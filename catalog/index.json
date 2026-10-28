@@ -34,6 +34,22 @@
       "icon": "https://raw.githubusercontent.com/kewe87/couchhud-catalog/main/icons/synthwave.png",
       "download": "https://github.com/kewe87/couchhud-catalog/releases/download/synthwave-1.0.0/synthwave-1.0.0.zip",
       "sha256": "78f237840055426ba8a95edc669787f9da7e12db267b7476cc461e0482a00b2d"
+    },
+    {
+      "id": "stardust",
+      "name": "Sternenstaub",
+      "type": "skin",
+      "version": "1.0.0",
+      "minCouchHud": "0.5.0",
+      "author": "kewe87",
+      "description": {
+        "de": "Dunkel und ruhig: die Spielgrafik füllt den Hintergrund, kleine abgerundete Kacheln oben links, schlanke Schrift, sanftes Leuchten im Fokus",
+        "en": "Dark and calm: the game's artwork fills the background, small rounded tiles at the top left, slim type, a soft glow on the focus"
+      },
+      "homepage": "https://github.com/kewe87/couchhud-catalog/tree/main/skins/stardust",
+      "icon": "https://raw.githubusercontent.com/kewe87/couchhud-catalog/main/icons/stardust.png",
+      "download": "https://github.com/kewe87/couchhud-catalog/releases/download/stardust-1.0.0/stardust-1.0.0.zip",
+      "sha256": "749196cb446880b2f2b28395b61d81f69750c0bdbc27de05fb9fda8da44dba34"
     }
   ]
 }

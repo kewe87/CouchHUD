@@ -165,9 +165,13 @@ public static class AutoLogon
     }
 
     /// <summary>Ends the automatic sign-in of this account through the service.</summary>
-    public static async Task TurnOffAsync()
+    public static async Task TurnOffAsync(bool configFlag)
     {
+        var before = Evaluate(configFlag).State;
         var result = await AdminService.Ops.AutoLogonOffAsync();
+        // Off already with nothing of CouchHUD's stored, and the service has nothing of this account to switch off: done, not refused
+        // (Windows is asked again after the refusal).
+        if (result.Failure == FailureKind.Refused && AutoLogonAccount.AlreadyOff(before, refusedByService: true, enabledAfter: Read().Enabled)) return;
         AdminService.ThrowIfFailed(result);
         if (!await Task.Run(WaitOff)) throw new InvalidOperationException(Strings.Get("autologon.windowsSlow"));
     }

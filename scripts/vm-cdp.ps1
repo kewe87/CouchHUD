@@ -47,6 +47,11 @@ if ($Enable -or $Disable) {
         else {
             if (Test-Path $key) {
                 Remove-ItemProperty -Path $key -Name DeveloperMode, RemoteDebuggingPort -ErrorAction SilentlyContinue
+                # -Enable creates the key if it is missing: an empty one (no values, no subkeys) goes again. Anything else in it
+                # (the auto sign-in marker of the privileged helper) keeps it.
+                $item = Get-Item $key
+                if ($item.ValueCount -eq 0 -and $item.SubKeyCount -eq 0) { Remove-Item -Path $key }
+                $item.Close()
             }
             # The route before 0.4.2; CouchHUD ignores it now, but it should not linger in the test accounts. Each account's own
             # HKCU\Environment: the loaded hive of a signed-in account, otherwise its NTUSER.DAT loaded for a moment. Names only, no values.

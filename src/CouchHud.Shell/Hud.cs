@@ -1,5 +1,6 @@
 using System.Windows;
 using CouchHud.Core.Assistant;
+using CouchHud.Core.Browser;
 using CouchHud.Core.Config;
 using CouchHud.Core.Guard;
 using CouchHud.Core.Library;
@@ -27,14 +28,15 @@ using BluetoothRecoveryController = CouchHud.Core.Input.BluetoothRecoveryControl
 namespace CouchHud.Shell;
 
 /// <summary>Ties window, controller, library and system functions together. UI thread only.</summary>
-public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResolver artwork, StoreInfoService storeInfo, ShellManager shell, XInputPoller pad, HttpClient http, string dataDir, bool dev, CouchHud.Core.Plugins.PluginManager plugins) : IRemoteTarget
+public sealed partial class Hud(ConfigStore config, LibraryService library, ArtworkResolver artwork, StoreInfoService storeInfo, ShellManager shell, XInputPoller pad, HttpClient http, string dataDir, bool dev, CouchHud.Core.Plugins.PluginManager plugins) : IRemoteTarget
 {
     private readonly WeatherService _weather = new(http);
     private readonly NewsService _news = new(http);
-    private readonly HomeAssistantClient _home = new(http)
+    private readonly HomeAssistantClient _home = new(HaHttp)
     {
         BaseUrl = config.Current.HomeAssistantUrl,
-        Token = Secrets.Unprotect(config.Current.HomeAssistantToken)
+        Token = Secrets.Unprotect(config.Current.HomeAssistantToken),
+        Session = RestoreHaSession(config.Current)
     };
 
     private MainWindow? _window;
@@ -74,6 +76,98 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // Running through CouchHUD, or any process started from the install folder (launched elsewhere).
         item => _sessions.Current?.Item.Id == item.Id
                 || CouchHud.Core.Saves.SaveGameService.AnyProcessUnder(new Win32ProcessProbe().Snapshot(), item.InstallDir));
+    /// <summary>Stops automatic save backups that are still waiting or running when CouchHUD or the Windows session ends.</summary>
+    private readonly CancellationTokenSource _saveBackupStop = new();
+
+    /// <summary>The game and its client finish writing (cloud sync, last autosave) before the automatic backup looks.</summary>
+    private static readonly TimeSpan SaveBackupDelay = TimeSpan.FromSeconds(20);
+
+    /// <summary>The day each game last got the hint that its automatic backup waits for files held online only.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _onlineHinted = new();
+
+    /// <summary>
+    /// The automatic save backup after a game (started by CouchHUD or seen running): a moment later, on a thread in Windows' background
+    /// mode, as the signed-in user in this process (never through the service). Quiet when it worked or was not needed; a notification
+    /// only for a failure or a limit.
+    /// </summary>
+    private void ScheduleSaveBackup(LibraryItem item)
+    {
+        if (!config.Current.AutoBackupSaves || item.Type != ItemType.Game || !Areas.Runs("saveAutoBackup")) return;
+        var saves = Saves;
+        var stop = _saveBackupStop.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(SaveBackupDelay, stop);
+                var limits = CouchHud.Core.Saves.AutoBackupLimits.From(config.Current);
+                var result = await saves.AutoBackupAsync(item.Id, limits, work => BackgroundWork.Run(work, "CouchHud save backup"), stop);
+                Console.WriteLine($"[saves] automatic backup of {item.Name}: {result.Outcome}{(result.Detail is null ? "" : $" ({result.Detail})")}");
+                if (result.Notify && !stop.IsCancellationRequested) Ui(() => PostNotification(Strings.Ref("notif.app.saves"), item.Name, SaveBackupText(result, limits)));
+                // Files only online: the backup waits for them. Said once a day per game, not after every session.
+                if (result.Outcome == CouchHud.Core.Saves.AutoBackupOutcome.OnlineOnly && !stop.IsCancellationRequested
+                    && (!_onlineHinted.TryGetValue(item.Id, out var hinted) || hinted != DateTime.Today))
+                {
+                    _onlineHinted[item.Id] = DateTime.Today;
+                    Ui(() => PostNotification(Strings.Ref("notif.app.saves"), item.Name, Strings.Ref("saves.autoOnlineOnly", result.Detail ?? "")));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[saves] automatic backup of {item.Name}: {ex.Message}");
+            }
+        });
+    }
+
+    private static string SaveBackupText(CouchHud.Core.Saves.AutoBackupResult result, CouchHud.Core.Saves.AutoBackupLimits limits) => result.Outcome switch
+    {
+        CouchHud.Core.Saves.AutoBackupOutcome.GameTooBig => Strings.Ref("saves.autoGameTooBig", SizeText(limits.MaxGameBytes)),
+        CouchHud.Core.Saves.AutoBackupOutcome.TotalFull => Strings.Ref("saves.autoTotalFull", SizeText(limits.MaxTotalBytes)),
+        CouchHud.Core.Saves.AutoBackupOutcome.TimedOut => Strings.Ref("saves.autoTimedOut"),
+        CouchHud.Core.Saves.AutoBackupOutcome.Incomplete => Strings.Ref("saves.autoIncomplete", result.Detail ?? ""),
+        _ => Strings.Ref("saves.autoFailed", result.Detail ?? "")
+    };
+
+    /// <summary>"10 GB" or "500 MB": CouchHUD's one size format (decimal units, like the page).</summary>
+    private static string SizeText(long bytes) => CouchHud.Core.Localization.ByteSize.Format(bytes);
+
+    /// <summary>
+    /// Restoring overwrites the current saves (after a safety backup of them), deleting removes a version for good: never on a locked
+    /// couch (the bridge refuses before, checked here again), and with parental controls on only with the parents' code for exactly this
+    /// game, like installing a game. A child must not swap a sibling's progress or wipe the backups.
+    /// </summary>
+    private void RequireSaveChange(string action, string id)
+    {
+        if (Locked) throw new LockedException(Strings.Get("lock.unlockFirst"));
+        if (config.Current.ParentalEnabled) RequireParentGrant(action, id);
+    }
+
+    /// <summary>
+    /// The save backup settings decide whether backups exist at all (switch, folder, how many are kept, limits): never on a locked couch,
+    /// and with parental controls only with the parents' code (action "saveSettings"), so a short unlock is not enough to rotate the
+    /// backups away or hide them in another folder. Only "also back up settings files" adds and stays open.
+    /// </summary>
+    public void RequireSaveSettingsChange(string key)
+    {
+        if (Locked) throw new LockedException(Strings.Get("lock.unlockFirst"));
+        if (key != "includeConfig" && config.Current.ParentalEnabled) RequireParentGrant("saveSettings");
+    }
+
+    public Task<CouchHud.Core.Saves.RestoreResult> RestoreSavesAsync(string id, string backupId)
+    {
+        RequireSaveChange("restoreSaves", id);
+        return Saves.RestoreAsync(id, backupId);
+    }
+
+    public Task<bool> DeleteSaveBackupAsync(string id, string backupId)
+    {
+        RequireSaveChange("deleteSaveBackup", id);
+        return Saves.DeleteBackupAsync(id, backupId);
+    }
+
     private ProfileRestore? _profileRestore;
     private ControllerMouse? _mouse;
     private ForegroundGuard? _foreground;
@@ -92,9 +186,15 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     // The startup entries run through the shell: the policies wait until they have been started.
     private bool _hardeningHold;
     private bool? _lastLocked;
+    // What the HUD last got with the browser state about the recent sites (they follow the lock and parental controls).
+    private (bool Hidden, bool NeedsParent)? _browserRecentSent;
+    // The parents' code was given to show the recent sites with parental controls on: this session only (see BrowserRecentPrivacy).
+    private bool _browserRecentShown;
     private bool _quitting;
     // Guide tap with "pause in menu": freeze the game once the HUD is active.
     private bool _pauseOnActivate;
+    // Whether a game may be frozen at all: never one with a known anti-cheat, nor one the check could not clear (see AntiCheat).
+    private readonly FreezeGuard _freezeGuard = new();
 
     // Couch lock (see CouchSecurity.cs).
     private readonly Guard _guard = new();
@@ -142,16 +242,17 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // (taskbar, notification area, toasts, COM objects of the shell) may fail there. No optional feature
         // is allowed to stop the start: each one is its own step, a failure costs that feature only.
         var optional = new OptionalSteps(Console.Error.WriteLine);
-        library.Changed += items => Ui(() => Emit("library", UiBridge.ToDto(items)));
+        library.Changed += items => Ui(() => Emit("library", UiBridge.ToDto(Shown(items))));
 
         // Asked once in the background (the answer is cached): never on the UI thread, never as a failed sign-in if the flags can tell.
         _ = Task.Run(AccountPassword.Refresh);
         plugins.IsLocked = () => Locked;
         optional.Run("session tracking", StartSessionTracking);
-        _sessions.Library = () => config.Current.Parental.Enabled ? library.Items : null;
+        _sessions.Library = () => config.Current.ParentalEnabled ? library.Items : null;
         optional.Run("parental controls", () => _ = Parental);
         StartAudio();
         optional.Run("update checks", StartUpdateChecks);
+        optional.Run("downloads", StartDownloads);
         optional.Run("catalog checks", Catalog.StartBackgroundChecks);
         optional.Run("self update checks", SelfUpdate.StartBackgroundChecks);
         optional.Run("notifications", StartNotifications);
@@ -161,13 +262,26 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         _ = ApplyMcpAsync();
         _ = ApplyRemoteAsync();
 
-        pad.Down += button => Ui(() => OnPadDown(button));
+        pad.Down += button =>
+        {
+            // Read on the polling thread, with the poll that raised the event: later the stick may already be elsewhere.
+            var stickOnly = pad.FromStickOnly(button);
+            Ui(() => OnPadDown(button, stickOnly));
+        };
         pad.Up += button => Ui(() =>
         {
+            if (button == "guide") OnGuideUp();
             if (!_pcMode) Emit("input", new { type = "up", button });
         });
-        pad.ConnectionChanged += (index, connected) => Ui(() => Emit("pad", new { index, connected }));
+        pad.ConnectionChanged += (index, connected, likelyMirror) =>
+        {
+            Ui(() => Emit("pad", new { index, connected, quiet = likelyMirror }));
+            _batteries?.Refresh();
+        };
+        // Only the kind of pad ("xbox" or "playstation") for the button symbols; the phone and the keyboard never change it.
+        pad.KindChanged += kind => Ui(() => Emit("padKind", new { kind }));
         optional.Run("controller", pad.Start);
+        optional.Run("battery levels", StartBatteries);
         optional.Run("controller mouse", () => _mouse = new ControllerMouse(pad.Sticks));
 
         // The UI mutes its background music whenever something else is in front.
@@ -184,7 +298,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 // Not while BringToFront still shares the input queue of the window that was in front.
                 Ui(() =>
                 {
-                    GamePause.Pause(VerifiedPids([running]));
+                    GamePause.Pause(FreezablePids([running]));
                     Emit("session", SessionDto());
                 });
             }
@@ -229,8 +343,29 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         }
         if (config.Fault is { } fault)
         {
-            // config.json is there but unusable: the couch runs locked and nothing is saved until the file is fixed (or removed).
-            optional.Run("config fault notice", () => PostNotification("CouchHUD", Strings.Ref("hud.configFault"), Strings.Ref(fault == ConfigFault.Invalid ? "hud.configFault.invalid" : "hud.configFault.unreadable"), security: true));
+            // config.json is unusable (or gone after an earlier install): the couch runs locked and nothing is saved until the file is fixed
+            // or put back. No setup assistant either (ConfigStore.FaultConfig). Honest about what the stand-in does here: outside the shell
+            // the lock and the parental rules are only advice.
+            var effect = Strings.Ref(ParentalAdvisory is null ? "hud.configFault.enforced" : "hud.configFault.advisory");
+            var body = fault switch
+            {
+                ConfigFault.Invalid => "hud.configFault.invalid",
+                ConfigFault.Missing => "hud.configFault.missing",
+                _ => "hud.configFault.unreadable"
+            };
+            optional.Run("config fault notice", () => PostNotification("CouchHUD", Strings.Ref("hud.configFault"), Strings.Ref(body, effect), security: true));
+        }
+        else if (config.ReadRestoredNotice() is { } restored)
+        {
+            // config.json was broken or missing (a reset while saving): the copy runs, with its lock and rules. The marker comes from whichever
+            // CouchHUD process restored it first (the watcher or the sign-in lock may have loaded the file before the HUD).
+            Console.WriteLine($"[hud] config.json was restored from {restored.Source ?? "a copy"} at {restored.At:u}{(restored.Broken is null ? "" : $", broken file kept as {restored.Broken}")}");
+            optional.Run("config restored notice", () =>
+            {
+                PostNotification("CouchHUD", Strings.Ref("hud.configRestored"), Strings.Ref("hud.configRestored.body"), security: true);
+                // Only once it was shown: a start that fails before this shows it next time.
+                config.ClearRestoredNotice();
+            });
         }
         optional.Run("service watch", StartServiceWatch);
         Console.WriteLine($"[hud] started: asShell {_asShell}, integration {config.Current.IntegrationMode}, lock {config.Current.CouchLock}");
@@ -248,6 +383,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // Before Steam's settings are touched (a restart for that does not make a client ours).
         if (Full) optional.Run("client ownership", NoteClientsAtStart);
         optional.Run("competitor suppression", () => ApplyCompetitorSuppression(announce: true));
+        // TV follows CouchHUD (expert option, off by default): Wake-on-LAN to the paired TV, fire and forget.
+        if (TvConfigured) optional.Run("tv on with CouchHUD", () => Tv.FollowWake());
         optional.Run("foreground guard", () =>
         {
             _foreground = new ForegroundGuard(ForegroundNow, _fgState, () => _window?.BringToFront(), OnClientNeedsAttention, Console.Error.WriteLine, GamePids, EndMouseModeWhenLocked);
@@ -323,6 +460,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         try
         {
             _foreground?.Stop();
+            _saveBackupStop.Cancel();
             _quitting = true;
             // The policies are per user and outlive the session: back to the user's own before the sign-out. The helper tasks
             // run on their own, so wait a moment for them (the sign-out does not wait for us for long).
@@ -362,9 +500,32 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// <summary>Lets helpers (assistant tools) push events to the UI.</summary>
     public void Notify(string name, object? payload) => Ui(() => Emit(name, payload));
 
-    public IReadOnlyList<LibraryItem> LibraryItems => library.Items;
+    /// <summary>The entries the switched on areas show (FeatureAreas). The assistant and MCP see only these.</summary>
+    public IReadOnlyList<LibraryItem> LibraryItems => Shown(library.Items);
 
-    public LibraryItem? FindItem(string id) => library.Items.FirstOrDefault(i => i.Id == id);
+    public LibraryItem? FindItem(string id) => library.Items.FirstOrDefault(i => i.Id == id) is { } item && Areas.Shows(item) ? item : null;
+
+    /// <summary>The areas switched on right now (Settings › Console › Areas), read from the config every time.</summary>
+    public AreaSet Areas => FeatureAreas.From(config.Current);
+
+    /// <summary>
+    /// Only the entries of switched on areas. The library itself keeps all of them (play time, favourites, parental controls
+    /// see games started outside CouchHud even with Gaming off).
+    /// </summary>
+    private IReadOnlyList<LibraryItem> Shown(IReadOnlyList<LibraryItem> items)
+    {
+        var areas = Areas;
+        return areas.AllEnabled ? items : items.Where(areas.Shows).ToList();
+    }
+
+    /// <summary>An existing entry of an area that is switched off (the bridge refuses calls about it).</summary>
+    public bool HiddenByArea(string id) => library.Find(id) is { } item && !Areas.Shows(item);
+
+    /// <summary>Refuses what belongs to a switched off area, whoever asks (page, Guide menu, assistant, MCP, a plugin).</summary>
+    public void RequireArea(string area)
+    {
+        if (!Areas.On(area)) throw new InvalidOperationException(Strings.Get("areas.off"));
+    }
 
     private static void Ui(Action action) => Application.Current?.Dispatcher.BeginInvoke(action);
 
@@ -373,16 +534,34 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     private bool HomeHeld() => pad.IsPressed("guide") || (pad.IsPressed("back") && pad.IsPressed("start"));
 
-    private void OnPadDown(string button)
+    private void OnPadDown(string button, bool stickOnly = false)
     {
         // A person at the controller (on the page, in the bar, or the A that confirms an MCP request): counts as use of the browser
         // for the next 30 s, while it is on screen (WatchBrowserUnlock).
         _browserInput = MonoNow();
-        if (_browsing && _browser is not null && _mouse?.Active == true && OnBrowserButton(button)) return;
+        // The last button came from the real controller, not the phone (a Guide menu screenshot is for the person at the TV).
+        _lastInputRemote = false;
+        // A person at the controller: the idle threshold back to the profile picker starts again (review NEU-1).
+        ProfileActivity();
         // Windows doesn't count controller input as activity: without this the
-        // display would go dark while someone browses the library with the pad.
+        // display would go dark while someone browses the library (or a web page) with the pad.
         Display.KeepAwake();
         if (Display.WakeIfOff()) return;
+        // The controller on the browser page: every button has its meaning there (BrowserInput), the guide button always leads out.
+        // Not tied to the cursor mode running: if that stopped, the watchdog starts it again, but the buttons keep working meanwhile.
+        if (_browsing && _browser is not null)
+        {
+            NoteBrowserInput();
+            OnBrowserButton(button, stickOnly);
+            return;
+        }
+        // A popup or dialog of our own window in front (a web page's picker, a WebView2 window): B and guide close it and give the
+        // controller back to the HUD; it must never swallow the controller.
+        if (!_pcMode && _window is { IsActive: false } own && (button is "guide" or "b") && own.OwnPopupInFront() is var popup && popup != IntPtr.Zero)
+        {
+            own.CloseOwnPopup(popup);
+            return;
+        }
         if (_mouse?.Active == true)
         {
             // Mouse mode (signing in to a launcher): guide brings the HUD back, the rest steers the window.
@@ -394,6 +573,16 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             _mouse.Button(button);
             return;
         }
+        // Guide held + Y: a screenshot (HudScreenshots). The Guide button's tap then waits for its release.
+        if (ScreenshotComboArmed)
+        {
+            if (button == "guide")
+            {
+                OnGuideDownChord();
+                return;
+            }
+            if (TryScreenshotChord(button)) return;
+        }
         if (button == "guide" || (button is "back" or "start" && HomeHeld()))
         {
             if (_pcMode)
@@ -403,7 +592,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             }
             else if (_window?.IsActive == true)
             {
-                // In front already: the UI opens or closes its quick menu.
+                // In front already (a popup of our own window was closed above): the UI opens or closes its quick menu.
                 Emit("input", new { type = "down", button = "guide" });
                 Emit("input", new { type = "up", button = "guide" });
             }
@@ -421,9 +610,11 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             }
             return;
         }
-        // Never steer the HUD while a game owns the screen.
-        if (!_pcMode && _window?.IsActive == true) Emit("input", new { type = "down", button });
+        // Never steer the HUD while a game owns the screen (a popup of our own window in front still counts as the HUD).
+        if (!_pcMode && HudHasInput()) Emit("input", new { type = "down", button });
     }
+
+    private bool HudHasInput() => _window is { } w && BrowserInput.HudHasInput(w.IsActive, !w.IsActive && w.OwnPopupInFront() != IntPtr.Zero);
 
     private void OnHomeHold(Action action)
     {
@@ -442,7 +633,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // Coming from a running game: freeze it while the HUD is up, if wanted.
         // Frozen only once the HUD really is in front: a suspended full-screen game
         // can't hand over the screen, and if the switch fails it must keep running.
-        if (_window?.IsActive != true && config.Current.PauseGameInMenu && _sessions.Current is not null) _pauseOnActivate = true;
+        if (_window?.IsActive != true && config.Current.PauseGameInMenu && _sessions.Current is { } toFreeze)
+        {
+            _pauseOnActivate = true;
+            // Normally scanned since the game started; a setting switched on during the game starts the scan here.
+            _freezeGuard.Prepare(toFreeze.Item);
+        }
         // The user is back in the HUD: clients released for a game start or login are held back again.
         _fgState.ReleaseAll();
         _appsReleased = null;
@@ -459,26 +655,41 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     {
         _sessions.Started += s =>
         {
+            Launcher.SessionStarted(s.Item.Id);
+            PrepareFreezeCheck(s);
             plugins.Events.RaiseGameStarted(new GameEvent(s.Item.Id, s.Item.Name, s.Item.InstallDir, 0));
             CaseHud.GameStarted(s.Item.Name, s.Pids.Cast<int?>().FirstOrDefault());
             Ui(() => Emit("session", SessionDto()));
             if (s.External) Ui(() => CheckExternalStart(s));
         };
-        _sessions.OtherStarted += s => Ui(() => CheckExternalStart(s));
+        _sessions.OtherStarted += s =>
+        {
+            PrepareFreezeCheck(s);
+            Ui(() => CheckExternalStart(s));
+        };
+        // A second game that is gone: its scan goes too (a reinstall or an added anti-cheat is seen at the next start).
+        _sessions.OtherEnded += s => _freezeGuard.Forget(s.Item);
+        // A batch start target whose cmd.exe waited on input nobody could see was ended by the launcher: say so.
+        Launcher.ScriptEnded += (name, step) => Ui(() => Emit("toast", Strings.Get(step == ScriptStep.EndWaiting ? "launch.scriptWaited" : "launch.scriptAfterGame", name)));
         _sessions.Ended += (s, minutes) => Ui(() =>
         {
+            Launcher.SessionEnded(s.Item.Id, s.Started);
+            _freezeGuard.Forget(s.Item);
             plugins.Events.RaiseGameEnded(new GameEvent(s.Item.Id, s.Item.Name, s.Item.InstallDir, minutes));
             // Only tells CaseHUD when there is a CaseHUD manager at all (a lease only exists if it was started).
             if (_caseHudLazy is { IsValueCreated: true } caseHud) caseHud.Value.GameEnded();
             GamePause.ResumeAll();
+            // After a game the idle threshold back to the profile picker starts again (review NEU-1).
+            ProfileActivity();
             RestoreProfile();
             _parentalController?.Service.Flush();
             try
             {
                 var item = library.AddPlaytime(s.Item.Id, minutes);
-                Emit("library", UiBridge.ToDto(library.Items));
+                Emit("library", UiBridge.ToDto(Shown(library.Items)));
                 Console.WriteLine($"[session] {item.Name}: {minutes:0.0} min");
-                if (minutes >= 1)
+                // No play time toast for a game while Gaming is switched off (the minutes are still counted for the limits).
+                if (minutes >= 1 && Areas.Shows(item))
                 {
                     PostNotification("CouchHUD", item.Name, Strings.Ref("hud.played", MinutesRef(minutes), MinutesRef(item.PlaytimeMinutes)));
                 }
@@ -487,6 +698,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             {
                 // Uninstalled while running; nothing to credit.
             }
+            ScheduleSaveBackup(s.Item);
             Emit("session", null);
         });
         _sessionTimer.Tick += (_, _) =>
@@ -501,6 +713,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             }
             // The 2-minute unlock runs out without an event.
             SyncLockState();
+            // The host's own idle threshold for a protected profile (review NEU-1), independent of the screensaver settings.
+            ProfileIdleTick();
             // A Steam change that had to wait for the end of a game.
             if (_steamGuardService is { RetryDue: true } && !GameBusy) ApplySteamSettings(release: false);
             // A profile whose game was never seen running (launcher closed, start failed) is undone after a while.
@@ -542,6 +756,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public void ResumeGame()
     {
+        RequireProfileChosen();
         var s = _sessions.Current ?? throw new InvalidOperationException(Strings.Get("hud.noGameRunning"));
         if (ParentalEnforced && Parental.Service.Expired) throw new InvalidOperationException(Strings.Get("parental.timeUp"));
         ForgetUnlock();
@@ -665,7 +880,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     {
         try
         {
-            var want = !release && !dev && SteamGuard.ShouldApply(Full, _pcMode, config.Current.SuppressCompetitors);
+            // Steam's settings are for games: with Gaming switched off CouchHud leaves Steam as it is (FeatureAreas "steamGuardSettings").
+            var want = !release && !dev && Areas.Runs("steamGuardSettings") && SteamGuard.ShouldApply(Full, _pcMode, config.Current.SuppressCompetitors);
             // On quit nothing waits and nothing restarts: a Steam that runs keeps its state and the Run entry.
             if (release) SteamSettings.ReleaseOnQuit();
             else SteamSettings.Request(want);
@@ -734,7 +950,6 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         CloseGame: CloseGameForParents,
         LockWindows: () => WindowsLock.Lock(),
         RemoteTime: RemoteTimeAsync,
-        ZoneId: () => config.Current.Parental.TimeZoneId,
         Emit: Emit));
 
     /// <summary>Key for the HMAC over the play time file: random, protected with DPAPI for this Windows user.</summary>
@@ -749,7 +964,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     }
 
     /// <summary>Rules can be enforced: the couch lock is on, CouchHud is the shell and not in PC mode.</summary>
-    private bool ParentalEnforced => config.Current.Parental.Enabled && LockOn && !_pcMode;
+    private bool ParentalEnforced => config.Current.ParentalEnabled && LockOn && !_pcMode;
 
     private bool HasParentCode => config.Current.CouchLock == "code" && config.Current.PasscodeHash.Length > 0
         || config.Current.CouchLock == "windows" && AccountPassword.IsSet();
@@ -770,6 +985,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         _unlockedUntil = DateTimeOffset.MinValue;
         _parentCodeChainUntil = DateTimeOffset.MinValue;
         _grant.Clear();
+        _browserRecentShown = false;
         AdminService.Ops.Cache.Clear();
         SyncLockState();
     }
@@ -808,6 +1024,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             if (check.Right)
             {
                 _grant.Give(action, item);
+                RememberManageCode(action, sequence);
                 return new { ok = true };
             }
             // Locked out: the UI offers the administrator's way.
@@ -820,6 +1037,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         {
             _parentLockout.Succeeded();
             _grant.Give(action, item);
+            RememberManageCode(action, sequence);
             return new { ok = true };
         }
         _parentLockout.Failed();
@@ -860,20 +1078,41 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     }
 
     private IReadOnlyList<int> ParentalPids() =>
-        VerifiedPids((_sessions.Current is { } c ? [c] : Array.Empty<GameSession>()).Concat(_sessions.Others));
+        FreezablePids((_sessions.Current is { } c ? [c] : Array.Empty<GameSession>()).Concat(_sessions.Others));
+
+    /// <summary>The folder scan for a game that may be frozen later (the menu's pause, the parents' pause): only when either can happen.</summary>
+    private void PrepareFreezeCheck(GameSession session)
+    {
+        if (config.Current.PauseGameInMenu || config.Current.ParentalEnabled) _freezeGuard.Prepare(session.Item);
+    }
 
     /// <summary>
-    /// The pids of the sessions that are still the processes they were (start time and image): a frozen process that only shares
-    /// the number with a former game would be a system component.
+    /// The pids of the sessions that may be frozen: still the processes they were (start time and image; a frozen process that only
+    /// shares the number with a former game would be a system component), and of a game without a known anti-cheat (its install folder
+    /// and its processes, see <see cref="AntiCheat"/>). A game with one, or one the check could not clear, is not frozen: the HUD covers it
+    /// instead (the parents' grace time and close stay as they are), with one notice per game session.
     /// </summary>
-    private static IReadOnlyList<int> VerifiedPids(IEnumerable<GameSession> sessions)
+    private IReadOnlyList<int> FreezablePids(IEnumerable<GameSession> sessions)
     {
-        var stamps = new Dictionary<int, ProcessStamp>();
+        var control = Win32ProcessControl.Instance;
+        var live = control.List();
+        var pids = new List<int>();
         foreach (var s in sessions)
         {
-            foreach (var (pid, stamp) in s.StampsOrEmpty) stamps[pid] = stamp;
+            var processes = SafeTermination.Resolve(s.StampsOrEmpty, live, control);
+            var verdict = _freezeGuard.Check(s.Item, processes.Select(p => ((string?)p.Name, p.Path)));
+            if (verdict.MayFreeze)
+            {
+                pids.AddRange(processes.Select(p => p.Pid));
+                continue;
+            }
+            Console.WriteLine($"[pause] {s.Item.Name} is not frozen: {verdict.Verdict} ({verdict.Marker})");
+            // The scan has not finished yet (a game started just now): an own notice, so the real answer can still tell its once.
+            var checking = verdict.Marker == FreezeGuard.StillScanning;
+            if (_freezeGuard.FirstNotice($"{s.Item.Id}|{s.Started.ToUnixTimeMilliseconds()}{(checking ? "|checking" : "")}"))
+                Emit("toast", Strings.Get(checking ? "pause.antiCheatChecking" : verdict.Verdict == AntiCheatVerdict.Detected ? "pause.antiCheat" : "pause.antiCheatUnknown"));
         }
-        return SafeTermination.Resolve(stamps, Win32ProcessControl.Instance.List(), Win32ProcessControl.Instance).Select(p => p.Pid).ToList();
+        return pids.Distinct().ToList();
     }
 
     private void BringHudForParents()
@@ -931,14 +1170,55 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         }), TaskScheduler.Default);
     }
 
-    private int? CachedAge(LibraryItem item) => storeInfo.Cached(item) is { RatingKnown: true } info ? info.RequiredAge : null;
+    /// <summary>
+    /// The cached rating of the entry's store match; with a pending floor (a match changed without the parents' code) the stricter of both.
+    /// Null while the match's rating is unknown, so <see cref="AgeOf"/> looks it up instead of trusting the floor alone.
+    /// </summary>
+    private int? CachedAge(LibraryItem item) => CachedRating(item)?.Age;
+
+    /// <summary>
+    /// The cached rating in the active system (<see cref="AgeRatings.Effective(StoreInfo, string)"/>) with the system it came from; a pending
+    /// floor above it wins (then no system). Null while the match's rating is unknown.
+    /// </summary>
+    private AgeRatings.Rating? CachedRating(LibraryItem item) => CachedRating(item, ActiveRatingSystem);
+
+    private AgeRatings.Rating? CachedRating(LibraryItem item, string system)
+    {
+        if (storeInfo.Cached(item) is not { RatingKnown: true } info) return null;
+        var rating = AgeRatings.Effective(info, system);
+        // The stricter of both, as before: a floor above the rating (or with none) stands alone.
+        return AgeFloor(item) is { } floor && floor > (rating?.Age ?? 0) ? new AgeRatings.Rating(floor, null) : rating;
+    }
+
+    /// <summary>The rating system the age limit and the badge go by now: the parents' choice, or by the Windows region.</summary>
+    private string ActiveRatingSystem => AgeRatings.Resolve(config.Current.AgeRatingSystem, WindowsRegion.Current());
+
+    /// <summary>The systems games are judged by now: the active one, and the one the parents saved under when the region changed since.</summary>
+    private IReadOnlyList<string> JudgedRatingSystems =>
+        AgeRatings.JudgedSystems(config.Current.AgeRatingSystem, ActiveRatingSystem, config.Current.AgeRatingSystemResolved);
+
+    /// <summary>
+    /// The age the limit check gets (<see cref="AgeRatings.VerdictAge"/>): the known age in every judged system, the stricter verdict
+    /// wins, a limit above the system's top step counts as that step. Only for the check; the badge and a kept floor use the plain age.
+    /// </summary>
+    private int? VerdictAge(LibraryItem item)
+    {
+        var p = config.Current.Profile(Parental.ProfileId).Rules;
+        var views = JudgedRatingSystems.Select(s => (s, CachedRating(item, s)?.Age ?? AgeFloor(item))).ToList();
+        return AgeRatings.VerdictAge(views, p.AgeLimit, p.BlockUnknownAge);
+    }
+
+    private int? AgeFloor(LibraryItem item) => config.Current.Overrides.GetValueOrDefault(item.Id)?.StoreAgeFloor is { } f and > 0 ? f : null;
+
+    /// <summary>After a look-up: the rating, else the pending floor (a match changed to "none" keeps the old rating until the parents confirm).</summary>
+    private int? KnownAge(LibraryItem item) => CachedAge(item) ?? AgeFloor(item);
 
     /// <summary>The age rating for the age limit; looks it up (3 s at most) when the cache has none, so no start path skips it.</summary>
     private int? AgeOf(LibraryItem item)
     {
-        var p = config.Current.Parental;
-        if (!p.Enabled || p.MaxAge == 0 || item.Type != ItemType.Game) return null;
-        if (CachedAge(item) is { } cached) return cached;
+        var p = config.Current.Profile(Parental.ProfileId).Rules;
+        if (!p.Enabled || p.AgeLimit == 0 || item.Type != ItemType.Game) return null;
+        if (CachedAge(item) is not null) return VerdictAge(item);
         try
         {
             Task.Run(() => storeInfo.GetAsync(item)).Wait(TimeSpan.FromSeconds(3));
@@ -947,12 +1227,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         {
             Console.Error.WriteLine($"[parental] no age rating for {item.Name}: {ex.InnerException?.Message}");
         }
-        return CachedAge(item);
+        return VerdictAge(item);
     }
 
     /// <summary>Why the rules are only advice right now: "noLock", "notShell" or "pcMode"; null when enforced.</summary>
     private string? ParentalAdvisory =>
-        !config.Current.Parental.Enabled ? null
+        !config.Current.ParentalEnabled ? null
         : config.Current.CouchLock == "off" ? "noLock"
         : !(Full && _asShell) ? "notShell"
         : _pcMode ? "pcMode"
@@ -960,7 +1240,21 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public object GetParental()
     {
-        var p = config.Current.Parental;
+        // While a protected profile waits at the picker nothing of its account shows (remaining time, rules, the game): only what the picker
+        // and its code prompt need. The time shows once the person is in.
+        if (ProfileHeld)
+        {
+            return new
+            {
+                enabled = config.Current.ParentalEnabled,
+                enforced = ParentalEnforced,
+                advisory = ParentalAdvisory,
+                hasParentCode = HasParentCode,
+                profilesGuarded = ProfilesGuarded,
+                held = true
+            };
+        }
+        var p = config.Current.Profile(Parental.ProfileId).Rules;
         var s = _sessions.Current;
         var counted = s is not null && (s.Item.Type == ItemType.Game || p.CountApps) ? s.Item : null;
         var st = Parental.Service.Status(counted is null ? null : ParentalService.LimitKey(counted));
@@ -970,6 +1264,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             enforced = ParentalEnforced,
             advisory = ParentalAdvisory,
             hasParentCode = HasParentCode,
+            // Screensaver and display off are the parents' then (review NEU-1); the page asks for the grant first.
+            profilesGuarded = ProfilesGuarded,
             // The parents' code is only worth something on an account with a password (the lock screen, the recovery and a restart lead there).
             codeProblem = !RecoveryRules.ParentalControlsAllowed(AccountPassword.IsSet()) ? "noPassword" : null,
             weekdayMinutes = p.WeekdayMinutes,
@@ -977,7 +1273,18 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             windowStart = p.HasWindow ? p.WindowStartMinute : -1,
             windowEnd = p.HasWindow ? p.WindowEndMinute : -1,
             perGameMinutes = p.PerGameMinutes,
-            maxAge = p.MaxAge,
+            // The limit as it counts (an edited value read the strict way), and the rating system it is shown in.
+            maxAge = AgeRatings.LimitFor(p.AgeLimit, ActiveRatingSystem),
+            ratingSystem = config.Current.AgeRatingSystem,
+            ratingSystemActive = ActiveRatingSystem,
+            // Under "auto" the region now resolves to another system than the one the parents saved under: both count until they save again.
+            ratingSystemSaved = JudgedRatingSystems is [_, var saved] ? saved : null,
+            // The limit in the system it was saved under (the settings row names that one then, as the hint below it does).
+            maxAgeSaved = JudgedRatingSystems is [_, var savedIn] ? AgeRatings.LimitFor(p.AgeLimit, savedIn) : (int?)null,
+            // Any profile with an age limit (the hint above is about all of them, not only the active one).
+            anyAgeLimit = config.Current.AllProfiles.Any(pr => pr.Rules.MaxAge > 0),
+            // What "auto" means here (shown next to the choice).
+            ratingSystemRegion = AgeRatings.ForRegion(WindowsRegion.Current()),
             blockUnknownAge = p.BlockUnknownAge,
             countApps = p.CountApps,
             lockedItems = p.LockedItems,
@@ -989,7 +1296,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             clockJumped = st.ClockJumped,
             tampered = Parental.Service.Tampered,
             timeZoneChanged = p.Enabled && p.TimeZoneId.Length > 0 && p.TimeZoneId != TimeZoneInfo.Local.Id,
-            expired = Parental.Service.Expired || Parental.Blocked,
+            // Time used up counts as expired also before the next tick and with nothing running, but not for a free app.
+            expired = Parental.Service.Expired || Parental.Blocked || (st.TimeUp && (s is null || counted is not null)),
             blocked = Parental.Blocked,
             blockedGame = Parental.BlockedGame,
             blockedMessage = Parental.BlockedMessage,
@@ -1006,6 +1314,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// </summary>
     public async Task<object> SetParentCodeAsync(string[] sequence)
     {
+        RefuseWhileConfigFaulted();
         // Right after the switch-on (whose parents' approval it rides on); afterwards it is a change of the code like any other: the parents'
         // grant for "passcode" (review F4). The bridge refuses the call on a locked couch: switching parental controls on from there sets no
         // code (the UI says so; set it from an unlocked couch).
@@ -1017,7 +1326,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             else RequireUnlocked();
         }
         Passcode.Validate(sequence);
-        if (!config.Current.Parental.Enabled) throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
+        RefuseChildCode(sequence);
+        if (!config.Current.ParentalEnabled) throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
         if (ServiceCodes.Expected && !AdminService.DevMayRelax(dev))
         {
             await ServiceCodes.StoreAsync(sequence, parental: true);
@@ -1058,8 +1368,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// </summary>
     public async Task<object> SetParentalAsync(string key, System.Text.Json.JsonElement value)
     {
+        RefuseWhileConfigFaulted();
         var off = key == "enabled" && value.ValueKind == System.Text.Json.JsonValueKind.False;
-        if (off && config.Current.Parental.Enabled && ServiceCodes.Expected && !AdminService.DevMayRelax(dev))
+        if (off && config.Current.ParentalEnabled && ServiceCodes.Expected && !AdminService.DevMayRelax(dev))
         {
             if (HasParentCode && !_grant.Fits("parentalOff")) throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
             if (!HasParentCode) RequireUnlocked();
@@ -1072,11 +1383,11 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// <summary>One setting of the profile. Needs a fresh parents' code each time.</summary>
     public object SetParental(string key, System.Text.Json.JsonElement value)
     {
+        RefuseWhileConfigFaulted();
+        if (key == "ratingSystem") return SetRatingSystem(value);
         RequireParentGrant(key != "enabled" ? "profile" : value.ValueKind == System.Text.Json.JsonValueKind.False ? "parentalOff" : "parentalOn");
-        int Number(int min, int max) =>
-            value.ValueKind == System.Text.Json.JsonValueKind.Number && value.TryGetInt32(out var n) && n >= min && n <= max
-                ? n
-                : throw new ArgumentException(Strings.Get("hud.range", key, min, max));
+        // The rules of the profile the controller enforces (fetched outside the config lambdas: the controller may write the config when it is created).
+        var profileId = Parental.ProfileId;
         bool Flag() => value.ValueKind == System.Text.Json.JsonValueKind.True;
         switch (key)
         {
@@ -1087,53 +1398,124 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                     throw new InvalidOperationException(Strings.Get("parental.noPassword"));
                 if (on && !HasParentCode) throw new InvalidOperationException(Strings.Get("parental.needsLock"));
                 if (on) _parentCodeChainUntil = MonoNow().AddMinutes(2);
+                // Switched either way: a release of the recent sites from before does not carry over.
+                _browserRecentShown = false;
                 config.Update(c =>
                 {
-                    c.Parental.Enabled = on;
+                    c.ParentalEnabled = on;
                     if (on)
-                    {
-                        if (c.Parental.TimeZoneId.Length == 0) c.Parental.TimeZoneId = TimeZoneInfo.Local.Id;
-                        c.Parental.LedgerStarted = true;
-                    }
+                        foreach (var profile in c.AllProfiles)
+                            if (profile.Rules.TimeZoneId.Length == 0) profile.Rules.TimeZoneId = TimeZoneInfo.Local.Id;
                 });
-                if (on) Parental.Service.Flush();
+                if (on) StartAllPlayAccounts();
+                // With Gaming switched off the game stores were not read; parental controls need them to see games started outside.
+                if (on && !Areas.Games) RescanLibraryInBackground();
                 break;
             }
+            default:
+                ApplyProfileRule(profileId, key, value);
+                break;
+        }
+        // Parental controls on or off: the browser start page hides or shows the recent sites at once (the timer would follow too).
+        if (key == "enabled") SyncBrowserRecent();
+        return GetParental();
+    }
+
+    /// <summary>
+    /// The age rating system for the whole household ("auto", "usk", "pegi", "esrb"). A child could pick a milder system, so: refused while
+    /// config.json is broken (the caller checked) and on a locked couch, and with parental controls and a parents' code their code for exactly
+    /// this ("ratingSystem"), checked before and used up only by the saved change. Every profile's age limit moves to the new system's
+    /// nearest step at or below it (<see cref="AgeRatings.ConvertLimit"/>), so the switch never loosens a limit.
+    /// </summary>
+    private object SetRatingSystem(System.Text.Json.JsonElement value)
+    {
+        var choice = value.ValueKind == System.Text.Json.JsonValueKind.String ? value.GetString() : null;
+        if (choice is null || !AgeRatings.Choices.Contains(choice)) throw new ArgumentException(Strings.Get("parental.ratingSystemInvalid"));
+        RequireUnlocked();
+        var withCode = config.Current.ParentalEnabled && HasParentCode;
+        if (withCode && !_grant.Fits("ratingSystem")) throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
+        var target = AgeRatings.Resolve(choice, WindowsRegion.Current());
+        config.UpdateOrThrow(c =>
+        {
+            // Picking the system the limits are already saved under (e.g. "auto" again) only re-records it; no limit moves.
+            var moved = AgeRatings.LimitsMove(c.AgeRatingSystemResolved, target);
+            c.AgeRatingSystem = choice;
+            c.AgeRatingSystemResolved = target;
+            if (moved) foreach (var profile in c.AllProfiles) profile.Rules.MaxAge = AgeRatings.ConvertLimit(profile.Rules.MaxAge, target);
+        });
+        if (withCode) _grant.TryConsume("ratingSystem");
+        Emit("parental", new { kind = "status" });
+        return GetParental();
+    }
+
+    /// <summary>
+    /// One rule of one profile (the caller asked for the parents' grant). Only the values the settings page offers; the main switch is not
+    /// here. A profile that is gone by now is left alone (never the default profile's rules instead).
+    /// </summary>
+    private void ApplyProfileRule(string profileId, string key, System.Text.Json.JsonElement value)
+    {
+        int Number(int min, int max) =>
+            value.ValueKind == System.Text.Json.JsonValueKind.Number && value.TryGetInt32(out var n) && n >= min && n <= max
+                ? n
+                : throw new ArgumentException(Strings.Get("hud.range", key, min, max));
+        bool Flag() => value.ValueKind == System.Text.Json.JsonValueKind.True;
+        void Rule(Action<ParentalConfig> set, Action<AppConfig>? also = null)
+        {
+            var found = false;
+            config.Update(c =>
+            {
+                var p = c.Profile(profileId);
+                if (p.Id != profileId) return;
+                found = true;
+                set(p.Rules);
+                also?.Invoke(c);
+            });
+            if (!found) throw new KeyNotFoundException(Strings.Get("profiles.unknown"));
+        }
+        switch (key)
+        {
             case "weekdayMinutes":
             {
                 var n = Number(0, 1440);
-                config.Update(c => c.Parental.WeekdayMinutes = n);
+                Rule(r => r.WeekdayMinutes = n);
                 break;
             }
             case "weekendMinutes":
             {
                 var n = Number(0, 1440);
-                config.Update(c => c.Parental.WeekendMinutes = n);
+                Rule(r => r.WeekendMinutes = n);
                 break;
             }
             case "perGameMinutes":
             {
                 var n = Number(0, 1440);
-                config.Update(c => c.Parental.PerGameMinutes = n);
+                Rule(r => r.PerGameMinutes = n);
                 break;
             }
             case "maxAge":
             {
+                // Off, or a step of the system that counts now (what the picker offers).
                 var n = Number(0, 21);
-                if (n is not (0 or 6 or 12 or 16 or 18)) throw new ArgumentException(Strings.Get("parental.maxAgeInvalid"));
-                config.Update(c => c.Parental.MaxAge = n);
+                var system = ActiveRatingSystem;
+                if (n != 0 && !AgeRatings.Steps(system).Contains(n))
+                    throw new ArgumentException(Strings.Get("parental.maxAgeInvalid", string.Join(", ", AgeRatings.Steps(system))));
+                // The system the limit was saved under: a later region change under "auto" then judges by both (JudgedSystems).
+                // Only the first limit records it; a later one keeps it (a region switched before cannot drop it, audit 0.5 L2), only
+                // the parents' explicit choice of the system moves it (SetRatingSystem).
+                // Switching a limit off records nothing: another profile's limit may still go by the old system.
+                Rule(r => r.MaxAge = n, n > 0 ? c => c.AgeRatingSystemResolved = AgeRatings.SavedSystemAfterLimit(c.AgeRatingSystemResolved, system) : null);
                 break;
             }
             case "blockUnknownAge":
             {
                 var on = Flag();
-                config.Update(c => c.Parental.BlockUnknownAge = on);
+                Rule(r => r.BlockUnknownAge = on);
                 break;
             }
             case "countApps":
             {
                 var on = Flag();
-                config.Update(c => c.Parental.CountApps = on);
+                Rule(r => r.CountApps = on);
                 break;
             }
             case "window":
@@ -1143,23 +1525,51 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 var end = value[1].GetInt32();
                 var off = start < 0 || end < 0;
                 if (!off && (start >= 1440 || end >= 1440 || start == end)) throw new ArgumentException(Strings.Get("parental.windowRange"));
-                config.Update(c => (c.Parental.WindowStartMinute, c.Parental.WindowEndMinute) = off ? (-1, -1) : (start, end));
+                Rule(r => (r.WindowStartMinute, r.WindowEndMinute) = off ? (-1, -1) : (start, end));
                 break;
             }
             default:
                 throw new ArgumentException(Strings.Get("parental.unknownSetting", key));
         }
-        return GetParental();
+    }
+
+    /// <summary>
+    /// The parental controls were switched on: every profile's play time account is written now (the one on the couch through its
+    /// controller, the others empty unless they have one) and marked as started, so from here on a missing account is tampering in
+    /// every profile, not only in the one that was active. A profile whose account could not be written stays unmarked (no false alarm).
+    /// </summary>
+    private void StartAllPlayAccounts()
+    {
+        var controller = Parental;
+        controller.Service.Flush();
+        var key = ParentalKey();
+        var today = controller.Service.Clock.Today;
+        var written = new List<string>();
+        foreach (var profile in config.Current.AllProfiles)
+        {
+            var file = ProfileIds.LedgerFile(dataDir, profile.Id);
+            // Only a missing account is created: an existing file, even one with a wrong signature, stays as evidence.
+            if (profile.Id != controller.ProfileId && !File.Exists(file) && !PlayLedger.ShouldExist(file, profile.Rules.LedgerStarted)) new PlayLedger(file, key).Save(today);
+            if (File.Exists(file)) written.Add(profile.Id);
+        }
+        config.Update(c =>
+        {
+            foreach (var profile in c.AllProfiles)
+                if (written.Contains(profile.Id)) profile.Rules.LedgerStarted = true;
+        });
     }
 
     public object SetParentalItemLock(string id, bool locked)
     {
+        RefuseWhileConfigFaulted();
         RequireParentGrant("lock", id);
         _ = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        var profileId = Parental.ProfileId;
         config.Update(c =>
         {
-            c.Parental.LockedItems.Remove(id);
-            if (locked) c.Parental.LockedItems.Add(id);
+            var rules = c.Profile(profileId).Rules;
+            rules.LockedItems.Remove(id);
+            if (locked) rules.LockedItems.Add(id);
         });
         return GetParental();
     }
@@ -1184,8 +1594,10 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// <summary>Windows' time zone was changed on purpose (travel): the day limits follow it from now on.</summary>
     public object ParentalAdoptZone()
     {
+        RefuseWhileConfigFaulted();
         RequireParentGrant();
-        config.Update(c => c.Parental.TimeZoneId = TimeZoneInfo.Local.Id);
+        var profileId = Parental.ProfileId;
+        config.Update(c => c.Profile(profileId).Rules.TimeZoneId = TimeZoneInfo.Local.Id);
         return GetParental();
     }
 
@@ -1193,8 +1605,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     public async Task<object> ParentalCheckAsync(string id)
     {
         var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
-        var p = config.Current.Parental;
-        if (p.Enabled && p.MaxAge > 0 && item.Type == ItemType.Game && CachedAge(item) is null)
+        var p = config.Current.Profile(Parental.ProfileId).Rules;
+        if (p.Enabled && p.AgeLimit > 0 && item.Type == ItemType.Game && CachedAge(item) is null)
         {
             try
             {
@@ -1206,7 +1618,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 Console.Error.WriteLine($"[parental] no age rating for {item.Name}: {ex.Message}");
             }
         }
-        var c = Parental.CheckLaunch(item, CachedAge(item), GrantFor(item));
+        var c = Parental.CheckLaunch(item, VerdictAge(item), GrantFor(item));
         return new { ok = c.Ok, reason = c.Reason, message = c.Message, needsCode = c.NeedsCode, advisory = c.Advisory };
     }
 
@@ -1329,7 +1741,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     public void SetAppMute(string id, bool mute) =>
         (_audio ?? throw new InvalidOperationException(Strings.Get("audio.unavailable"))).SetAppMute(id, mute);
 
-    public object Pads() => pad.Pads().Select(p => new { index = p.Index, battery = p.Battery }).ToList();
+    public object Pads() => pad.Pads().Select(p => new { index = p.Index, battery = p.Battery, percent = p.Percent }).ToList();
 
     public void Rumble(string kind)
     {
@@ -1353,25 +1765,37 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     /// <summary>Scans again and tells the UI, without anyone waiting.</summary>
     public void RescanLibraryInBackground() =>
-        _ = library.ScanAsync().ContinueWith(_ => Ui(() => Emit("library", UiBridge.ToDto(library.Items))), TaskScheduler.Default);
+        _ = library.ScanAsync().ContinueWith(_ => Ui(() => Emit("library", UiBridge.ToDto(Shown(library.Items)))), TaskScheduler.Default);
 
-    public Task<IReadOnlyList<LibraryItem>> GetLibraryAsync(bool rescan) => library.GetAsync(rescan);
+    public async Task<IReadOnlyList<LibraryItem>> GetLibraryAsync(bool rescan) => Shown(await library.GetAsync(rescan));
 
     /// <param name="byPerson">Started from the HUD (library, menu): a website entry counts as use of the couch browser. MCP and
     /// the assistant pass false (their confirmation is an A on the pad, which counts by itself).</param>
     public LibraryItem Launch(string id, bool byPerson = false)
     {
         var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        // A protected profile waiting in the picker for its code starts nothing (MCP and the assistant come through here too).
+        RequireProfileChosen();
+        // An entry of a switched off area starts nothing, from anywhere (its effective start too: a program swapped for a browser).
+        if (!Areas.Shows(item)) throw new InvalidOperationException(Strings.Get("areas.off"));
         // A locked couch starts games; apps and websites need the unlock.
         if (Locked && !LockPolicy.MayLaunchLocked(item.Type)) throw new LockedException(Strings.Get("lock.unlockFirst"));
-        if (config.Current.Parental.Enabled && (_sessions.Current is not null || _sessions.IsPending(DateTimeOffset.UtcNow)))
+        if (config.Current.ParentalEnabled && (_sessions.Current is not null || _sessions.IsPending(DateTimeOffset.UtcNow)))
             throw new InvalidOperationException(Strings.Get("hud.closeGameFirst"));
         var check = Parental.CheckLaunch(item, AgeOf(item), GrantFor(item));
         if (!check.Ok) throw new InvalidOperationException(check.Message);
-        if (check.UsesCode) _grant.TryConsume("launch", item.Id);
+        // The user's start target and parameters, checked again now (moved, swapped, edited config, a batch file's content): refused instead of
+        // starting something else, and before the parents' code is used up. Identity stays the entry's (id, install folder): play time, detection
+        // and the parental rules count it as this game. The same for MCP and the assistant, which come through here.
+        var start = library.EffectiveLaunch(item);
+        if (!Areas.Browser && FeatureAreas.NeedsBrowser(start)) throw new InvalidOperationException(Strings.Get("areas.off"));
+        var own = config.Current.Overrides.GetValueOrDefault(item.Id);
+        // A batch file nobody approved (an own entry or a scanned one, not a pinned start target) starts only on an open couch, as before.
+        if (Locked && LaunchOverrides.IsUnpinnedScript(start, own)) throw new LockedException(Strings.Get("entry.scriptLocked", item.Name));
         // A website entry opens in the couch browser (it needs the unlock as the browser tile does, which the app check above gave).
         if (item.Launch.Embedded)
         {
+            if (check.UsesCode) _grant.TryConsume("launch", item.Id);
             _ = OpenEmbeddedEntryAsync(item, byPerson);
             return library.MarkLaunched(id);
         }
@@ -1379,12 +1803,14 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         var releaseApp = !LockPolicy.MayLaunchLocked(item.Type);
         ApplyProfile(item);
         // The client of this item may show what the start needs (login, update) until the user is back in the HUD.
-        _fgState.Release(ForegroundPolicy.FamilyOfLaunch(item.Source, item.Launch.Kind, item.Launch.Target), DateTimeOffset.UtcNow);
-        var isUrl = item.Launch.Kind == LaunchKind.Url;
-        var handler = isUrl ? Win32ProcessProbe.HandlerExe(LaunchWindowPicker.SchemeOf(item.Launch.Target)) : null;
+        _fgState.Release(ForegroundPolicy.FamilyOfLaunch(item.Source, start.Kind, start.Target), DateTimeOffset.UtcNow);
+        var isUrl = start.Kind == LaunchKind.Url;
+        var handler = isUrl ? Win32ProcessProbe.HandlerExe(LaunchWindowPicker.SchemeOf(start.Target)) : null;
         var windowsBefore = isUrl ? Win32ProcessProbe.WindowSnapshot() : null;
-        StartClientForLaunch(item);
-        Launcher.Launch(item);
+        StartClientForLaunch(item, start);
+        Launcher.Launch(item, start, LaunchOverrides.PinFor(start, own));
+        // Used up only by a start that happened (a refused start target keeps it for another try).
+        if (check.UsesCode) _grant.TryConsume("launch", item.Id);
         _sessions.Launched(item, DateTimeOffset.UtcNow);
         ForgetUnlock();
         if (releaseApp && LockOn)
@@ -1392,7 +1818,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             _appsReleased = item.Name;
             Emit("toast", Strings.Get("lock.appReleased", item.Name));
         }
-        if (windowsBefore is not null) _ = BringNewWindowForwardAsync(id, handler, windowsBefore, LaunchWindowPicker.SchemeOf(item.Launch.Target), config.Current.MaximizeBrowser);
+        if (windowsBefore is not null) _ = BringNewWindowForwardAsync(id, handler, windowsBefore, LaunchWindowPicker.SchemeOf(start.Target),config.Current.MaximizeBrowser);
         return library.MarkLaunched(id);
     }
 
@@ -1447,6 +1873,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     public async Task<object> GetDetailsAsync(string id)
     {
         var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        if (!Areas.Shows(item)) throw new InvalidOperationException(Strings.Get("areas.off"));
 
         var infoTask = storeInfo.GetAsync(item);
         var dir = item.InstallDir;
@@ -1469,6 +1896,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         {
             Console.Error.WriteLine($"[hud] store info for {item.Name}: {ex.Message}");
         }
+        // The user's own texts on top (plain text; the page shows them as text).
+        info = InfoOverrides.Merge(info, config.Current.Overrides.GetValueOrDefault(id));
 
         return new
         {
@@ -1482,7 +1911,15 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             genres = info?.Genres ?? Array.Empty<string>(),
             installDir = item.InstallDir,
             sizeBytes = await sizeTask ?? 0,
-            canUninstall = await uninstallTask is not null
+            canUninstall = await uninstallTask is not null,
+            // Only that the start was changed, never what to (the page is open on a locked couch).
+            customLaunch = config.Current.Overrides.GetValueOrDefault(id)?.HasLaunch ?? false,
+            // The age rating that counts for the age limit (a kept stricter one included, KeepAgeFloor); null when none is known. Shown only.
+            ageRating = KnownAge(item) is { } age and > 0 ? age : (int?)null,
+            // The rating's label in its system ("USK 12", "PEGI 16", "ESRB T"); null for Steam's own age, a floor or an older cache (shown as an age).
+            ageLabel = KnownAge(item) is > 0 && CachedRating(item) is { System: { } ratedBy } shown ? AgeRatings.Label(ratedBy, shown.Age) : null,
+            // The store did not answer for the entry's current match (offline, rate limit, a timeout): the page asks again shortly.
+            storePending = !storeInfo.HasAnswer(item)
         };
     }
 
@@ -1490,7 +1927,85 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     public async Task<StoreInfo?> GetStoreInfoAsync(string id)
     {
         var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
-        return await storeInfo.GetAsync(item);
+        return InfoOverrides.Merge(await storeInfo.GetAsync(item), config.Current.Overrides.GetValueOrDefault(id));
+    }
+
+    /// <summary>The store's search for "choose a store entry": unlocked only (the bridge's lock list), bounded query, the polite client.</summary>
+    public async Task<IReadOnlyList<StoreCandidate>> SearchStoreAsync(string query)
+    {
+        RequireUnlocked();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        return await storeInfo.SearchAsync(query, cts.Token);
+    }
+
+    /// <summary>Texts and store match for the edit menu; the store's own answer may be missing when offline.</summary>
+    public async Task<ItemInfoView> GetItemInfoAsync(string id)
+    {
+        RequireUnlocked();
+        var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        StoreInfo? info = null;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            info = await storeInfo.GetAsync(item, cts.Token);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException)
+        {
+            Console.Error.WriteLine($"[hud] store info for {item.Name}: {ex.Message}");
+        }
+        return library.GetItemInfo(id, info);
+    }
+
+    /// <summary>
+    /// Own texts (description, developer, publisher, release date, genres): only what the detail page shows, never the age rating, so the
+    /// unlock and a chosen profile are enough. Only the HUD's own page gets here (edit_item carries no texts; StoreMatchContractTests).
+    /// </summary>
+    public ItemInfoView SetItemInfo(string id, InfoChange change)
+    {
+        if (library.Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
+        RequireProfileChosen();
+        RequireUnlocked();
+        library.SetItemInfo(id, change);
+        return library.GetItemInfo(id, library.Find(id) is { } item ? storeInfo.Cached(item) : null);
+    }
+
+    /// <summary>
+    /// The store entry of an entry (an app id from the search, "none", or null for automatic). The match decides the age rating, so: a chosen
+    /// profile, the unlock, and with parental controls on the parents' code for exactly this entry (action "storeMatch"). Confirmed by
+    /// that code, the new rating counts; otherwise (parental controls off, or no code set) the stricter of the old and the new one stays
+    /// until the parents confirm. Only the HUD's own page gets here: not the phone remote, MCP, the assistant or a plugin.
+    /// </summary>
+    public async Task<ItemInfoView> SetStoreMatchAsync(string id, string? match, string? name)
+    {
+        var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        StoreMatches.Validate(match);
+        if (!StoreMatches.CanChoose(item)) throw new ArgumentException(Strings.Get("store.steamOwn", item.Name));
+        RequireProfileChosen();
+        RequireUnlocked();
+        var confirmed = false;
+        if (config.Current.ParentalEnabled)
+        {
+            RequireParentGrant("storeMatch", id);
+            confirmed = HasParentCode;
+        }
+        // The rating that counted so far (looked up if unknown, 5 s at most): the floor if the parents did not confirm.
+        int? previous = null;
+        if (!confirmed)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await storeInfo.GetAsync(item, cts.Token);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException)
+            {
+                Console.Error.WriteLine($"[store] rating of {item.Name} before the match changed: {ex.Message}");
+            }
+            // The strictest of every system, not only the active one: after a region switch a harmless match frees nothing.
+            previous = AgeRatings.KeptAge(storeInfo.Cached(item), KnownAge(item));
+        }
+        library.SetStoreMatch(id, match, name, previous, confirmed);
+        return await GetItemInfoAsync(id);
     }
 
     public async Task UninstallAsync(string id)
@@ -1501,42 +2016,53 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         Uninstaller.Run(command);
     }
 
+    /// <summary>
+    /// What the page needs to start. Skin, language, sounds and animations are <see cref="LookProfile"/>'s: while a protected profile waits
+    /// at the picker the household's, not the waiting person's.
+    /// </summary>
     public object SystemInfo() => new
     {
         platform = "windows",
         version = typeof(Hud).Assembly.GetName().Version?.ToString(3) ?? "dev",
         dev,
         nativeInput = pad.Available,
+        padKind = pad.Kind,
+        padGlyphs = config.Current.PadGlyphs,
         isShell = shell.IsInstalledAsShell(),
-        sounds = config.Current.Sounds,
-        audioMode = config.Current.AudioMode,
-        musicVolume = config.Current.MusicVolume,
+        sounds = LookProfile.Sounds,
+        audioMode = LookProfile.AudioMode,
+        musicVolume = LookProfile.MusicVolume,
         guideTapInGame = config.Current.GuideTapInGame,
         integrationMode = config.Current.IntegrationMode,
         acceptedTerms = config.Current.AcceptedTerms,
         setupWizardDone = config.Current.SetupWizardDone,
+        // The feature areas switched on (FeatureAreas): the page hides the others.
+        areas = Areas.Enabled,
+        // The settings are broken or gone after an earlier install: no first start, no setup assistant (the stand-in only locks).
+        configFault = config.Fault is not null,
         screensaverMinutes = config.Current.ScreensaverMinutes,
         screensaverStyle = config.Current.ScreensaverStyle,
         displayOffMinutes = config.Current.DisplayOffMinutes,
         pixelShift = config.Current.PixelShift,
-        reduceMotion = config.Current.ReduceMotion,
+        reduceMotion = LookProfile.ReduceMotion,
         pointer = config.Current.Pointer,
         mouseUnlocked = config.Current.MouseUnlocked,
-        soundVolume = config.Current.SoundVolume,
-        soundSet = config.Current.SoundSet,
+        soundVolume = LookProfile.SoundVolume,
+        soundSet = LookProfile.SoundSet,
         uiHdr = config.Current.UiHdr,
         hdrOn = SafeHdrOn(),
         trailerPreviews = config.Current.TrailerPreviews,
         homeAssistant = _home.Configured,
         weather = config.Current.WeatherLocation is not null,
         assistant = AssistantConfigured,
-        skin = config.Current.Skin,
+        skin = LookProfile.Skin,
         language = CouchHud.Core.Localization.Strings.Language,
-        languageSetting = config.Current.Language
+        languageSetting = LookProfile.Language
     };
 
     public bool SetShell(bool install)
     {
+        RefuseWhileConfigFaulted();
         if (install) RequireFull();
         if (!install) RequireUnlocked();
         if (install) shell.InstallAsShell();
@@ -1554,34 +2080,42 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         var c = config.Current;
         return new
         {
-            sounds = c.Sounds,
-            audioMode = c.AudioMode,
-            musicVolume = c.MusicVolume,
+            sounds = c.ActiveProfile.Sounds,
+            audioMode = c.ActiveProfile.AudioMode,
+            musicVolume = c.ActiveProfile.MusicVolume,
             guideTapInGame = c.GuideTapInGame,
             suppressCompetitors = c.SuppressCompetitors,
             integrationMode = c.IntegrationMode,
             expertMode = c.ExpertMode,
+            areas = FeatureAreas.From(c).Enabled,
             bluetoothAutoOn = c.BluetoothAutoOn,
-            language = c.Language,
+            language = c.ActiveProfile.Language,
             closeExplorerInLight = c.CloseExplorerInLight,
             selfUpdateCheck = c.SelfUpdateCheck,
             caseHudInstallAutostart = c.CaseHudInstallAutostart,
             caseHudInstallFps = c.CaseHudInstallFps,
             caseHudInstallApi = c.CaseHudInstallApi,
             caseHudGamingLease = c.CaseHudGamingLease,
+            vpnInGuide = c.VpnInGuide,
+            // TV: the options only; the pairing (never its key) comes through tvStatus.
+            tvInGuide = c.Tv?.InGuide ?? true,
+            tvOnWithCouchHud = c.Tv?.OnWithCouchHud ?? false,
+            tvOffWithPc = c.Tv?.OffWithPc ?? false,
             screensaverMinutes = c.ScreensaverMinutes,
             screensaverStyle = c.ScreensaverStyle,
             displayOffMinutes = c.DisplayOffMinutes,
             pixelShift = c.PixelShift,
-            reduceMotion = c.ReduceMotion,
+            reduceMotion = c.ActiveProfile.ReduceMotion,
             pointer = c.Pointer,
             mouseUnlocked = c.MouseUnlocked,
             pauseGameInMenu = c.PauseGameInMenu,
             gameBarButton = SafeGameBarButton(),
-            soundVolume = c.SoundVolume,
-            soundSet = c.SoundSet,
+            soundVolume = c.ActiveProfile.SoundVolume,
+            soundSet = c.ActiveProfile.SoundSet,
             uiHdr = c.UiHdr,
             rumble = c.Rumble,
+            padGlyphs = c.PadGlyphs,
+            screenshotCombo = c.ScreenshotCombo,
             autoSwitchHeadphones = c.AutoSwitchHeadphones,
             trailerPreviews = c.TrailerPreviews,
             returnHoldMs = c.ReturnHoldMs,
@@ -1589,15 +2123,21 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             killExplorerOnReturn = KillExplorerOnReturn,
             closePcAppsOnReturn = c.ClosePcAppsOnReturn,
             maximizeBrowser = c.MaximizeBrowser,
+            browserHistory = c.BrowserHistory,
             nightMode = c.NightMode,
             nightModeStrength = c.NightModeStrength,
             // Never send secrets back to the UI, only whether one is set.
             steamGridDbKeySet = !string.IsNullOrWhiteSpace(c.SteamGridDbApiKey),
             onlineArtwork = c.OnlineArtwork,
-            artworkCacheMb = (int)((artwork.Images?.TotalBytes ?? 0) / (1024 * 1024)),
+            artworkCacheBytes = artwork.Images?.TotalBytes ?? 0,
             weatherPlace = c.WeatherLocation,
             homeAssistantUrl = c.HomeAssistantUrl,
             homeAssistantTokenSet = !string.IsNullOrWhiteSpace(c.HomeAssistantToken),
+            homeAssistantSignedIn = !string.IsNullOrWhiteSpace(c.HomeAssistantRefreshToken),
+            // Home Assistant refused the sign-in (revoked, user removed): no more requests, the settings offer to sign in again.
+            homeAssistantSignInExpired = _home.Session?.Dead == true,
+            // A sign-in over http to an address outside the home network is never refreshed: the settings say to sign in again with https.
+            homeAssistantHttpsRequired = !string.IsNullOrWhiteSpace(c.HomeAssistantRefreshToken) && !HomeAssistantLogin.SignInAllowed(c.HomeAssistantUrl),
             homeAssistantPinned = c.HomeAssistantPinned,
             aiProvider = c.AiProvider,
             aiModel = c.AiModel,
@@ -1609,7 +2149,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             mcpPort = c.McpPort,
             // Shown so it can be copied into the client's config; it only ever leaves the PC that way.
             // Not for a locked couch: the token would let any program on the network steer CouchHud.
-            mcpToken = forUi && !Locked ? Secrets.Unprotect(c.McpToken) : null,
+            // Nor while a protected profile waits at the picker, whatever the lock says (VM test of profiles part 2).
+            mcpToken = forUi && !Locked && !ProfileHeld ? Secrets.Unprotect(c.McpToken) : null,
             mcpUrls = McpHost.Urls(c.McpPort, c.McpLan),
             remoteEnabled = c.RemoteEnabled,
             mirrorNotifications = c.MirrorNotifications,
@@ -1637,11 +2178,13 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 if (audioMode is not ("off" or "ui" or "music")) throw new ArgumentException(Strings.Get("hud.soundInvalid"));
                 config.UpdateOrThrow(c =>
                 {
-                    c.AudioMode = audioMode;
-                    c.Sounds = audioMode != "off";
+                    c.ActiveProfile.AudioMode = audioMode;
+                    c.ActiveProfile.Sounds = audioMode != "off";
                 });
                 break;
             case "screensaverMinutes":
+                // With parental controls and several profiles the parents' (review NEU-1): it brings a protected profile back to the picker.
+                if (ProfilesGuarded) RequireParentGrant("idleSetting", key);
                 var saver = Math.Clamp(value.GetInt32(), 0, 240);
                 config.UpdateOrThrow(c => c.ScreensaverMinutes = saver);
                 break;
@@ -1651,6 +2194,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 config.UpdateOrThrow(c => c.ScreensaverStyle = style);
                 break;
             case "displayOffMinutes":
+                if (ProfilesGuarded) RequireParentGrant("idleSetting", key);
                 var off = Math.Clamp(value.GetInt32(), 0, 480);
                 config.UpdateOrThrow(c => c.DisplayOffMinutes = off);
                 break;
@@ -1666,9 +2210,25 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 var chApi = Bool();
                 config.UpdateOrThrow(c => c.CaseHudInstallApi = chApi);
                 break;
+            case "tvInGuide":
+                var tvGuide = Bool();
+                config.UpdateOrThrow(c => (c.Tv ??= new()).InGuide = tvGuide);
+                break;
+            case "tvOnWithCouchHud":
+                var tvOn = Bool();
+                config.UpdateOrThrow(c => (c.Tv ??= new()).OnWithCouchHud = tvOn);
+                break;
+            case "tvOffWithPc":
+                var tvOff = Bool();
+                config.UpdateOrThrow(c => (c.Tv ??= new()).OffWithPc = tvOff);
+                break;
             case "caseHudGamingLease":
                 var chLease = Bool();
                 config.UpdateOrThrow(c => c.CaseHudGamingLease = chLease);
+                break;
+            case "vpnInGuide":
+                var vpnGuide = Bool();
+                config.UpdateOrThrow(c => c.VpnInGuide = vpnGuide);
                 break;
             case "bluetoothAutoOn":
                 var btAuto = Bool();
@@ -1684,7 +2244,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 break;
             case "reduceMotion":
                 var calm = Bool();
-                config.UpdateOrThrow(c => c.ReduceMotion = calm);
+                config.UpdateOrThrow(c => c.ActiveProfile.ReduceMotion = calm);
                 break;
             case "pointer":
                 var pointer = value.GetString();
@@ -1750,16 +2310,16 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 break;
             case "musicVolume":
                 var music = Math.Clamp(value.GetInt32(), 0, 100);
-                config.UpdateOrThrow(c => c.MusicVolume = music);
+                config.UpdateOrThrow(c => c.ActiveProfile.MusicVolume = music);
                 break;
             case "soundVolume":
                 var volume = Math.Clamp(value.GetInt32(), 0, 100);
-                config.UpdateOrThrow(c => c.SoundVolume = volume);
+                config.UpdateOrThrow(c => c.ActiveProfile.SoundVolume = volume);
                 break;
             case "soundSet":
-                var set = value.GetString() ?? "";
-                if (set.Length > 0 && set is not ("default" or "ps4" or "xbox" or "cyberpunk" or "nova")) throw new ArgumentException(Strings.Get("hud.unknownSoundSet", set));
-                config.UpdateOrThrow(c => c.SoundSet = set);
+                var set = SkinCatalog.MigrateId(value.GetString()) ?? "";
+                if (set.Length > 0 && !SkinCatalog.BuiltinIds.Contains(set)) throw new ArgumentException(Strings.Get("hud.unknownSoundSet", set));
+                config.UpdateOrThrow(c => c.ActiveProfile.SoundSet = set);
                 break;
             case "uiHdr":
                 var uiHdr = value.GetString();
@@ -1772,8 +2332,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 var soundsOn = Bool();
                 config.UpdateOrThrow(c =>
                 {
-                    c.Sounds = soundsOn;
-                    c.AudioMode = soundsOn ? (c.AudioMode == "off" ? "ui" : c.AudioMode) : "off";
+                    c.ActiveProfile.Sounds = soundsOn;
+                    c.ActiveProfile.AudioMode = soundsOn ? (c.ActiveProfile.AudioMode == "off" ? "ui" : c.ActiveProfile.AudioMode) : "off";
                 });
                 break;
             case "expertMode":
@@ -1782,12 +2342,23 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             case "language":
                 var language = value.GetString();
                 if (language is not ("auto" or "de" or "en")) throw new ArgumentException("Language: auto, de or en");
-                config.UpdateOrThrow(c => c.Language = language);
+                config.UpdateOrThrow(c => c.ActiveProfile.Language = language);
                 CouchHud.Core.Localization.Strings.Use(language);
                 plugins.Events.RaiseLanguageChanged(CouchHud.Core.Localization.Strings.Language);
                 break;
             case "rumble":
                 config.UpdateOrThrow(c => c.Rumble = Bool());
+                break;
+            case "padGlyphs":
+                var glyphs = value.GetString();
+                if (glyphs is not ("auto" or "xbox" or "playstation")) throw new ArgumentException(Strings.Get("hud.padGlyphsInvalid"));
+                config.UpdateOrThrow(c => c.PadGlyphs = glyphs);
+                break;
+            case "screenshotCombo":
+                var combo = Bool();
+                config.UpdateOrThrow(c => c.ScreenshotCombo = combo);
+                // A Guide press waiting for its release must not be left hanging when the chord goes away.
+                _guideChord.Cancel();
                 break;
             case "runStartupApps":
                 config.UpdateOrThrow(c => c.RunStartupApps = Bool());
@@ -1808,6 +2379,21 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 break;
             case "maximizeBrowser":
                 config.UpdateOrThrow(c => c.MaximizeBrowser = Bool());
+                break;
+            case "browserHistory":
+                var history = Bool();
+                // Off deletes what the parents would look at: with parental controls their code, for exactly this (audit 0.5 M1).
+                // Checked before and used up only by the saved change, like the rating system: a failed save keeps the parents' grant.
+                var historyGrant = CouchHud.Core.Security.BrowserRecentPrivacy.HistoryChangeNeedsParent(config.Current.ParentalEnabled, config.Current.BrowserHistory, history);
+                if (historyGrant && !HasParentCode) RequireUnlocked();
+                var historyCode = historyGrant && HasParentCode;
+                if (historyCode && !_grant.Fits(CouchHud.Core.Security.BrowserRecentPrivacy.HistoryOffAction))
+                    throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
+                config.UpdateOrThrow(c => c.BrowserHistory = history);
+                if (historyCode) _grant.TryConsume(CouchHud.Core.Security.BrowserRecentPrivacy.HistoryOffAction);
+                // The browser's own history goes too (pane now, or at its next start: BrowserPane.ClearHistoryAsync).
+                if (!history) ClearBrowserHistory();
+                Emit("browser", BrowserState());
                 break;
             case "closePcAppsOnReturn":
                 config.UpdateOrThrow(c => c.ClosePcAppsOnReturn = Bool());
@@ -1840,28 +2426,20 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             case "homeAssistantUrl":
                 var url = value.GetString()?.Trim().TrimEnd('/') ?? "";
                 if (url.Length > 0 && !Uri.TryCreate(url, UriKind.Absolute, out _)) throw new ArgumentException(Strings.Get("hud.needFullAddress"));
-                // The token belongs to the server it was made for: another address asks for a new one,
-                // otherwise a changed address would send the old token to whoever answers there.
-                var sameServer = HomeAssistantPolicy.SameServer(config.Current.HomeAssistantUrl, url);
-                config.UpdateOrThrow(c =>
-                {
-                    c.HomeAssistantUrl = url;
-                    if (!sameServer) c.HomeAssistantToken = "";
-                });
-                _home.BaseUrl = url;
-                if (!sameServer) _home.Token = "";
+                // The token and the sign-in belong to the server they were made for: another address asks for a new one,
+                // otherwise a changed address would send the old token to whoever answers there (see SetHomeAssistantUrl).
+                SetHomeAssistantUrl(url);
                 break;
             case "homeAssistantToken":
-                var token = value.GetString()?.Trim() ?? "";
-                config.UpdateOrThrow(c => c.HomeAssistantToken = Secrets.Protect(token));
-                _home.Token = token;
+                // The expert way; a long-lived token replaces a sign-in (SetHomeAssistantToken).
+                SetHomeAssistantToken(value.GetString()?.Trim() ?? "");
                 break;
             case "steamGridDbApiKey":
                 var apiKey = value.GetString()?.Trim() ?? "";
                 config.UpdateOrThrow(c => c.SteamGridDbApiKey = Secrets.Protect(apiKey));
                 artwork.ApiKey = apiKey;
                 // Look again with the new key in the background.
-                _ = library.ScanAsync().ContinueWith(t => Ui(() => Emit("library", UiBridge.ToDto(library.Items))), TaskScheduler.Default);
+                _ = library.ScanAsync().ContinueWith(t => Ui(() => Emit("library", UiBridge.ToDto(Shown(library.Items)))), TaskScheduler.Default);
                 break;
             case "aiProvider":
                 var provider = value.GetString() ?? "";
@@ -2006,8 +2584,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     }
 
     /// <summary>Asks the user on screen; the UI answers through <see cref="ConfirmAssistant"/>.</summary>
-    private Task<bool> ConfirmAsync(ToolCall call, string text) =>
-        RequestConfirmation(text, ToolCatalog.IsDangerous(call.Name), focusCancel: true, ConfirmTimeout);
+    private Task<bool> ConfirmAsync(ToolCall call, string text)
+    {
+        // Nothing to ask while a protected profile waits at the picker: the page would turn the question down (it answers only the picker).
+        RequireProfileChosen();
+        return RequestConfirmation(text, ToolCatalog.IsDangerous(call.Name), focusCancel: true, ConfirmTimeout);
+    }
 
     // One question at a time, in the order they came: a second one (assistant and MCP at once, a Bluetooth PIN) waits
     // instead of replacing the first. Nobody answering means no.
@@ -2074,6 +2656,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// <summary>MCP changes need an A on the TV too; nobody answering within a minute means no.</summary>
     private async Task<bool> ConfirmExternalAsync(ToolSpec spec, System.Text.Json.JsonElement args)
     {
+        // A protected profile waits at the picker: refused at once, before a question goes to the TV (the page answers only the picker, and
+        // the MCP client would wait for its own timeout).
+        RequireProfileChosen();
         var text = Strings.Get("external.request", new HudTools(this).Describe(spec.Name, args));
         var ok = await RequestConfirmation(text, danger: true, focusCancel: true, TimeSpan.FromMinutes(1));
         if (!ok) Emit("toast", Strings.Get("external.denied"));
@@ -2130,7 +2715,11 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         return place is null ? null : await _weather.GetAsync(place);
     }
 
-    public Task<IReadOnlyList<NewsItem>> GetNewsAsync() => _news.GetAsync(GetFeeds());
+    public Task<IReadOnlyList<NewsItem>> GetNewsAsync()
+    {
+        RequireArea(FeatureAreas.News);
+        return _news.GetAsync(GetFeeds());
+    }
 
     public IReadOnlyList<NewsFeed> GetFeeds() => NewsService.Effective(config.Current.NewsFeeds, Strings.Language);
 
@@ -2232,17 +2821,34 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             autoOn = config.Current.BluetoothAutoOn && _bluetoothRecovery?.Paused != true,
             controllersPaired = paired,
             controllerConnected = connected > 0,
-            pads = pad.Pads().Count,
+            pads = pad.PhysicalPadCount(),
             countdown = _bluetoothRecovery?.CountdownRunning == true
         };
     }
 
     private BluetoothRecoveryController? _bluetoothRecovery;
+    private BatteryMonitor? _batteries;
+
+    /// <summary>Battery levels (PC, controllers, Bluetooth devices) for the top bar and the guide menu; read-only, once a minute.</summary>
+    private void StartBatteries()
+    {
+        _batteries = new BatteryMonitor(pad.Pads, BluetoothService.BatteriesAsync,
+            snapshot => Ui(() => Emit("battery", snapshot)),
+            text => Ui(() => Emit("toast", text)));
+        _batteries.Start();
+    }
+
+    /// <summary>The last battery levels read; a read older than 15 s is renewed in the background (the "battery" event follows).</summary>
+    public CouchHud.Core.Input.BatterySnapshot Batteries()
+    {
+        _batteries?.RefreshIfOlder(TimeSpan.FromSeconds(15));
+        return _batteries?.Current ?? CouchHud.Core.Input.BatterySnapshot.Empty;
+    }
 
     /// <summary>Bluetooth back on by itself while a Bluetooth controller is paired and no other one is connected (see BluetoothRecoveryController).</summary>
     private void StartBluetoothGuard()
     {
-        _bluetoothRecovery = new BluetoothRecoveryController(_bluetooth, () => config.Current.BluetoothAutoOn, () => pad.Pads().Count,
+        _bluetoothRecovery = new BluetoothRecoveryController(_bluetooth, () => config.Current.BluetoothAutoOn, pad.PhysicalPadCount,
             () => RealInputWithin(TimeSpan.FromSeconds(60)),
             (phase, seconds) => Emit("bluetoothRecovery", seconds is { } s ? new { phase, seconds = s } : new { phase }),
             Ui, () => TimeSpan.FromMilliseconds(Environment.TickCount64), (wait, token) => Task.Delay(wait, token),
@@ -2288,7 +2894,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             {
                 Console.Error.WriteLine($"[bluetooth] connected controllers: {ex.Message}");
             }
-            var otherInput = pad.Pads().Count > bluetoothPads || source is "keyboard" or "mouse";
+            var otherInput = CouchHud.Core.Input.BluetoothRecovery.OtherInputForSwitchOff(pad.PhysicalPadCount(), bluetoothPads, source);
             leftOff = recovery.UserSwitchingOff(otherInput);
         }
         try
@@ -2358,6 +2964,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         await Task.WhenAny(SteamSettings.WhenIdleAsync(), Task.Delay(TimeSpan.FromSeconds(60)));
         // The waiting may have outlasted the mode: back in light mode or in PC mode nothing is started.
         if (!Launchers.MayStartClients(Full, _pcMode, dev)) return;
+        // Game clients in standby only while Gaming is on (FeatureAreas "launcherStandby").
+        if (!Areas.Runs("launcherStandby")) return;
         var started = new List<string>();
         foreach (var l in await Task.Run(FindLaunchers))
         {
@@ -2381,10 +2989,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// A game of this client is about to start (or an action needs the client): "standby" and "on demand" start it quietly now, with
     /// the game's start right after (Steam takes the start URL once it is up). Light mode never does this: the clients stay as they are.
     /// </summary>
-    private void StartClientForLaunch(LibraryItem item)
+    /// <param name="start">What is started when it differs from the scanned start (an own start target, see LaunchOverrides.Effective).</param>
+    private void StartClientForLaunch(LibraryItem item, LaunchTarget? start = null)
     {
-        if (!Full || dev || _pcMode) return;
-        var family = ForegroundPolicy.FamilyOfLaunch(item.Source, item.Launch.Kind, item.Launch.Target);
+        if (!Full || dev || _pcMode || !Areas.Runs("launcherStandby")) return;
+        var launch = start ?? item.Launch;
+        var family = ForegroundPolicy.FamilyOfLaunch(item.Source, launch.Kind, launch.Target);
         if (family is null) return;
         try
         {
@@ -2733,9 +3343,24 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         return GetProfile(id);
     }
 
-    /// <summary>Screenshot or clip through the Game Bar, taken from the game, not from the guide menu.</summary>
-    public async Task CaptureAsync(string kind)
+    /// <summary>
+    /// From the guide menu: a screenshot through CouchHUD's own capture (HudScreenshots, also on a locked couch), a clip or a recording
+    /// through the Game Bar, taken from the game, not from the guide menu.
+    /// </summary>
+    /// <param name="source">What the UI saw press the menu entry: "pad" (the controller or the phone, which reaches the UI the same way),
+    /// "keyboard" or "mouse".</param>
+    public async Task<object?> CaptureAsync(string kind, string? source = null)
     {
+        if (kind == "screenshot")
+        {
+            // The phone's buttons reach the guide menu like the controller's; its screenshot is refused (keyboard and mouse are at the PC).
+            if (_lastInputRemote && source is not ("keyboard" or "mouse"))
+            {
+                ShotFeedback(false, Strings.Get("screenshot.refusedRemote"), null, null);
+                return new { ok = false, refused = true };
+            }
+            return await TakeScreenshotAsync(fromMenu: true);
+        }
         // The Game Bar shortcuts are off while the couch is locked.
         RequireUnlocked();
         _capturing = true;
@@ -2748,7 +3373,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             {
                 case "clip": GameBar.RecordThat(); break;
                 case "record": GameBar.ToggleRecording(); break;
-                default: GameBar.Screenshot(); break;
+                default: throw new ArgumentException($"unknown capture {kind}");
             }
             if (_sessions.Current is null)
             {
@@ -2760,6 +3385,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         {
             _capturing = false;
         }
+        return null;
     }
 
     public Task<IReadOnlyList<SteamDownload>> GetDownloadsAsync() =>
@@ -2790,6 +3416,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
         var folders = new List<(string, string)>
         {
+            // CouchHUD's own (Guide + Y), first: a folder found twice keeps this label.
+            (CouchHud.Core.Files.ScreenshotFiles.Folder(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)), "CouchHUD"),
             (Path.Combine(videos, "Captures"), "Game Bar"),
             (Path.Combine(pictures, "Screenshots"), "Windows"),
             (Path.Combine(videos, "NVIDIA"), "NVIDIA"),
@@ -2859,6 +3487,51 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         }),
         tools = plugins.ToolSpecs.Where(t => t.Name.StartsWith(p.Id + "_", StringComparison.OrdinalIgnoreCase)).Select(t => t.Name)
     }).ToList();
+
+    /// <summary>
+    /// Switches feature areas on and off (Settings › Console › Areas, the setup assistant). A settings change: only the person at the
+    /// TV, unlocked, and with parental controls on only with the parents' code. Never while locked, never from the remote, MCP, the
+    /// assistant or a plugin (the bridge method is on none of their lists). Nothing is deleted; a switched off area only waits.
+    /// </summary>
+    public object SetFeatureAreas(IReadOnlyList<string> enabled)
+    {
+        RefuseWhileConfigFaulted();
+        RequireProfileChosen();
+        if (Locked) throw new LockedException(Strings.Get("areas.locked"));
+        var disabled = FeatureAreas.DisabledFor(enabled);
+        var before = Areas;
+        // With a parents' code the grant is checked first and used up only once the change is saved (a refused save keeps it).
+        var withCode = config.Current.ParentalEnabled && HasParentCode;
+        if (withCode && !_grant.Fits("areas")) throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
+        config.UpdateOrThrow(c => c.DisabledAreas = disabled);
+        if (withCode) _grant.TryConsume("areas");
+        var now = Areas;
+        Console.WriteLine($"[areas] on: {string.Join(", ", now.Enabled)}");
+        // The browser closes with its area; Steam's settings and the clients follow Gaming; the library shows what is on.
+        if (!now.Browser) CloseBrowser(false);
+        if (before.Games != now.Games)
+        {
+            if (now.Games)
+            {
+                ApplySteamSettings(release: false);
+                _ = StartLaunchersAsync();
+            }
+            else
+            {
+                // Gaming off: only the clients CouchHud started itself are closed, under the same rules as on quit (Steam only, never
+                // with a download or a game); what ran before or was started by the user stays. Then Steam's settings go back.
+                _ = Task.Run(() =>
+                {
+                    CloseOwnClients(pcMode: false);
+                    ApplySteamSettings(release: false);
+                });
+            }
+        }
+        RescanLibraryInBackground();
+        Emit("downloads", DownloadsDto());
+        Emit("areas", now.Enabled);
+        return new { areas = now.Enabled };
+    }
 
     public void SetPluginEnabled(string folder, bool enabled) => config.Update(c =>
     {
@@ -2943,14 +3616,86 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     private SelfUpdateManager SelfUpdate => _selfUpdate ??= new SelfUpdateManager(config, dataDir, () => _sessions.Current is not null,
         (app, title, body) => Ui(() => PostNotification(app, title, body)),
-        state => Ui(() => Emit("selfUpdate", state)));
+        state =>
+        {
+            // The steps of the update (download, hand-over, setup) as the detail of its line on the downloads page.
+            if (state.Busy is { } busy) _downloads.Report(DownloadIds.Self, detail: busy, cancellable: state.Cancellable);
+            Ui(() => Emit("selfUpdate", state));
+        });
 
     // CaseHUD: finding, starting, installing and controlling it (all of it in CaseHudManager).
     private Lazy<CaseHudManager>? _caseHudLazy;
 
-    private Lazy<CaseHudManager> CaseHudLazy => LazyInitializer.EnsureInitialized(ref _caseHudLazy, () => new Lazy<CaseHudManager>(() => new CaseHudManager(config, dataDir, () => _sessions.Current is not null, (name, payload) => Ui(() => Emit(name, payload)))));
+    private Lazy<CaseHudManager> CaseHudLazy => LazyInitializer.EnsureInitialized(ref _caseHudLazy, () => new Lazy<CaseHudManager>(() =>
+        new CaseHudManager(config, dataDir, () => _sessions.Current is not null, (name, payload) => Ui(() => Emit(name, payload))) { Downloads = _downloads }));
 
     public CaseHudManager CaseHud => CaseHudLazy.Value;
+
+    // VPN (NordVPN first): the installed app's command line and the tunnel adapter, all of it in VpnManager.
+    private Lazy<VpnManager>? _vpnLazy;
+
+    private Lazy<VpnManager> VpnLazy => LazyInitializer.EnsureInitialized(ref _vpnLazy, () => new Lazy<VpnManager>(() => new VpnManager(config,
+        new CouchHud.Core.Integrations.Vpn.NordVpnProvider(), RequireVpnChange, (name, payload) => Ui(() => Emit(name, payload)))));
+
+    public VpnManager Vpn => VpnLazy.Value;
+
+    /// <summary>
+    /// A change of the VPN (connect, disconnect, other country, opening the app): the bridge already refused it on a locked couch; with
+    /// parental controls on it also needs the parents' one-time release, like the other settings a child could use to get around rules.
+    /// </summary>
+    private void RequireVpnChange()
+    {
+        RequireUnlocked();
+        if (config.Current.ParentalEnabled) RequireParentGrant(CouchHud.Core.Integrations.Vpn.VpnPolicy.ParentAction);
+    }
+
+    // TV control (LG webOS first): pairing, volume, inputs, on/off, all of it in TvManager and Core's TvController.
+    private Lazy<TvManager>? _tvLazy;
+
+    private Lazy<TvManager> TvLazy => LazyInitializer.EnsureInitialized(ref _tvLazy, () => new Lazy<TvManager>(() =>
+        new TvManager(config, () => Locked, RequireTvInputChange, (name, payload) => Ui(() => Emit(name, payload)))));
+
+    public TvManager Tv => TvLazy.Value;
+
+    /// <summary>A paired TV is configured (the manager is created only then for the automatic "TV follows CouchHUD").</summary>
+    private bool TvConfigured => config.Current.Tv is { Provider.Length: > 0 } tv && (tv.OnWithCouchHud || tv.OffWithPc);
+
+    /// <summary>
+    /// Switching the TV's input: the bridge already refused it on a locked couch (another input can be a console or a stick, a way around
+    /// the lock); with parental controls it also needs the parents' one-time release, like the other ways around the rules.
+    /// </summary>
+    private void RequireTvInputChange(string inputId)
+    {
+        RequireUnlocked();
+        if (config.Current.ParentalEnabled) RequireParentGrant(CouchHud.Core.Integrations.Tv.TvPolicy.ParentAction, inputId);
+    }
+
+    /// <summary>Windows' power broadcast at the main window: after a wake-up the TV may follow (option, Wake-on-LAN).</summary>
+    public void OnPowerResumed()
+    {
+        if (TvConfigured) Tv.FollowWake();
+    }
+
+    /// <summary>Windows announces sleep (also when it did not come from CouchHUD): the TV may follow, best effort, not awaited.</summary>
+    public void OnPowerSuspending()
+    {
+        if (TvConfigured) _ = Tv.FollowSleepAsync();
+    }
+
+    /// <summary>
+    /// Power from the UI: before sleep or shutdown the TV may be switched off (option "TV off with the PC", at most 2.5 s, awaited
+    /// without blocking the UI thread), then the same as <see cref="Power"/>.
+    /// </summary>
+    public async Task PowerAsync(string action)
+    {
+        if (action is "sleep" or "shutdown" && TvConfigured)
+        {
+            // A hard limit on top of the controller's own budget: sleep and shutdown never wait on the TV for longer.
+            try { await Tv.FollowSleepAsync().WaitAsync(CouchHud.Core.Integrations.Tv.TvController.OffBudget); }
+            catch (Exception ex) { Console.Error.WriteLine($"[tv] before {action}: {ex.GetType().Name}"); }
+        }
+        Power(action);
+    }
 
     public SelfUpdateState GetSelfUpdate() => SelfUpdate.State;
 
@@ -2964,7 +3709,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             string message;
             try
             {
-                message = await SelfUpdate.InstallAsync();
+                // On success the setup ends this process; a message that comes back is always the reason it did not go through.
+                message = await TrackAsync(DownloadIds.Self, DownloadKind.CouchHud, "couchhud", Strings.Get("downloads.couchHud", SelfUpdate.State.Version ?? ""),
+                    started => SelfUpdate.InstallAsync(started), _ => false);
             }
             catch (Exception ex) when (ex is InvalidOperationException or IOException)
             {
@@ -2980,7 +3727,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public async Task<object> InstallCatalogEntryAsync(string id, string kind)
     {
-        var (message, restartNeeded, state) = await Catalog.InstallAsync(id, kind);
+        var name = Catalog.NameOf(id);
+        var (message, restartNeeded, state) = await TrackAsync(DownloadIds.Plugin(kind, id), DownloadKind.Plugin, kind == "skin" ? "skin" : "plugin", name,
+            started => Catalog.InstallAsync(id, kind, started));
         return new { message, restartNeeded, state };
     }
 
@@ -3013,6 +3762,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         var foreign = await dispatcher.InvokeAsync(() => _window?.IsActive != true || _browsing);
         if (!foreign)
         {
+            // Profile names are typed at the TV, not from the phone.
+            if (await dispatcher.InvokeAsync(() => _profileScreen || ProfilePickerPending)) return Strings.Get("remote.fieldUnchecked");
             Ui(() => Emit("remote", new { type = "text", text, submit }));
             return null;
         }
@@ -3039,6 +3790,10 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // A question on the TV (assistant, MCP, Bluetooth PIN) is answered at the TV: the phone's keys do not count,
         // otherwise a paired phone could say yes to what it asked for itself.
         if (ConfirmationOpen) return;
+        // The profile picker and the profile management are for the person at the TV: no switching, creating or codes from the phone.
+        if (_profileScreen || ProfilePickerPending) return;
+        // A web page's download question too: a file onto this PC is said yes to at the TV, not from the phone.
+        if (_pageDialogs.Values.Any(d => d.Kind == "download")) return;
         if (_window?.IsActive != true || _browsing)
         {
             // The phone's guide button always brings the HUD back (from a game, a login, the browser).
@@ -3064,6 +3819,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             }
             return;
         }
+        // The UI cannot tell these from the controller's: the host remembers who pressed last (see CaptureAsync).
+        _lastInputRemote = true;
         Emit("input", new { type = "down", button });
         Emit("input", new { type = "up", button });
     });
@@ -3359,7 +4116,8 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     {
         if (!GamingServices.IsAllowed(name)) throw new ArgumentException(Strings.Get("hud.cannotPause", name));
         var selected = false;
-        config.Update(c =>
+        // Throws when nothing was saved (also on the stand-in of unusable settings): the answer never reports a selection that is not stored.
+        config.UpdateOrThrow(c =>
         {
             selected = c.CouchServices.RemoveAll(s => s.Equals(name, StringComparison.OrdinalIgnoreCase)) == 0;
             if (selected) c.CouchServices.Add(name);
@@ -3375,6 +4133,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// </summary>
     public async Task SetupServiceTaskAsync(bool policies = true)
     {
+        RefuseWhileConfigFaulted();
         if (policies) RequireFull();
         var status = await AdminService.Ops.StatusAsync(fresh: true);
         if (policies ? status.Health != ServiceHealth.Healthy : !FailClosed.MayRemoveShell(status.State))
@@ -3538,7 +4297,30 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             string message;
             try
             {
-                message = kind == "windows" ? await _updates.InstallWindowsAsync() : await _updates.UpgradeAppsAsync(id);
+                // A line on the downloads page while it runs (Windows Update with the service's percentage).
+                var line = kind == "windows" ? DownloadIds.Windows : DownloadIds.Apps;
+                var name = kind == "windows" ? Strings.Get("downloads.windowsUpdate")
+                    : id is null ? Strings.Get("update.allApps") : _updates.State.Apps.FirstOrDefault(a => a.Id == id)?.Name ?? id;
+                // The line begins only once this run has the update gate: a second call turned away as busy leaves the running line alone.
+                var begun = false;
+                void Started()
+                {
+                    begun = true;
+                    _downloads.Begin(line, kind == "windows" ? DownloadKind.Windows : DownloadKind.App, kind == "windows" ? "windows" : "winget", name);
+                }
+                try
+                {
+                    var run = kind == "windows"
+                        ? await _updates.InstallWindowsAsync((p, done, total) => _downloads.Report(DownloadIds.Windows, p, bytesDone: done, bytesTotal: total), Started)
+                        : await _updates.UpgradeAppsAsync(id, Started);
+                    _downloads.Complete(line, run.Ok, run.Message);
+                    message = run.Message;
+                }
+                catch (Exception ex) when (begun)
+                {
+                    _downloads.Complete(line, false, ex.Message);
+                    throw;
+                }
             }
             catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception or System.Text.Json.JsonException)
             {
@@ -3549,18 +4331,66 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         });
     }
 
-    public Task<IReadOnlyList<HaEntity>> GetHomeEntitiesAsync() => _home.GetEntitiesAsync();
+    /// <summary>
+    /// What the Smart Home tab, the guide menu and the assistant get: the chosen entities in the chosen order, then pinned ones
+    /// (see <see cref="HomeAssistantSelection.InScope"/>). Never the whole house.
+    /// </summary>
+    public async Task<IReadOnlyList<HaEntity>> GetHomeEntitiesAsync()
+    {
+        var all = await _home.GetEntitiesAsync();
+        var c = config.Current;
+        return HomeAssistantSelection.InScope(all, c.HomeAssistantEntities, c.HomeAssistantPinned);
+    }
 
     /// <summary>
-    /// Switches one thing in Home Assistant. The id must look like an entity id and be one Home Assistant lists as switchable;
-    /// locked, only lights, scenes, media players and pinned switches (see <see cref="HomeAssistantPolicy"/>).
+    /// The picker: everything Home Assistant offers for a TV, with rooms (when the token may render templates) and suggestions,
+    /// plus the current choice. Not open on a locked couch (bridge), the choice is the owner's.
+    /// </summary>
+    public async Task<object> GetHomeCatalogAsync()
+    {
+        var (all, registry) = await _home.GetCatalogAsync();
+        // The couch may have locked while Home Assistant answered: the choice stays the owner's.
+        if (Locked) throw new LockedException(Strings.Get("lock.unlockFirst"));
+        var c = config.Current;
+        return new
+        {
+            entities = HomeAssistantSelection.Catalog(all, registry),
+            selected = HomeAssistantSelection.Effective(c.HomeAssistantEntities, c.HomeAssistantPinned),
+            areas = registry.Values.Any(r => r.Area is not null)
+        };
+    }
+
+    /// <summary>The connection test in the settings: one /api/states call, the number of entities Home Assistant offers for a TV.</summary>
+    public async Task<int> TestHomeAssistantAsync() => (await _home.GetEntitiesAsync()).Count;
+
+    /// <summary>Stores the choice for the Smart Home tab (well-formed ids only, at most 500); pins of dropped entities go too.</summary>
+    public IReadOnlyList<string> SetHomeSelection(System.Text.Json.JsonElement ids)
+    {
+        var selection = HomeAssistantSelection.Sanitize(ids);
+        config.UpdateOrThrow(c =>
+        {
+            c.HomeAssistantEntities = selection;
+            c.HomeAssistantPinned = HomeAssistantSelection.PinsAfterChoice(c.HomeAssistantPinned, selection);
+        });
+        return selection;
+    }
+
+    /// <summary>
+    /// Switches one thing in Home Assistant. The id must look like an entity id, be chosen for the Smart Home tab or pinned,
+    /// and be one Home Assistant lists as switchable; locked, only lights, scenes, media players and pinned switches
+    /// (see <see cref="HomeAssistantPolicy"/>).
     /// </summary>
     public async Task ActivateHomeEntityAsync(string entityId)
     {
         if (!HomeAssistantPolicy.IsValidEntityId(entityId)) throw new ArgumentException(Strings.Get("ha.invalidEntity"));
-        if (Locked && !HomeAssistantPolicy.AllowedWhileLocked(entityId, config.Current.HomeAssistantPinned.Contains(entityId)))
+        var pins = HomeAssistantSelection.Sanitize(config.Current.HomeAssistantPinned);
+        if (Locked && !HomeAssistantPolicy.AllowedWhileLocked(entityId, pins.Contains(entityId)))
         {
             throw new LockedException(Strings.Get("ha.lockedEntity"));
+        }
+        if (!HomeAssistantSelection.IsInScope(entityId, config.Current.HomeAssistantEntities, pins))
+        {
+            throw new ArgumentException(Strings.Get("ha.notSelected", entityId));
         }
         var known = await _home.GetEntitiesAsync();
         if (!known.Any(e => e.Id == entityId && e.Controllable)) throw new ArgumentException(Strings.Get("ha.unknownEntity", entityId));
@@ -3573,7 +4403,10 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         var pinned = false;
         config.Update(c =>
         {
+            c.HomeAssistantPinned ??= [];
             pinned = !c.HomeAssistantPinned.Remove(entityId);
+            // Only what is chosen for the tab can go into the guide menu (unpinning always works).
+            if (pinned && !HomeAssistantSelection.Effective(c.HomeAssistantEntities, c.HomeAssistantPinned).Contains(entityId)) pinned = false;
             if (pinned) c.HomeAssistantPinned.Add(entityId);
         });
         return pinned;
@@ -3600,17 +4433,26 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             else
             {
                 LaunchOptions.ParseArguments(string.Join(' ', e.Args));
-                e.Cwd = LaunchOptions.ValidateWorkingDirectory(e.Cwd, e.Path ?? "");
+                if (LaunchOptions.IsScript(e.Path)) LaunchOptions.CheckScriptArguments(e.Args);
+                e.Cwd =LaunchOptions.ValidateWorkingDirectory(e.Cwd, e.Path ?? "");
             }
         }
         var games = entries.Where(e => string.Equals(e.Type, "game", StringComparison.OrdinalIgnoreCase)).ToList();
+        // Nothing new for a switched off area (a game with Gaming off, a website with Browser off).
+        var areas = Areas;
+        foreach (var e in entries)
+        {
+            var web = !string.IsNullOrEmpty(e.Url) ? WebLinks.IsWebUrl(e.Url) : LockedForeground.IsBrowser(Path.GetFileNameWithoutExtension(e.Path ?? ""));
+            if (!areas.On(games.Contains(e) ? FeatureAreas.Games : FeatureAreas.Apps) || (web && !areas.Browser))
+                throw new InvalidOperationException(Strings.Get("areas.off"));
+        }
         var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         foreach (var game in games)
         {
             var ok = !string.IsNullOrWhiteSpace(game.Path) ? GameEntryRules.MayBeGame(game.Path, windows) : GameEntryRules.MayBeGameUrl(game.Url);
             if (!ok) throw new ArgumentException(Strings.Get("entry.notAGame", game.Name));
         }
-        if (games.Count > 0 && config.Current.Parental.Enabled) RequireParentGrant("addGame");
+        if (games.Count > 0 && config.Current.ParentalEnabled) RequireParentGrant("addGame");
         // A new website entry: Edge for known copy-protected streaming services, the couch browser otherwise (unless the page chose).
         WebLinks.Migrate(entries);
         library.AddCustomEntries(entries);
@@ -3653,27 +4495,61 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// Startup parameters and working folder of an own entry, in the edit dialog only: the person at the TV, unlocked, in expert
     /// mode. The assistant, MCP and plugins have no way here (edit_item does not carry them; add_entry shows them on the confirmation).
     /// </summary>
-    public LibraryItem EditLaunch(string id, string? arguments, string? workingDirectory)
+    public LibraryItem EditLaunch(string id, string? arguments, string? workingDirectory) =>
+        RequireLaunchChange(id, () =>
+        {
+            var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+            if (item.Source != "custom" || item.Launch.Kind != LaunchKind.Exe) throw new ArgumentException(Strings.Get("library.notCustom", item.Name));
+            return library.EditLaunch(id, arguments, workingDirectory);
+        });
+
+    /// <summary>
+    /// Changing what an entry starts is running any program in the user's account, under the entry's release and time account. So: a chosen
+    /// profile (not one held at the picker), the unlocked couch, expert mode, and with parental controls on the parents' code for exactly this
+    /// entry (action "startOptions"), for games and apps alike. Only the HUD's own page gets here: not the phone remote, MCP, the assistant or a
+    /// plugin (edit_item carries no start fields; pinned by LaunchOverrideContractTests). The code's grant is checked before the change and used
+    /// up only by a change that passed all its checks: a refused path or parameter leaves it for the corrected try.
+    /// </summary>
+    private T RequireLaunchChange<T>(string id, Func<T> change)
     {
+        RequireProfileChosen();
         RequireUnlocked();
         if (!config.Current.ExpertMode) throw new InvalidOperationException(Strings.Get("entry.launchOptions"));
-        var item = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
-        if (item.Source != "custom" || item.Launch.Kind != LaunchKind.Exe) throw new ArgumentException(Strings.Get("library.notCustom", item.Name));
-        // What a game is given on the command line runs on a locked couch without asking: with parental controls on, the parents' code.
-        if (item.Type == ItemType.Game && config.Current.Parental.Enabled) RequireParentGrant("editType", id);
-        return library.EditLaunch(id, arguments, workingDirectory);
+        // Without a parents' code the unlock above is the approval (as RequireParentGrant).
+        var withCode = config.Current.ParentalEnabled && HasParentCode;
+        if (withCode && !_grant.Fits("startOptions", id)) throw new InvalidOperationException(Strings.Get("parental.codeRequired"));
+        var result = change();
+        if (withCode) _grant.TryConsume("startOptions", id);
+        return result;
+    }
+
+    /// <summary>What the edit menu shows about the start of an entry (expert mode, unlocked: the bridge gives it only then).</summary>
+    public LaunchOptionsView GetLaunchOptions(string id)
+    {
+        RequireUnlocked();
+        return library.GetLaunchOptions(id);
+    }
+
+    /// <summary>Startup parameters, working folder or an own start target (.exe/.bat/.cmd in the install folder) for any entry; see <see cref="RequireLaunchChange{T}"/>.</summary>
+    public LaunchOptionsView SetLaunchOverride(string id, LaunchOverrideChange change)
+    {
+        if (library.Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
+        return RequireLaunchChange(id, () => library.SetLaunchOverride(id, change));
     }
 
     public LibraryItem EditItem(string id, string? name, string? type, bool? hidden)
     {
         // Game or app decides what counts as play time and which rules apply: the parents' code for that.
-        if (type is not null && config.Current.Parental.Enabled && library.Find(id) is { } current
+        if (type is not null && config.Current.ParentalEnabled && library.Find(id) is { } current
             && !string.Equals(current.Type.ToString(), type, StringComparison.OrdinalIgnoreCase)) RequireParentGrant("editType", id);
         // The same rule as for a new entry: no shell, browser or Windows tool as a "game".
+        // An own start target counts too: it is what runs.
+        var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         if (string.Equals(type, "game", StringComparison.OrdinalIgnoreCase) && library.Find(id) is { } target
-            && (target.Launch.Kind == LaunchKind.Exe
-                ? !GameEntryRules.MayBeGame(target.Launch.Target, Environment.GetFolderPath(Environment.SpecialFolder.Windows))
-                : !GameEntryRules.MayBeGameUrl(target.Launch.Target)))
+            && ((target.Launch.Kind == LaunchKind.Exe
+                    ? !GameEntryRules.MayBeGame(target.Launch.Target, windows)
+                    : !GameEntryRules.MayBeGameUrl(target.Launch.Target))
+                || config.Current.Overrides.GetValueOrDefault(id)?.LaunchTarget is { } own && !GameEntryRules.MayBeGame(own, windows)))
             throw new ArgumentException(Strings.Get("entry.notAGame", target.Name));
         return library.EditItem(id, name, type, hidden);
     }
@@ -3696,7 +4572,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // Everything in a watched folder is a game that starts on a locked couch.
         if (!GameEntryRules.MayBeGameFolder(full, Environment.GetFolderPath(Environment.SpecialFolder.Windows)))
             throw new ArgumentException(Strings.Get("entry.notAFolder", full));
-        if (config.Current.Parental.Enabled) RequireParentGrant("addGame");
+        if (config.Current.ParentalEnabled) RequireParentGrant("addGame");
         config.Update(c =>
         {
             if (!c.GameFolders.Any(f => f.Equals(full, StringComparison.OrdinalIgnoreCase))) c.GameFolders.Add(full);
@@ -3726,8 +4602,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     public void SetSkin(string id)
     {
         // A locked couch may change the look, but only to a skin that exists.
-        if (!SkinCatalog.IsKnown(id, ListSkins())) throw new ArgumentException(Strings.Get("tools.noSkin", id));
-        config.Update(c => c.Skin = id);
+        var current = SkinCatalog.MigrateId(id);
+        if (!SkinCatalog.IsKnown(current, ListSkins())) throw new ArgumentException(Strings.Get("tools.noSkin", id));
+        config.Update(c => c.ActiveProfile.Skin = current!);
     }
 
     public void Power(string action)
@@ -3885,11 +4762,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// </summary>
     public object SetIntegrationMode(string mode)
     {
+        RefuseWhileConfigFaulted();
         if (mode is not ("light" or "full")) throw new ArgumentException(Strings.Get("hud.integrationInvalid"));
         var undone = new List<string>();
         if (mode == "light" && Full)
         {
-            if (config.Current.Parental.Enabled) throw new InvalidOperationException(Strings.Get("hud.turnOffParentalFirst"));
+            if (config.Current.ParentalEnabled) throw new InvalidOperationException(Strings.Get("hud.turnOffParentalFirst"));
             RequireUnlocked();
             if (shell.IsInstalledAsShell())
             {
@@ -3901,7 +4779,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 config.UpdateOrThrow(c => c.CouchLock = "off");
                 undone.Add(Strings.Get("hud.undo.lock"));
             }
-            if (config.Current.Parental.Enabled) undone.Add(Strings.Get("hud.undo.parental"));
+            if (config.Current.ParentalEnabled) undone.Add(Strings.Get("hud.undo.parental"));
             _guard.Stop();
             // Light mode: CouchHud does not manage the game clients at all. Nothing is closed, nothing is remembered.
             _clients.Forget();
@@ -3928,7 +4806,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     private bool _browserShown;
     private bool _browsing;
     // The unlock that opened the browser is extended while it is in use, and warned about before it runs out. Set by a person's
-    // input only (controller, HUD bar, opening the browser; MonoNow), never by an event of the page.
+    // input only (controller, HUD bar, typing from the HUD, opening the browser; MonoNow), never by an event of the page.
     private DateTimeOffset _browserInput = DateTimeOffset.MinValue;
     private bool _browserWarned;
 
@@ -3970,40 +4848,69 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     private void WatchBrowserUnlock()
     {
         var now = MonoNow();
+        var wasWarned = _browserWarned;
         if (!_browserShown || _browser is null || !LockOn || _pcMode || _unlockedUntil <= now)
         {
             _browserWarned = false;
-            return;
         }
-        var inputNow = RealInputWithin(BrowserUnlock.InputWindow) || _mouse?.SteeredWithin(BrowserUnlock.InputWindow) == true;
-        var next = BrowserUnlock.Next(now, _unlockedUntil, _browserInput, inputNow, _browserWarned);
-        _unlockedUntil = next.UnlockedUntil;
-        _browserWarned = next.Warned;
-        if (next.Warn) Emit("toast", Strings.Get("browser.closesSoon"));
+        else
+        {
+            var inputNow = RealInputWithin(BrowserUnlock.InputWindow) || _mouse?.SteeredWithin(BrowserUnlock.InputWindow) == true;
+            var next = BrowserUnlock.Next(now, _unlockedUntil, _browserInput, inputNow, _browserWarned);
+            _unlockedUntil = next.UnlockedUntil;
+            _browserWarned = next.Warned;
+            // The toast for the browser in its place; in full screen the page covers the HUD's toasts, so the warning (with its
+            // countdown) is also in the strip at the top that the page cannot paint over (browser state closesInMs).
+            if (next.Warn) Emit("toast", Strings.Get("browser.closesSoon"));
+        }
+        // Shown and gone with the state: up at the warning, away after the extension (or when the browser closed).
+        if (wasWarned != _browserWarned && _browser is not null) Emit("browser", BrowserState());
+    }
+
+    /// <summary>Milliseconds the browser has left while its warning is up, else null (the strip shows it in full screen).</summary>
+    private long? BrowserClosesInMs() =>
+        BrowserUnlock.WarningLeft(MonoNow(), _unlockedUntil, _browserWarned) is { } left ? (long)left.TotalMilliseconds : null;
+
+    /// <summary>
+    /// History switched off: the browser's own history (WebView2 profile) is deleted now if the pane runs, otherwise at its next start
+    /// (BrowserPane deletes it at each start while the setting is off).
+    /// </summary>
+    private void ClearBrowserHistory()
+    {
+        if (_browser is { } pane) _ = pane.ClearHistoryAsync();
     }
 
     private BrowserPane Browser()
     {
         if (_browser is not null) return _browser;
         var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CouchHud", "Browser");
-        var pane = _browser = new BrowserPane(profile, () => !LockOn || IsUnlocked, () => RuntimeStrict);
+        var pane = _browser = new BrowserPane(profile, () => !LockOn || IsUnlocked, () => RuntimeStrict, () => !config.Current.BrowserHistory);
+        // Real mouse or keyboard a moment ago (not CouchHUD's own input): a page may go full screen then.
+        pane.RealInputWithin = RealInputWithin;
         // Title, address, history and sound of the page: shown in the bar. Not use of the browser: a page changes them by itself
         // (a ticking title kept the couch unlocked in 0.4.1/0.4.2), the unlock is extended by a person's input only.
-        pane.PageChanged += () => Emit("browser", BrowserState());
+        pane.PageChanged += EmitBrowserStateSoon;
         // A video in full screen has the whole window; the page is steered by the controller then.
         pane.FullScreenChanged += () =>
         {
             _window?.SetBrowserFullScreen(pane.FullScreen);
-            if (pane.FullScreen) SetBrowserFocus(true);
+            UpdateCursorArea();
+            if (pane.FullScreen)
+            {
+                // An open list or picker of the page would stay above the full-screen page: closed.
+                if (_window?.OwnPopupInFront() is { } popup && popup != IntPtr.Zero) _window.CloseOwnPopup(popup);
+                SetBrowserFocus(true, notify: true);
+            }
             if (pane.ManualFullScreen) Emit("toast", Strings.Get("browser.fullscreenHint"));
             Emit("browser", BrowserState());
         };
         // F6 / Alt+Up on a keyboard: the way back to the bar.
-        pane.BarRequested += () =>
-        {
-            SetBrowserFocus(false);
-            Emit("browserui", "bar");
-        };
+        pane.BarRequested += () => SetBrowserFocus(false, notify: true);
+        pane.DialogRequested += dialog => OnPageDialog(pane, dialog);
+        pane.Notice += (key, arg) => BrowserNotice(key, arg);
+        pane.Crashed += fatal => OnBrowserCrashed(pane, fatal);
+        // Home Assistant's sign-in: the redirect with the code, cancelled in the pane before it loads.
+        pane.SignInRedirect += (url, pageUrl) => OnHaSignInRedirect(pane, url, pageUrl);
         // A TV page (YouTube TV) is steered by keys: the sticks leave the cursor alone, the left stick gives arrow keys.
         pane.TvModeChanged += () =>
         {
@@ -4024,7 +4931,193 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         tvSticks.Start();
         // Parked out of sight until the HUD says where the page goes: a web view starts only inside a window.
         _window?.AttachBrowser(pane);
+        StartBrowserWatchdog(pane);
         return pane;
+    }
+
+    // ---- Browser: the page's state to the HUD, at most once per dispatcher round (a load raises source, title, history and
+    // completion within milliseconds; each one used to send the whole state with the bookmarks).
+
+    private bool _browserStatePending;
+
+    private void EmitBrowserStateSoon()
+    {
+        if (_browserStatePending) return;
+        _browserStatePending = true;
+        Application.Current.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        {
+            _browserStatePending = false;
+            Emit("browser", BrowserState());
+        });
+    }
+
+    // ---- Browser: questions of a page (alert, confirm, prompt, download) are asked in the HUD
+
+    private readonly Dictionary<int, PageDialog> _pageDialogs = [];
+    private int _pageDialogSeq;
+    private static readonly TimeSpan PageDialogTimeout = TimeSpan.FromMinutes(2);
+
+    // When the last page question was answered: its dialog is still closing then (the page hidden under it), and the page's next
+    // question (alert, then confirm) waits for it instead of being refused.
+    private DateTimeOffset _pageDialogAnsweredAt = DateTimeOffset.MinValue;
+
+    private void OnPageDialog(BrowserPane pane, PageDialog dialog)
+    {
+        // Only for the page on screen: a page in the background (another tab, a menu over it) gets no say, its question counts as "no".
+        // After the user left (guide, B on the first page, closed), nothing of the page shows over the HUD until the page is back on screen.
+        var followUp = _pageDialogs.Count > 0 || DateTimeOffset.UtcNow - _pageDialogAnsweredAt < TimeSpan.FromSeconds(2);
+        if (_browser != pane || _pageDialogsMuted || (!_browserShown && !followUp))
+        {
+            dialog.Complete(false);
+            return;
+        }
+        var id = ++_pageDialogSeq;
+        _pageDialogs[id] = dialog;
+        Emit("browserdialog", new { id, kind = dialog.Kind, message = dialog.Message, defaultText = dialog.DefaultText, host = dialog.Host, embedded = dialog.Embedded, extension = dialog.Extension, bytes = dialog.Bytes });
+        // Unanswered (nobody at the couch) it ends as "no", so the page does not wait forever.
+        _ = Task.Delay(PageDialogTimeout).ContinueWith(_ => Ui(() => EndPageDialog(id, false, null, byUser: false)), TaskScheduler.Default);
+    }
+
+    /// <summary>The HUD's answer to a page's question; unknown or already answered ids are ignored.</summary>
+    public void AnswerBrowserDialog(int id, bool ok, string? text) => EndPageDialog(id, ok, text, byUser: true);
+
+    private void EndPageDialog(int id, bool ok, string? text, bool byUser)
+    {
+        if (!_pageDialogs.Remove(id, out var dialog)) return;
+        // Only a real answer lets the page's next question follow (alert, then confirm); a cancel does not.
+        if (byUser) _pageDialogAnsweredAt = DateTimeOffset.UtcNow;
+        Emit("browserdialog", new { id, closed = true });
+        dialog.Complete(ok, text, byUser);
+    }
+
+    // The user left the page (guide, back to the HUD, closed): its questions are refused unseen until it is on screen again.
+    private bool _pageDialogsMuted;
+
+    /// <summary>Every open question of the page ends as "no"; <paramref name="leaving"/>: the user left, later ones are refused unseen.</summary>
+    private void CancelPageDialogs(bool leaving = false)
+    {
+        if (leaving)
+        {
+            _pageDialogsMuted = true;
+            _pageDialogAnsweredAt = DateTimeOffset.MinValue;
+        }
+        foreach (var id in _pageDialogs.Keys.ToList()) EndPageDialog(id, false, null, byUser: false);
+    }
+
+    // ---- Browser: notes about what a page wanted (app links, sign-in, downloads), at most one of a kind every few seconds
+
+    private readonly Dictionary<string, DateTimeOffset> _browserNoticeAt = [];
+
+    // ---- Browser: the HUD's idle timer sees no button while the page has the controller; it is told now and then that someone is there.
+
+    private DateTimeOffset _browserInputSent = DateTimeOffset.MinValue;
+
+    private void NoteBrowserInput()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _browserInputSent < TimeSpan.FromSeconds(15)) return;
+        _browserInputSent = now;
+        Emit("browserui", "activity");
+    }
+
+    private void BrowserNotice(string key, string arg)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (_browserNoticeAt.TryGetValue(key, out var at) && now - at < TimeSpan.FromSeconds(4)) return;
+        _browserNoticeAt[key] = now;
+        Emit("toast", Strings.Get(key, arg));
+    }
+
+    private void OnBrowserCrashed(BrowserPane pane, bool fatal)
+    {
+        if (_browser != pane) return;
+        CancelPageDialogs();
+        if (fatal)
+        {
+            // The browser's own process is gone (or the page crashes over and over): closed, the HUD has the controller.
+            Console.Error.WriteLine("[browser] closed after a crash");
+            CloseBrowser(false);
+            Emit("toast", Strings.Get("browser.crashed"));
+            return;
+        }
+        Emit("toast", Strings.Get("browser.crashReloaded"));
+        pane.Reload();
+    }
+
+    // ---- Browser: the watchdog. Twice a second it checks that the controller's state is consistent (the page has the controller
+    // only while it is on screen, with the cursor running) and every two seconds that the page still answers.
+
+    private System.Windows.Threading.DispatcherTimer? _browserWatch;
+    private int _browserPingMisses;
+    private int _browserWatchTicks;
+    private bool _browserPinging;
+
+    private void StartBrowserWatchdog(BrowserPane pane)
+    {
+        _browserWatch?.Stop();
+        _browserPingMisses = 0;
+        var timer = _browserWatch = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        timer.Tick += async (_, _) =>
+        {
+            if (_browser != pane)
+            {
+                timer.Stop();
+                return;
+            }
+            // The page's place on the screen, again: the window may have moved to another monitor or scale without telling.
+            UpdateCursorArea();
+            // Reading with the stick only (no button): someone is there, no screensaver.
+            if (_browsing && _mouse?.SteeredWithin(TimeSpan.FromSeconds(15)) == true) NoteBrowserInput();
+            switch (BrowserWatchdog.Check(_browsing, _browserShown, _mouse?.Active == true))
+            {
+                case BrowserRepair.ReturnToHud:
+                    Console.Error.WriteLine("[browser] watchdog: controller on a hidden page, back to the HUD");
+                    SetBrowserFocus(false, notify: true);
+                    break;
+                case BrowserRepair.RestartCursor:
+                    Console.Error.WriteLine("[browser] watchdog: cursor mode had stopped, started again");
+                    _mouse?.Start();
+                    if (_mouse is not null) _mouse.Paused = pane.TvMode;
+                    break;
+            }
+            if (++_browserWatchTicks % 4 != 0 || !_browserShown || _pageDialogs.Count > 0 || _browserPinging) return;
+            _browserPinging = true;
+            try
+            {
+                if (await pane.PingAsync(TimeSpan.FromSeconds(3)))
+                {
+                    _browserPingMisses = 0;
+                }
+                else if (++_browserPingMisses >= BrowserWatchdog.HungAfter && _browser == pane)
+                {
+                    Console.Error.WriteLine("[browser] watchdog: the page does not answer");
+                    _browserPingMisses = 0;
+                    CancelPageDialogs();
+                    // Counts like a crash: loaded again once, the second time for the same address the "page hangs" page.
+                    if (pane.RecoverFromHang()) OnBrowserCrashed(pane, true);
+                    else Emit("toast", Strings.Get("browser.reloaded"));
+                }
+            }
+            finally
+            {
+                _browserPinging = false;
+            }
+        };
+        timer.Start();
+    }
+
+    /// <summary>The cursor stays on the page while the controller steers it.</summary>
+    private void UpdateCursorArea()
+    {
+        if (_mouse is null) return;
+        var area = _browsing ? _window?.BrowserScreenBounds() : null;
+        if (area != _mouse.Area) _mouse.Area = area;
+    }
+
+    /// <summary>The window moved, changed its size or its scale: the page's area on the screen is a new one.</summary>
+    public void BrowserGeometryChanged()
+    {
+        if (_browsing) UpdateCursorArea();
     }
 
     /// <summary>The HUD's Browser tab says where its page area is (CSS pixels, which are the window's device-independent pixels); hidden when the tab is not in front or a menu covers it.</summary>
@@ -4037,40 +5130,65 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             return;
         }
         _browserShown = true;
+        _pageDialogsMuted = false;
         _window?.PlaceBrowser(_browser, x, y, width, height);
+        UpdateCursorArea();
     }
 
     private void HideBrowserPane()
     {
         if (_browser is null || !_browserShown) return;
         _browserShown = false;
+        // Hidden for anything but the page's own question (another tab, a menu, home): its questions wait for it to be back on screen.
+        if (_pageDialogs.Count == 0) _pageDialogsMuted = true;
         SetBrowserFocus(false);
-        // Like a tab in the background: what plays stops.
+        // (A page's open question stays: its own dialog in the HUD is what covers the page right now.)
+        // Like a tab in the background: what plays stops (picture-in-picture too), and full screen ends with the page out of sight.
         _browser.PauseMedia();
+        if (_browser.FullScreen) _browser.ExitFullScreen();
         _window?.HideBrowser();
     }
 
-    /// <summary>Who gets the controller: the page (sticks are the mouse, buttons are browser keys) or the HUD's bar.</summary>
-    public void SetBrowserFocus(bool page)
+    /// <summary>
+    /// Who gets the controller: the page (sticks are the mouse, buttons are browser keys) or the HUD's bar. Returns who has it now (the
+    /// page only while it is on screen). <paramref name="notify"/>: the change comes from the host (a button on the page, full screen,
+    /// the watchdog), so the HUD is told; a change the HUD asked for gets its answer as the return value.
+    /// </summary>
+    public bool SetBrowserFocus(bool page, bool notify = false)
     {
         if (page && (_browser is null || !_browserShown)) page = false;
         if (_window is not null) _window.BrowserPageFocus = page;
-        if (_browsing == page) return;
+        if (_browsing == page)
+        {
+            // Asked again for the page (Enter after a mouse click beside it): the keyboard focus goes back into the page.
+            if (page)
+            {
+                _browser!.FocusPage();
+                _window?.RaiseBrowser();
+            }
+            return page;
+        }
         _browsing = page;
         if (page)
         {
-            _mouse?.Start();
-            if (_mouse is not null) _mouse.Paused = _browser!.TvMode;
             // No extension of the unlock here: a page's full screen gives it the controller too. The person's input that led here
             // (controller, HUD bar, keyboard, mouse) counts by itself.
+            UpdateCursorArea();
+            _mouse?.Start();
+            if (_mouse is not null) _mouse.Paused = _browser!.TvMode;
+            // The cursor where the page is, so the first A clicks on the page and not on the HUD around it.
+            if (_browser!.TvMode is false) _mouse?.CenterIfOutside();
             _browser!.FocusPage();
             _window?.RaiseBrowser();
         }
         else
         {
             _mouse?.Stop();
+            UpdateCursorArea();
             _window?.FocusHud();
         }
+        if (notify) Emit("browserui", page ? "page" : "bar");
+        return page;
     }
 
     /// <summary>The HUD bar's buttons.</summary>
@@ -4123,22 +5241,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// Typed text becomes an address or a search: "heise.de" opens the site,
     /// "elden ring tipps" searches with DuckDuckGo (no tracking, no account).
     /// </summary>
-    internal static string ToUrl(string text)
-    {
-        text = text.Trim();
-        if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https") return uri.ToString();
-        if (!text.Contains(' ') && text.Contains('.') && Uri.TryCreate("https://" + text, UriKind.Absolute, out var guessed)) return guessed.ToString();
-        return "https://duckduckgo.com/?q=" + Uri.EscapeDataString(text);
-    }
-
-    /// <summary>"heise.de" typed without a scheme (not a search, not a full address): https is tried first and http only when the server speaks no TLS or refuses the connection (never on certificate errors).</summary>
-    internal static bool IsGuessedAddress(string? text)
-    {
-        text = text?.Trim() ?? "";
-        if (text.Length == 0 || text.Contains(' ')) return false;
-        if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https") return false;
-        return text.Contains('.');
-    }
+    internal static string ToUrl(string text) => BrowserAddress.Parse(text).Url;
 
     /// <summary>The HUD's browser tile or address field (bridge `openBrowser`): a person opened the page.</summary>
     public async Task OpenBrowserFromHudAsync(string? text)
@@ -4165,12 +5268,17 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     {
         // Web pages can open Windows file dialogs (upload, save as PDF), a way out of the couch.
         RequireUnlocked();
+        // The single way into the couch browser: with Browser switched off nothing opens it (news links, plugins, the Home Assistant sign-in).
+        RequireArea(FeatureAreas.Browser);
+        // \\server\share or C:\…: no files in the couch browser, and such a path does not go to a search engine either.
+        if (BrowserAddress.IsLocalPath(text)) throw new ArgumentException(Strings.Get("browser.localPath"));
         var browser = Browser();
         try
         {
             if (!string.IsNullOrWhiteSpace(text) || browser.Url.Length == 0)
             {
-                await browser.OpenAsync(ToUrl(string.IsNullOrWhiteSpace(text) ? "https://duckduckgo.com/" : text), config.Current.BrowserZoom, IsGuessedAddress(text));
+                var target = BrowserAddress.Parse(text);
+                await browser.OpenAsync(target.Url, config.Current.BrowserZoom, target.Guessed);
             }
         }
         catch
@@ -4197,8 +5305,14 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     private void CloseBrowser(bool bringFront)
     {
         if (_browser is null) return;
+        // A sign-in to Home Assistant ends with its page: a code arriving later is not taken.
+        _haLogin.Cancel();
+        _haSignInPage = null;
+        CancelPageDialogs(leaving: true);
+        _typing = null;
         SetBrowserFocus(false);
         _browserShown = false;
+        _browserWatch?.Stop();
         _window?.RemoveBrowser();
         _browser = null;
         Emit("browser", BrowserState());
@@ -4210,87 +5324,225 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     private void LeaveBrowser(string? target)
     {
         HideBrowserPane();
+        // Whatever the page still asks: "no", the user left; and nothing new until the page is on screen again.
+        CancelPageDialogs(leaving: true);
+        _browser?.EndPictureInPictureWindow();
         _mouse?.Stop();
         ShowHud(target);
     }
 
-    /// <summary>Controller on the page: sticks are the mouse (on a TV page the keys), the rest are browser keys.</summary>
-    private bool OnBrowserButton(string button)
+    /// <summary>
+    /// Controller on the page, by the one rule in BrowserInput: the left stick is the cursor (on a TV page the keys), the d-pad gives
+    /// arrow keys, A clicks, B goes back, the guide button always leads out. Keys go into the page through the web view (not to
+    /// whatever window has the keyboard focus).
+    /// </summary>
+    private void OnBrowserButton(string button, bool stickOnly)
     {
         var browser = _browser!;
-        // Full screen: the View button ends it, everything else belongs to the video page.
-        if (browser.FullScreen && button is "back" or "start")
+        // A popup of the page's web view in front (a select list, a picker): B and guide close it first.
+        if (button is "b" or "guide" && _window is { IsActive: false } own && own.OwnPopupInFront() is var popup && popup != IntPtr.Zero)
         {
-            browser.ExitFullScreen();
-            return true;
+            own.CloseOwnPopup(popup);
+            if (button == "b") return;
         }
-        // A TV page is steered by keys: arrows, Enter, Escape.
-        if (browser.TvMode && button is "up" or "down" or "left" or "right" or "a" or "b")
+        var action = BrowserInput.Route(button, stickOnly, new BrowserPadContext(browser.TvMode, browser.FullScreen, browser.CanGoBack));
+        switch (action)
         {
-            browser.TvButton(button);
-            return true;
-        }
-        switch (button)
-        {
-            case "guide":
+            case BrowserPadAction.LeaveToHome:
                 LeaveBrowser("home");
-                return true;
-            case "y":
+                break;
+            case BrowserPadAction.ToBar:
+                // The View or Menu button: the controller goes to the HUD's bar above the page.
+                SetBrowserFocus(false, notify: true);
+                break;
+            case BrowserPadAction.ExitFullScreen:
+                browser.ExitFullScreen();
+                break;
+            case BrowserPadAction.Address:
                 // The address is typed in the HUD, with the on-screen keyboard and the phone.
                 SetBrowserFocus(false);
                 Emit("browserui", "address");
-                return true;
-            case "b":
-                // Back in the history, and out of the browser when there is none (back to where the link was).
-                if (browser.CanGoBack)
-                {
-                    browser.GoBack();
-                }
-                else
-                {
-                    SetBrowserFocus(false);
-                    Emit("browserui", "exit");
-                }
-                return true;
-            case "up":
-            case "back":
-            case "start":
-                // Up from the page (or the View button): the controller goes to the HUD's bar above it.
+                break;
+            case BrowserPadAction.TypeText:
+                _ = TypeIntoPageAsync(browser);
+                break;
+            case BrowserPadAction.GoBack:
+                browser.GoBack();
+                break;
+            case BrowserPadAction.Exit:
+                // Out of the browser when there is no history (back to where the link was).
                 SetBrowserFocus(false);
-                Emit("browserui", "bar");
-                return true;
-            case "lb":
+                Emit("browserui", "exit");
+                break;
+            case BrowserPadAction.ZoomOut:
                 SetBrowserZoom(browser.Zoom - 10);
-                return true;
-            case "rb":
+                break;
+            case BrowserPadAction.ZoomIn:
                 SetBrowserZoom(browser.Zoom + 10);
-                return true;
+                break;
+            case BrowserPadAction.Click:
+                ClickOnPage();
+                break;
+            case BrowserPadAction.TvKey:
+                browser.TvButton(button);
+                break;
+            case BrowserPadAction.Ignore:
+                break;
             default:
-                return false;
+                browser.PageKey(action);
+                break;
         }
+    }
+
+    /// <summary>
+    /// A on the page: a left click, but fail-closed. Only while the page's area is known, the cursor is inside it and the window under
+    /// the cursor is this one (its web view, its popup); a click never lands on another program or on the HUD around the page.
+    /// </summary>
+    private void ClickOnPage()
+    {
+        UpdateCursorArea();
+        if (_mouse?.Area is not { } area || _window is not { } window)
+        {
+            Console.Error.WriteLine("[browser] click dropped: the page's area is not known");
+            return;
+        }
+        // The cursor elsewhere (a real mouse moved it off the page): first onto the page, the next A clicks.
+        if (_mouse.CenterIfOutside()) return;
+        if (!ControllerMouse.CursorPosition(out var x, out var y) || !area.Contains(x, y) || !window.OwnsPoint(x, y))
+        {
+            Console.Error.WriteLine("[browser] click dropped: not over the page");
+            return;
+        }
+        _browser?.NoteInput();
+        ControllerMouse.LeftClick();
+    }
+
+    // The field X was pressed on: its page (origin and document) and whether it was secret. Text goes only there, once.
+    private (BrowserPane Pane, string Origin, int Document, bool Secret)? _typing;
+
+    /// <summary>X on the page: the on-screen keyboard in the HUD types into the page's focused field (a password field: never from the phone).</summary>
+    private async Task TypeIntoPageAsync(BrowserPane browser)
+    {
+        var field = await browser.FocusedFieldAsync();
+        if (_browser != browser) return;
+        if (field == "none")
+        {
+            BrowserNotice("browser.noField", "");
+            return;
+        }
+        // A password, a frame (its field cannot be seen) or anything unclear: masked, and never from the phone.
+        var secret = field != "text";
+        var (origin, document) = browser.TypingTarget();
+        _typing = (browser, origin, document, secret);
+        SetBrowserFocus(false);
+        Emit("browserui", new { type = "typing", secret });
+    }
+
+    /// <summary>
+    /// Text from the HUD's on-screen keyboard into the page's focused field; with <paramref name="enter"/> Enter after it. Only into the
+    /// page and document X was pressed on (a redirect meanwhile, another site: nothing is inserted), and only when the field there is
+    /// still one to type into, of the kind it was (not a password field now where a plain one was).
+    /// </summary>
+    public async Task BrowserTypeAsync(string text, bool enter)
+    {
+        RequireUnlocked();
+        var typing = _typing;
+        _typing = null;
+        if (_browser is not { } browser || typing is not { } target || target.Pane != browser) return;
+        // Text from the HUD's on-screen keyboard, asked for with X on the page: a person uses the browser.
+        _browserInput = MonoNow();
+        if (text.Length > 4000) text = text[..4000];
+        if (browser.TypingTarget() != (target.Origin, target.Document))
+        {
+            Emit("toast", Strings.Get("browser.typeMoved"));
+            return;
+        }
+        var field = await browser.FocusedFieldAsync();
+        if (_browser != browser || browser.TypingTarget() != (target.Origin, target.Document))
+        {
+            Emit("toast", Strings.Get("browser.typeMoved"));
+            return;
+        }
+        if (field == "none" || (field != "text" && !target.Secret))
+        {
+            Emit("toast", Strings.Get("browser.typeMoved"));
+            return;
+        }
+        if (text.Length > 0) await browser.InsertTextAsync(text);
+        if (enter && _browser == browser) browser.PageKey(BrowserPadAction.Enter);
     }
 
     public object SetBrowserZoom(int zoom)
     {
         zoom = Math.Clamp(zoom, 50, 300);
-        config.Update(c => c.BrowserZoom = zoom);
+        // The pane at once; the file is written by the config's own update (one small JSON write).
         if (_browser is not null) _browser.Zoom = zoom;
+        if (config.Current.BrowserZoom != zoom) config.Update(c => c.BrowserZoom = zoom);
         return BrowserState();
     }
 
     public object BrowserState() => new
     {
         open = _browser?.Url.Length > 0,
-        url = _browser?.Url ?? "",
+        url = ShownBrowserUrl(),
+        // Signing in to Home Assistant (until the browser closes, also after the sign-in ran out): the HUD keeps the page out of its
+        // recent sites.
+        signIn = _haSignInPage is not null,
         title = _browser?.PageTitle ?? "",
         canGoBack = _browser?.CanGoBack == true,
         canGoForward = _browser?.CanGoForward == true,
         fullScreen = _browser?.FullScreen == true,
+        playing = _browser?.Playing == true,
         failed = _browser?.Failed == true,
         tv = _browser?.TvMode == true,
         zoom = config.Current.BrowserZoom,
-        bookmarks = config.Current.Bookmarks
+        bookmarks = config.Current.Bookmarks,
+        // The recent sites are the HUD's own list; it shows titles and addresses only when recentHidden is false.
+        locked = Locked,
+        recentHidden = BrowserRecentHidden,
+        // Off: the HUD keeps no recent sites at all and clears the list it has.
+        history = config.Current.BrowserHistory,
+        // Hidden only by parental controls: the start page offers the parents' code (RevealBrowserRecent).
+        recentNeedsParent = BrowserRecentPrivacy.NeedsParent(Locked, config.Current.ParentalEnabled, _browserRecentShown),
+        // The unlock runs out: the warning with its countdown (the HUD counts down from here), null when there is none.
+        closesInMs = BrowserClosesInMs()
     };
+
+    /// <summary>The page's address for the bar; Home Assistant's pages during a sign-in without query (the state stays off the screen).</summary>
+    private string ShownBrowserUrl()
+    {
+        var url = _browser?.Url ?? "";
+        return _haSignInPage is { } root && HomeAssistantLogin.SameOrigin(url, root) ? HomeAssistantLogin.Shown(url) : url;
+    }
+
+    private bool BrowserRecentHidden => BrowserRecentPrivacy.Hidden(Locked, config.Current.ParentalEnabled, _browserRecentShown);
+
+    /// <summary>
+    /// The browser start page learns about every change of the lock state and of parental controls (the recent sites follow both).
+    /// Called on every lock change, by the session timer (parental controls switched by any way) and when the parents' code shows them.
+    /// </summary>
+    private void SyncBrowserRecent()
+    {
+        var now = (BrowserRecentHidden, BrowserRecentPrivacy.NeedsParent(Locked, config.Current.ParentalEnabled, _browserRecentShown));
+        if (_browserRecentSent == now) return;
+        _browserRecentSent = now;
+        Emit("browser", BrowserState());
+    }
+
+    /// <summary>
+    /// Shows the recent sites with parental controls on: needs the parents' code given for exactly this (used up), without a parents'
+    /// code the unlock. For this session only; the locked couch hides them anyway.
+    /// </summary>
+    public object RevealBrowserRecent()
+    {
+        RequireUnlocked();
+        // Without parental controls there is nothing to release: no flag that could outlive a later switch-on (fail-closed).
+        if (!config.Current.ParentalEnabled) return BrowserState();
+        RequireParentGrant(BrowserRecentPrivacy.ParentAction);
+        _browserRecentShown = true;
+        SyncBrowserRecent();
+        return BrowserState();
+    }
 
     public object AddBookmark(string name, string url)
     {
@@ -4318,9 +5570,10 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// A couch lock or parental controls are configured (whatever the mode or shell state): a web view whose machine-wide runtime will
     /// not start must not fall back to another runtime then (WebViewRuntimeLocator.StartAsync).
     /// </summary>
-    public bool RuntimeStrict => config.Current.CouchLock != "off" || config.Current.Parental.Enabled;
+    public bool RuntimeStrict => config.Current.CouchLock != "off" || config.Current.ParentalEnabled;
 
-    private bool IsUnlocked => !LockOn || _pcMode || MonoNow() < _unlockedUntil || MonoNow() < _setupHoldUntil;
+    // A setup hold granted before the settings became unusable does not keep the couch open on the stand-in (security re-review).
+    private bool IsUnlocked => !LockOn || _pcMode || MonoNow() < _unlockedUntil || (config.Fault is null && MonoNow() < _setupHoldUntil);
 
     // The console setup runs with the couch open: its lock step would otherwise lock the HUD right away and ask for the code in the
     // middle of the setup. Only from an unlocked state, and it ends by itself (a setup page that dies must not leave the couch open).
@@ -4332,6 +5585,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         if (on)
         {
             RequireUnlocked();
+            // On the stand-in of broken settings nothing is set up: the console setup would set a lock and codes over settings it cannot save.
+            // Not a LockedException: the page takes that one quietly (a locked couch), this refusal must be seen, and the setup stops on it.
+            if (config.Fault is not null) throw new InvalidOperationException(Strings.Get("config.notSavedFault"));
             _setupHoldUntil = MonoNow().Add(SetupHold);
         }
         else
@@ -4339,6 +5595,17 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             _setupHoldUntil = DateTimeOffset.MinValue;
         }
         SyncLockState();
+    }
+
+    /// <summary>
+    /// While config.json is unusable (the stand-in only locks) nothing that changes the codes, the lock mode, the parental controls, the
+    /// shell or the service's state is done (security re-review L-b): the config refuses the change, so a service call before it would leave
+    /// service and config apart, and the call would report success. Refused before any permission is used up and before any service call;
+    /// an InvalidOperationException the page shows (not a LockedException, which it takes quietly as "locked").
+    /// </summary>
+    private void RefuseWhileConfigFaulted()
+    {
+        if (config.Fault is not null) throw new InvalidOperationException(Strings.Get("config.notSavedFault"));
     }
 
     /// <summary>The couch lock is on and not opened right now: bridge and tools allow only harmless calls.</summary>
@@ -4384,8 +5651,14 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
                 _lastLocked = locked;
                 if (!first) ApplyCompetitorSuppression();
                 plugins.Events.RaiseLockChanged(locked);
+                // No way back to the profile picker here (review N3): the couch also locks on a game start, on the way back to the HUD and
+                // when the two-minute unlock ends, with the same person still there. The picker returns with the screensaver, the display
+                // going off and a restart (ProfileIdle).
             }
             if (locked) CloseBrowserWhenLocked();
+            // Locked again: the parents' release of the recent sites is over.
+            if (Locked) _browserRecentShown = false;
+            SyncBrowserRecent();
         }
         catch (Exception ex)
         {
@@ -4394,7 +5667,12 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     }
 
     /// <summary>The screensaver's last step: the TV panel goes dark until the next input.</summary>
-    public void DisplayOff() => Display.Off(_window);
+    public void DisplayOff()
+    {
+        Display.Off(_window);
+        // Whoever comes back to the TV may be someone else: a protected profile goes back to the picker.
+        ProfileIdle();
+    }
 
     /// <summary>The UI saw keyboard or mouse input after the display went off: the panel is on again.</summary>
     public void DisplayOn() => Display.MarkAwake();
@@ -4411,6 +5689,9 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         return new
         {
             couchLock = config.Current.CouchLock,
+            // The settings are broken or gone after an earlier install (the locked stand-in): the setup assistant and the console setup do not
+            // start. Asked here as well as in systemInfo, which the page reads only once at its start.
+            configFault = config.Fault is not null,
             hasPasscode = config.Current.PasscodeHash.Length > 0,
             blockTaskManager = config.Current.BlockTaskManager,
             unlocked = IsUnlocked,
@@ -4426,7 +5707,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
             // The codes go through the CouchHUD service (the installed copy); false: the config keeps the hash and the shell checks it.
             codesInService = ServiceCodes.Expected && !AdminService.DevMayRelax(dev),
             // A parents' code in the service that this shell did not set (no parental controls here): someone else enrolled it.
-            parentCodeUnknown = CodeFlow.UnknownParentCode(ServiceCodes.Known, config.Current.Parental.Enabled),
+            parentCodeUnknown = CodeFlow.UnknownParentCode(ServiceCodes.Known, config.Current.ParentalEnabled),
             // The service holds a code of its own that the local one was not taken over (review L-c).
             codeConflict = ServiceCodes.Conflict,
             // The service's Windows-unlock grant is at hand (Windows lock mode): a new couch code may be set with it (finding H1).
@@ -4581,7 +5862,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         {
             // A lock of 0.4.0 not confirmed yet: the Windows unlock alone releases nothing of it; an administrator confirms the Windows sign-in
             // as its lock first (security review H-1). The unlock is not used up by the refusal before, so the grant comes after.
-            if (ServiceCodes.Known?.LegacyLock != false) await ServiceCodes.ConfirmLegacyWindowsAsync();
+            if (ServiceCodes.Known?.LegacyLock != false) await ServiceCodes.ConfirmLegacyWindowsAsync(config);
             var grant = await AdminService.Ops.RequestUnlockGrantAsync();
             if (!grant.Ok) Console.Error.WriteLine($"[lock] no grant for the Windows unlock: {grant}");
         }
@@ -4628,14 +5909,16 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public async Task<object> SetPasscodeAsync(string[] sequence)
     {
+        RefuseWhileConfigFaulted();
         // A new code is the key to the couch: never from a locked HUD, also not for the very first code.
-        if (config.Current.Parental.Enabled) RequireParentGrant("passcode");
+        if (config.Current.ParentalEnabled) RequireParentGrant("passcode");
         else RequireUnlocked();
         Passcode.Validate(sequence);
+        RefuseChildCode(sequence);
         if (ServiceCodes.Expected && !AdminService.DevMayRelax(dev))
         {
             // The service keeps the code (and, with parental controls, the same buttons as the parents' code); the config only the marker.
-            await ServiceCodes.StoreAsync(sequence, config.Current.Parental.Enabled);
+            await ServiceCodes.StoreAsync(sequence, config.Current.ParentalEnabled);
             config.Update(c => c.PasscodeHash = Passcode.HeldByService);
             // The answer says what the service holds now (the setup assistant checks the code lock by it), like SetParentCode.
             await ServiceCodes.RefreshAsync();
@@ -4669,13 +5952,20 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// <param name="sequence">A new code, when the code lock is switched on without one the service holds: it goes along in the same step.</param>
     public async Task<object> SetCouchLockAsync(string mode, string[]? sequence = null)
     {
-        if (sequence is not null) Passcode.Validate(sequence);
+        RefuseWhileConfigFaulted();
         if (mode is not ("off" or "code" or "windows")) throw new ArgumentException(Strings.Get("hud.lockInvalid"));
         if (mode != "off") RequireFull();
         if (mode == "windows") RequirePasswordForWindowsLock();
-        if (config.Current.Parental.Enabled) RequireParentGrant(sequence is null ? "lockMode" : "lockModeCode");
+        if (config.Current.ParentalEnabled) RequireParentGrant(sequence is null ? "lockMode" : "lockModeCode");
         else RequireUnlocked();
-        if (mode == "off" && config.Current.Parental.Enabled) throw new InvalidOperationException(Strings.Get("hud.turnOffParentalFirst2"));
+        // Only after the permission (review NEU-2): before it, comparing with the children's codes would test a child's code without
+        // its wrong-code brake on a locked couch.
+        if (sequence is not null)
+        {
+            Passcode.Validate(sequence);
+            RefuseChildCode(sequence);
+        }
+        if (mode == "off" && config.Current.ParentalEnabled) throw new InvalidOperationException(Strings.Get("hud.turnOffParentalFirst2"));
         if (mode == "code" && config.Current.PasscodeHash.Length == 0 && sequence is null) throw new InvalidOperationException(Strings.Get("hud.setCodeFirst"));
         var service = ServiceCodes.Expected && !AdminService.DevMayRelax(dev);
         if (!service && sequence is not null)
@@ -4686,14 +5976,14 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         else if (service && sequence is not null && config.Current.CouchLock != "off")
         {
             // A lock is on (the Windows sign-in): the code first, with that lock's proof, then the switch.
-            await ServiceCodes.StoreAsync(sequence, config.Current.Parental.Enabled);
+            await ServiceCodes.StoreAsync(sequence, config.Current.ParentalEnabled);
             config.Update(c => c.PasscodeHash = Passcode.HeldByService);
             await ServiceCodes.SetModeAsync(mode);
         }
         else if (service && sequence is not null)
         {
             // From no lock: mode and code in one step (codes enrolled at an open couch do not survive a lock being switched on).
-            await ServiceCodes.SetModeAsync(mode, sequence, config.Current.Parental.Enabled);
+            await ServiceCodes.SetModeAsync(mode, sequence, config.Current.ParentalEnabled);
             config.Update(c => c.PasscodeHash = Passcode.HeldByService);
         }
         else if (service && mode != config.Current.CouchLock)
@@ -4735,6 +6025,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
 
     public object SetBlockTaskManager(bool on)
     {
+        RefuseWhileConfigFaulted();
         if (on) RequireFull();
         RequireUnlocked();
         config.Update(c => c.BlockTaskManager = on);
@@ -4762,6 +6053,7 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
     /// </summary>
     public async Task<object> EnableAutoLogonAsync(string password, bool acceptNoLock)
     {
+        RefuseWhileConfigFaulted();
         RequireFull();
         RequireUnlocked();
         // An account without a password signs in without one: nothing to store, and nothing to explain as an error.
@@ -4782,13 +6074,16 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         if (mode is not ("off" or "allow")) throw new ArgumentException(Strings.Get("hud.offOrAllow"));
         if (mode == "allow")
         {
+            RefuseWhileConfigFaulted();
             RequireFull();
             RequireUnlocked();
             if (!AccountHasPassword()) throw new InvalidOperationException(Strings.Get("autologon.notNeeded"));
         }
         // "allow" (password sign-in next to Windows Hello) is part of switching the automatic sign-in on now.
         if (mode == "allow") throw new InvalidOperationException(Strings.Get("autologon.allowViaSetup"));
-        await AutoLogon.TurnOffAsync();
+        // "off" also on the stand-in of unusable settings: the safe direction, and a step of the way back. The config's flag cannot follow
+        // then (nothing is saved); the service's state is what counts, and a stale "configured" only offers switching it off again.
+        await AutoLogon.TurnOffAsync(config.Current.AutoLogonConfigured);
         if (mode == "off") config.Update(c => c.AutoLogonConfigured = false);
         SignInLock.SyncInBackground(dataDir);
         return GetSecurity();
@@ -4807,11 +6102,17 @@ public sealed class Hud(ConfigStore config, LibraryService library, ArtworkResol
         // The keyboard hook first: nothing may wait on it while the rest shuts down.
         _mediaKeys?.Dispose();
         _bluetoothRecovery?.Dispose();
+        _batteries?.Dispose();
         _bluetooth.Dispose();
         // Ends a running gaming lease first (at most about 2 s), then lets go of the connections.
         if (_caseHudLazy is { IsValueCreated: true } caseHudManager) caseHudManager.Value.Dispose();
+        if (_vpnLazy is { IsValueCreated: true } vpnManager) vpnManager.Value.Dispose();
+        if (_tvLazy is { IsValueCreated: true } tvManager) tvManager.Value.Dispose();
         _parentalController?.Service.Flush();
         GamePause.ResumeAll();
+        // A hidden start script waiting on input would outlive CouchHUD unseen: exactly that cmd.exe goes.
+        Launcher.EndWaitingScripts();
+        _saveBackupStop.Cancel();
         _quitting = true;
         _guard.Stop();
         _foreground?.Dispose();

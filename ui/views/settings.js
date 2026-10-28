@@ -8,12 +8,14 @@
 import { fmtDateTime, fmtNumber, fmtPercent, t } from '../core/i18n.js';
 import { iconEl } from '../core/glyph-icons.js';
 import { api } from '../core/api.js';
-import { el, entriesLabel, keepInView, setFocused } from '../core/dom.js';
+import { el, entriesLabel, formatSize, keepInView, setFocused } from '../core/dom.js';
 import { setBackground } from '../core/art.js';
 import { attempt, toast } from '../core/feedback.js';
 import { reloadLibrary } from '../core/library.js';
 import { currentView, move, push, render, renderHints } from '../core/nav.js';
 import { state } from '../core/state.js';
+import { glyph, setPadGlyphs } from '../core/skins.js';
+import { PAD_GLYPH_SETTINGS } from '../core/pad-glyphs.js';
 import { SOUND_SETS, setAudioMode, setMusicVolume, setSoundSet, setSoundVolume, sound } from '../sound.js';
 import { setHdrMode } from '../core/hdr.js';
 import { setPointer } from '../components/mouse.js';
@@ -35,6 +37,8 @@ import { openSetupWizard } from './setup-wizard.js';
 import { pairingPage } from './phone.js';
 import { pluginsPage } from './plugins.js';
 import { networkPage } from './network.js';
+import { setVpnInGuide, vpnHint, vpnLine, vpnPage } from './vpn.js';
+import { setTvInGuide, tvHint, tvLine, tvPage } from './tv.js';
 import { chooseSleepTimer, powerEntries, sleepTimerDetail } from '../core/power.js';
 import { displayItems } from './display.js';
 import { nightModeItems } from './deck.js';
@@ -42,8 +46,12 @@ import { categoryIcon } from './settings-icons.js';
 import { consoleRevertPage, consoleSetupPage, hasConsoleSetup, isConsoleReady, openSetupSteps } from './console-setup.js';
 import { saveSettingsItems } from '../components/savegames.js';
 import { ensureParentGrant, formatRemaining, lockedGamesPage, parental, refreshParental } from '../components/parental.js';
+import { openProfilesPage } from '../components/profiles.js';
 import { refreshMotion } from '../core/motion.js';
-import { codeLockHeld } from '../core/lock-rules.js';
+import { admitProtectedChange, codeLockHeld } from '../core/lock-rules.js';
+import { HISTORY_OFF_ACTION, historyOffNeedsParent, host } from '../core/browser-logic.js';
+import { AREAS, AREA_DESC_KEYS, AREA_ICONS, AREA_NAME_KEYS, areaOfSetting, areaOn, enabledAreas, setAreas, shownRows, toggleArea } from '../core/areas.js';
+import { RATING_CHOICES, activeSystem, ageChoices, ageLabels, limitText, shownLimit } from '../core/age-rating-rules.js';
 
 const audioModes = () => [
   { label: t('settings.common.off'), detail: t('settings.audioMode.offDetail'), value: 'off' },
@@ -72,6 +80,14 @@ const lockModes = () => [
  * service then does with the parents' approval ("lockMode", "passcode"): its grant counts for exactly that.
  */
 const lockGrant = (reason, action) => (parental.status?.enabled ? ensureParentGrant(reason, { action }) : ensureUnlocked(reason));
+
+/**
+ * A setting the host takes only from an unlocked couch, with parental controls on also with the parents' code for exactly this change
+ * (rating system, areas, idle times with guarded profiles): the unlock first, then the parents' code (core/lock-rules.js). Unlike the
+ * lock and the code above, which the parents may change on the locked couch with their code alone.
+ */
+const protectedGrant = (reason, scope, parentalOn = !!parental.status?.enabled) =>
+  admitProtectedChange({ reason, parentalOn, scope, ensureUnlocked, ensureParentGrant });
 
 async function chooseLock(preset) {
   const mode = preset ?? await chooseDialog(t('settings.lock.title'), lockModes(), security?.couchLock ?? 'off');
@@ -220,17 +236,22 @@ function autoLogonLabel() {
 async function disableAutoLogon() {
   if (!(await confirmDialog(t('settings.autoLogon.disableConfirm'), t('settings.autoLogon.turnOff')))) return;
   toast(t('settings.common.confirmWindowsPrompt'), 4000);
+  // Off already with nothing of CouchHUD's left (state "off", a page older than the switch): the host takes a refusal as done, said as
+  // such. In the "lost" state the stored password is still deleted, so that is a real switch-off.
+  const wasOn = security?.autoLogonState !== 'off';
   const updated = await attempt(() => api.setAutoLogon('off'), t('settings.autoLogon.notTurnedOff'));
   if (updated) {
     security = updated;
-    toast(t('settings.autoLogon.isOff'));
+    toast(wasOn ? t('settings.autoLogon.isOff') : t('settings.autoLogon.wasOff'));
     render();
   }
 }
 
 async function loadSettings() {
   settings = (await attempt(() => api.getSettings(), t('settings.loadFailed'))) ?? settings ?? {};
-  feeds = (await attempt(() => api.getFeeds())) ?? feeds ?? [];
+  setAreas(settings.areas);
+  // The feeds belong to News: not asked for while it is off (the host would refuse).
+  feeds = areaOn('news') ? (await attempt(() => api.getFeeds())) ?? feeds ?? [] : [];
   security = (await attempt(() => api.getSecurity())) ?? security;
   await refreshParental();
   refreshConsoleOpen();
@@ -293,6 +314,17 @@ async function saveSetting(key, value) {
   return attempt(() => Promise.reject(failure), t('settings.common.saveFailed'));
 }
 
+/**
+ * Screensaver and display off: with parental controls and several profiles the parents' setting (they bring a protected profile back to
+ * the picker; the host asks for exactly this grant). false: not allowed, nothing saved.
+ */
+async function idleSettingGrant(key) {
+  const status = parental.status ?? (await refreshParental());
+  if (!status?.profilesGuarded) return true;
+  // Then the setting is not a harmless one any more: the locked couch refuses it, so the unlock comes first.
+  return protectedGrant(t('settings.screensaver.parentReason'), { action: 'idleSetting', item: key }, true);
+}
+
 async function change(key, value, message) {
   if ((await saveSetting(key, value)) === undefined) return;
   settings[key] = value;
@@ -306,10 +338,58 @@ async function change(key, value, message) {
 const limitLabel = (m) => (m ? (m < 60 ? t('settings.parental.minutes', { m }) : formatRemaining(m * 60)) : t('settings.parental.unlimited'));
 const limitOptions = () => [0, 60, 90, 120, 150, 180, 240, 300, 360].map((m) => ({ label: limitLabel(m), value: m }));
 const gameLimitOptions = () => [0, 30, 45, 60, 90, 120].map((m) => ({ label: m ? limitLabel(m) : t('settings.common.off'), value: m }));
-const ageOptions = () => [
-  { label: t('settings.common.off'), value: 0 },
-  ...[6, 12, 16, 18].map((a) => ({ label: t('settings.parental.blockAge', { age: a }), detail: t('settings.parental.blockAgeDetail'), value: a }))
-];
+// The age limit in the rating system that counts now (the host resolves "auto" by the Windows region).
+const ageOptions = (system) =>
+  ageChoices(activeSystem(system), ageLabels(t)).map((o) => (o.value ? { ...o, detail: t('settings.parental.blockAgeDetail') } : o));
+const ageText = (system, age) => limitText(activeSystem(system), age, ageLabels(t));
+// i18n-used: settings.parental.systemShort.usk settings.parental.systemShort.pegi settings.parental.systemShort.esrb settings.parental.systemShort.strictest
+const systemName = (system) => {
+  const key = `settings.parental.systemShort.${activeSystem(system)}`;
+  return t(key);
+};
+const ratingSystemValue = (p) =>
+  (p.ratingSystem ?? 'auto') === 'auto' ? t('settings.parental.system.autoValue', { system: systemName(p.ratingSystemActive) }) : systemName(p.ratingSystem);
+
+/**
+ * Which rating system the age limit goes by (expert): a child must not pick a milder one, so the parents' code with parental controls on
+ * (the couch unlocked otherwise); the host refuses it on a locked couch and while config.json is broken, and moves every limit down to the
+ * new system's nearest step.
+ */
+async function chooseRatingSystem() {
+  const p = parental.status ?? {};
+  const current = p.ratingSystem ?? 'auto';
+  // i18n-used: settings.parental.system.auto settings.parental.system.usk settings.parental.system.pegi settings.parental.system.esrb
+  // i18n-used: settings.parental.systemDetail.usk settings.parental.systemDetail.pegi settings.parental.systemDetail.esrb
+  const options = RATING_CHOICES.map((value) => {
+    const label = `settings.parental.system.${value}`;
+    const detail = `settings.parental.systemDetail.${value}`;
+    return { label: t(label), detail: value === 'auto' ? t('settings.parental.system.autoDetail', { system: systemName(p.ratingSystemRegion) }) : t(detail), value };
+  });
+  const choice = await chooseDialog(t('settings.parental.ratingSystemTitle'), options, current);
+  // Picking "auto" again is a change while the region names another system than the limit was saved under: it re-records the system.
+  if (choice === undefined || (choice === current && !(choice === 'auto' && p.ratingSystemSaved))) return;
+  await applyRatingSystem(choice);
+}
+
+/** Saves the rating system (the unlock, with parental controls the parents' code first; the host checks again). */
+async function applyRatingSystem(choice) {
+  const reason = t('settings.parental.ratingSystemReason');
+  if (!(await protectedGrant(reason, { action: 'ratingSystem' }))) return;
+  const status = await attempt(() => api.setParental('ratingSystem', choice), t('settings.common.notSaved'));
+  if (!status) return;
+  parental.status = status;
+  await refreshParental();
+  toast(t('settings.parental.ratingSystemDone', { system: ratingSystemValue(parental.status ?? status) }));
+  render();
+}
+
+const ratingSystemRow = (p) => ({
+  kind: 'choice',
+  label: t('settings.parental.ratingSystem'),
+  desc: t('settings.parental.ratingSystemDesc'),
+  value: () => ratingSystemValue(parental.status ?? p),
+  run: chooseRatingSystem
+});
 const hourLabel = (minute) => `${Math.floor(minute / 60)}:${String(minute % 60).padStart(2, '0')}`;
 
 /** Changes one profile setting; the parents' code first, the host checks again. */
@@ -371,9 +451,13 @@ async function parentalAction(reason, call, message) {
   render();
 }
 
+/** Settings › Parental controls › Profiles: create, rename, children's rules and codes, delete (each with the parents' code). */
+const profilesAction = () => action(t('profiles.manage'), t('profiles.manageDesc'), () => openProfilesPage((page) => openPage(page, t('settings.parental.title'))), '👥');
+
 function parentalItems() {
   const p = parental.status;
   if (!p) return [info(t('settings.parental.title'), t('settings.parental.unavailable'))];
+  const shown = shownLimit({ active: p.ratingSystemActive, saved: p.ratingSystemSaved, maxAge: p.maxAge, maxAgeSaved: p.maxAgeSaved });
   const mode = !p.enabled ? t('settings.common.off')
     : p.enforced ? t('settings.parental.onEnforced')
       : ({
@@ -390,7 +474,11 @@ function parentalItems() {
       reliability,
       ...runtime,
       ...(p.codeProblem === 'noPassword' ? [info(t('settings.parental.noPasswordTitle'), t('settings.parental.noPassword'))] : []),
-      action(t('settings.parental.setupLock'), t('settings.parental.setupLockDetail'), chooseLock, '🔑')
+      // A link: the couch lock lives in Console (only with the full integration; before that, the mode row leads there).
+      action(t('settings.parental.setupLock'), t('settings.parental.setupLockDetail'), () => settingsView.jump('console', isLight(settings ?? {}) ? 'mode' : 'lock'), '🔑'),
+      profilesAction(),
+      // The age shown on a game's page goes by it too.
+      ...expert(ratingSystemRow(p))
     ];
   }
   const today = p.remainingSeconds == null
@@ -406,6 +494,7 @@ function parentalItems() {
     },
     status,
     info(t('settings.parental.today'), today),
+    profilesAction(),
     ...(p.tampered ? [action(t('settings.parental.tamperedTitle'), t('settings.parental.tamperedDetail'), () => parentalAction(t('settings.parental.resetReason'), () => api.parentalReset(), t('settings.parental.resetDone')), '⚠')] : []),
     ...(p.clockJumped ? [action(t('settings.parental.clockTitle'), t('settings.parental.clockDetail'), () => parentalAction(t('settings.parental.clockReason'), () => api.parentalAcceptClock(), t('settings.parental.clockDone')), '⏱')] : []),
     ...(p.timeZoneChanged ? [action(t('settings.parental.zoneTitle'), t('settings.parental.zoneDetail'), () => parentalAction(t('settings.parental.zoneReason'), () => api.parentalAdoptZone(), t('settings.parental.zoneDone')), '🌍')] : []),
@@ -449,13 +538,24 @@ function parentalItems() {
     {
       kind: 'choice',
       label: t('settings.parental.age'),
-      desc: t('settings.parental.ageDesc'),
-      value: () => (p.maxAge ? t('settings.parental.ageValue', { age: p.maxAge }) : t('settings.common.off')),
+      // After a change of the Windows region: named in the system it is saved under, like the hint below (VM test 0.5).
+      desc: shown.saved
+        ? t('settings.parental.ageDescSaved', { saved: systemName(p.ratingSystemSaved), now: systemName(p.ratingSystemActive) })
+        : t('settings.parental.ageDesc', { system: systemName(p.ratingSystemActive) }),
+      value: () => ageText(shown.system, shown.age),
       run: async () => {
-        const v = await chooseDialog(t('settings.parental.age'), ageOptions(), p.maxAge);
+        const v = await chooseDialog(t('settings.parental.age'), ageOptions(p.ratingSystemActive), p.maxAge);
         if (v !== undefined) await setParentalValue('maxAge', v);
       }
     },
+    // The Windows region now names another system than the one the parents saved under: both count until they save again (any profile with a limit).
+    // The way out is there in simple mode too: go by the new region from now on (the same change as picking "auto" again).
+    ...(p.ratingSystemSaved && (p.anyAgeLimit ?? p.maxAge) ? [
+      info(t('settings.parental.regionChanged'), t('settings.parental.regionChangedDesc', { saved: systemName(p.ratingSystemSaved), now: systemName(p.ratingSystemActive) })),
+      action(t('settings.parental.followRegion', { now: systemName(p.ratingSystemActive) }), t('settings.parental.followRegionDesc'), () => applyRatingSystem('auto'))
+    ] : []),
+    // Simple mode: by the Windows region; the explicit choice is one expert row.
+    ...expert(ratingSystemRow(p)),
     ...(p.maxAge ? [{
       kind: 'toggle',
       label: t('settings.parental.blockUnknown'),
@@ -471,7 +571,8 @@ function parentalItems() {
       run: () => setParentalValue('countApps', !parental.status?.countApps)
     },
     action(t('settings.parental.locked'), t('settings.parental.lockedDesc', { entries: entriesLabel(p.lockedItems.length) }), () => openPage(lockedGamesPage(), t('settings.parental.title'))),
-    ...(security?.couchLock === 'code' ? [action(t('settings.parental.changeCode'), t('settings.parental.changeCodeDesc'), changePasscode)] : []),
+    // A link to the code's only row (Console), which asks for the parents' code as before.
+    ...(security?.couchLock === 'code' ? [action(t('settings.parental.changeCode'), t('settings.parental.changeCodeDesc'), () => settingsView.jump('console', 'code'))] : []),
     reliability,
     ...runtime,
     info(t('settings.parental.timeUp'), t('settings.parental.timeUpDesc', { seconds: p.graceSeconds ?? 60 }))
@@ -480,12 +581,12 @@ function parentalItems() {
 
 const integrationInfo = () => t('settings.integration.fullInfo');
 
-async function chooseIntegration() {
+/**
+ * Expert mode only (Settings › Console › Mode): the integration level alone, without the guided setup or its way back. Every
+ * confirmation and the unlock for the step down stay here, wherever it is started from.
+ */
+async function chooseIntegration(mode) {
   const current = settings.integrationMode ?? 'light';
-  const mode = await chooseDialog(t('settings.integration.title'), [
-    { label: t('settings.integration.light'), detail: t('settings.integration.lightDetail'), value: 'light' },
-    { label: t('settings.integration.full'), detail: t('settings.integration.fullDetail'), value: 'full' }
-  ], current);
   if (mode === undefined || mode === current) return;
   if (mode === 'full' && !(await confirmDialog(integrationInfo(), t('settings.integration.fullOn')))) return;
   if (mode === 'light') {
@@ -503,6 +604,65 @@ async function chooseIntegration() {
   }
   toast(result.undone?.length ? result.undone.join(' · ') : mode === 'full' ? t('settings.integration.fullDone') : t('settings.integration.lightDone'), 6000);
   render();
+}
+
+/**
+ * Settings › Console › Mode: one row for the level, light (a normal app) or the console. Both modes get the guided runs, the console
+ * setup and its way back (every step on those pages asks for the unlock itself); expert mode adds switching the level alone.
+ */
+async function chooseMode() {
+  const s = settings ?? {};
+  const full = !isLight(s);
+  const { ready, incomplete, open } = consoleState(s);
+  const undo = hasConsoleSetup(s, security);
+  const options = [
+    {
+      label: incomplete ? t('settings.console.retry') : ready ? t('settings.console.check') : t('settings.console.setup'),
+      detail: incomplete ? t('settings.console.openDesc', { steps: open.join(', ') }) : ready ? t('settings.console.checkingDesc') : t('settings.console.setupDesc'),
+      icon: '📺',
+      value: 'console'
+    },
+    {
+      label: undo ? t('settings.console.revert') : helperLeftovers ? t('settings.console.cleanup') : t('settings.integration.light'),
+      detail: undo ? t('settings.console.revertDesc') : helperLeftovers ? t('settings.console.cleanupDesc') : t('settings.integration.lightDetail'),
+      icon: '▭',
+      value: 'app'
+    },
+    ...(s.expertMode ? [full
+      ? { label: t('settings.mode.onlyLight'), detail: t('settings.mode.onlyLightDetail'), icon: '›', value: 'only-light' }
+      : { label: t('settings.mode.onlyFull'), detail: t('settings.integration.fullDetail'), icon: '›', value: 'only-full' }] : [])
+  ];
+  const pick = await chooseDialog(t('settings.mode.title'), options, full ? 'console' : 'app');
+  if (pick === 'console') return openPage(consoleSetupPage(consoleDeps), t('settings.cat.console'));
+  if (pick === 'app') {
+    if (undo) return openPage(consoleRevertPage(consoleDeps, !!s.isShell), t('settings.cat.console'));
+    if (helperLeftovers) return openPage(consoleRevertPage(consoleDeps, false), t('settings.cat.console'));
+    return;
+  }
+  if (pick === 'only-full') return chooseIntegration('full');
+  if (pick === 'only-light') return chooseIntegration('light');
+}
+
+function modeLabel(s) {
+  if (isLight(s)) return t('settings.integration.light');
+  return consoleState(s).ready ? t('settings.mode.console') : t('settings.mode.consoleOpen');
+}
+
+function modeDesc(s) {
+  if (isLight(s)) return t('settings.mode.lightDesc');
+  const { ready, incomplete, open } = consoleState(s);
+  if (incomplete) return t('settings.console.openDesc', { steps: open.join(', ') });
+  if (ready) return open ? t('settings.console.checkDesc') : t('settings.console.checkingDesc');
+  return t('settings.mode.fullDesc');
+}
+
+/** Whether the console setup is complete: the main switches, and (read in the background) every single step. */
+function consoleState(s) {
+  const switchesOn = isConsoleReady(s, security);
+  // The main switches alone do not say that: a step such as the services can have failed.
+  const open = switchesOn ? consoleOpen : null;
+  const incomplete = !!open?.length;
+  return { ready: switchesOn && !incomplete, incomplete, open };
 }
 
 async function setShell(install) {
@@ -561,6 +721,8 @@ async function eggInput(action, catId) {
 
 const toggle = (key, label, desc, after) => ({
   kind: 'toggle',
+  // The row goes with the area of its setting (core/areas.js, FeatureAreas in Core): hidden while that area is off.
+  area: areaOfSetting(key),
   label,
   desc,
   value: () => !!settings?.[key],
@@ -570,11 +732,29 @@ const toggle = (key, label, desc, after) => ({
   }
 });
 
+/**
+ * The browser's history: switching it off deletes the remembered sites, with parental controls only with the parents' code for
+ * exactly this (the host asks for the same grant). Switching it on is free.
+ */
+const browserHistoryToggle = () => ({
+  ...toggle('browserHistory', t('settings.library.browserHistory'), t('settings.library.browserHistoryDesc')),
+  run: async () => {
+    const next = settings.browserHistory === false;
+    const status = parental.status ?? (await refreshParental());
+    if (historyOffNeedsParent(status?.enabled, settings.browserHistory, next)
+      && !(await ensureParentGrant(t('settings.library.browserHistoryParentReason'), { action: HISTORY_OFF_ACTION }))) return;
+    await change('browserHistory', next);
+  }
+});
+
 const action = (label, desc, run, icon = '›', hint) => ({ kind: 'action', label, desc, icon, run, hint });
 const info = (label, value) => ({ kind: 'info', label, value });
 
 // ---------------------------------------------------------------------------
 // Structure
+
+/** Marks items as belonging to a feature area: hidden while it is off (Settings › Console › Areas). */
+const inArea = (area, ...items) => items.flat().map((item) => ({ ...item, area }));
 
 /** Marks items as expert-only; simple mode hides them, expert mode shows them below a divider. */
 const expert = (...items) => items.flat().map((item) => ({ ...item, expert: true }));
@@ -638,30 +818,87 @@ export const consoleDeps = {
   }
 };
 
+/**
+ * Settings › Console, the first page: what one looks at first, each in its only place. The setup assistant, the mode (light or the
+ * console, with the guided setup and its way back), the couch lock and its code, a link to the parental controls, what CouchHUD
+ * changes in Windows, and one status line. The fine switches (shell, task manager, automatic sign-in …) and the service's details
+ * are in the expert category Windows integration.
+ */
+/** "Games, Apps, Browser" for the row in Console. */
+function areasLabel() {
+  return enabledAreas().map((a) => t(AREA_NAME_KEYS[a])).join(', ');
+}
+
+/**
+ * Settings › Console › Areas: one dialog with a line per area (A switches it); leaving it with B applies the choice. A settings change like any other: the
+ * unlocked couch, with parental controls on the parents' code; the host checks both again and refuses on a locked couch.
+ */
+async function chooseAreas() {
+  let choice = enabledAreas();
+  let last;
+  for (;;) {
+    const options = [
+      ...AREAS.map((a) => ({
+        icon: AREA_ICONS[a],
+        label: `${t(AREA_NAME_KEYS[a])}: ${choice.includes(a) ? t('settings.common.on') : t('settings.common.off')}`,
+        detail: t(AREA_DESC_KEYS[a]),
+        value: a
+      }))
+    ];
+    const picked = await chooseDialog(t('settings.areas.title'), options, last ?? choice[0]);
+    if (picked !== undefined) {
+      const next = toggleArea(choice, picked);
+      if (next.blocked) toast(t('settings.areas.needOne'));
+      choice = next.list;
+      last = picked;
+      continue;
+    }
+    if (choice.join() === enabledAreas().join()) return;
+    const reason = t('settings.areas.reason');
+    if (!(await protectedGrant(reason, { action: 'areas' }))) return;
+    const result = await attempt(() => api.setFeatureAreas(choice), t('settings.areas.failed'));
+    if (!result) return;
+    settings.areas = setAreas(result.areas);
+    // The page follows at once: tabs, shelf, library (app.js does the same for the host's event).
+    window.dispatchEvent(new CustomEvent('couchhud:areas', { detail: result.areas }));
+    toast(t('settings.areas.saved'));
+    render();
+    return;
+  }
+}
+
 function consoleItems(s) {
-  const switchesOn = isConsoleReady(s, security);
-  // The main switches alone do not say that: a step such as the services can have failed.
-  const open = switchesOn ? consoleOpen : null;
-  const incomplete = !!open?.length;
-  const ready = switchesOn && !incomplete;
+  const full = !isLight(s);
+  const lock = security?.couchLock ?? 'off';
   return [
-    {
-      kind: 'action',
-      primary: true,
-      label: incomplete ? t('settings.console.retry') : ready ? t('settings.console.check') : t('settings.console.setup'),
-      desc: incomplete
-        ? t('settings.console.openDesc', { steps: open.join(', ') })
-        : ready
-          ? (open ? t('settings.console.checkDesc') : t('settings.console.checkingDesc'))
-          : t('settings.console.setupDesc'),
-      icon: '›',
-      run: () => openPage(consoleSetupPage(consoleDeps), t('settings.cat.console'))
-    },
-    ...(hasConsoleSetup(s, security, helperLeftovers)
-      ? [hasConsoleSetup(s, security)
-        ? action(t('settings.console.revert'), t('settings.console.revertDesc'), () => openPage(consoleRevertPage(consoleDeps, !!s.isShell), t('settings.cat.console')))
-        : action(t('settings.console.cleanup'), t('settings.console.cleanupDesc'), () => openPage(consoleRevertPage(consoleDeps, false), t('settings.cat.console')))]
-      : []),
+    { ...action(t('settings.console.wizard'), t('settings.console.wizardDesc'), openSetupWizard, '✦'), primary: true },
+    { kind: 'choice', key: 'mode', label: t('settings.mode.title'), desc: modeDesc(s), value: () => modeLabel(s), run: chooseMode },
+    // Which parts of CouchHUD are there at all (games, apps, browser, news): one place for both modes.
+    { kind: 'choice', key: 'areas', label: t('settings.areas.title'), desc: t('settings.areas.desc'), value: areasLabel, run: chooseAreas },
+    // The couch lock needs the full integration (the host refuses it otherwise); the mode row above leads there.
+    ...(full ? [{
+      kind: 'choice',
+      key: 'lock',
+      label: t('settings.lock.title'),
+      desc: lock !== 'off' && security?.accountPassword === false ? t('settings.lock.codeNoPasswordWarn') : t('settings.windows.lockDesc'),
+      value: () => lockModes().find((m) => m.value === lock)?.label,
+      run: () => chooseLock()
+    }] : []),
+    // The code of the code lock; experts may also set one for another lock (as before in Windows integration).
+    ...(full && (lock === 'code' || s.expertMode) ? [{
+      ...action(security?.hasPasscode ? t('settings.passcode.changeReason') : t('settings.windows.setCode'), t('settings.windows.codeDesc'), changePasscode),
+      key: 'code'
+    }] : []),
+    // A link: the parental controls have their own category.
+    ...(api.getParental && parental.status ? [{
+      kind: 'choice',
+      label: t('settings.parental.title'),
+      desc: t('settings.console.parentalDesc'),
+      value: () => (parental.status?.enabled ? t('settings.common.on') : t('settings.common.off')),
+      run: () => settingsView.jump('parental')
+    }] : []),
+    // The service itself: a clear warning and the repair for everyone when something is wrong (its details are in Windows integration).
+    ...(security?.service?.problem ? [repairServiceItem()] : []),
     ...(policiesStuck ? [action(t('systemTools.services.stuckTitle'), t('systemTools.services.stuckDetail'), async () => {
       if (await cleanupStuckPoliciesDialog()) {
         policiesStuck = false;
@@ -669,25 +906,32 @@ function consoleItems(s) {
       }
     })] : []),
     action(t('settings.console.changes'), t('settings.console.changesDesc'), () => openPage(transparencyPage(), t('settings.cat.console'))),
-    info(t('settings.console.start'), s.isShell ? t('settings.console.startShell') : t('settings.console.startDesktop')),
-    info(t('settings.console.lock'), ({ off: t('settings.common.off'), code: t('settings.lockMode.code'), windows: t('settings.lockMode.windows') })[security?.couchLock ?? 'off']),
+    // One status line instead of a row per part: how the PC starts and signs in (mode and lock are the rows above).
+    ...(hasConsoleSetup(s, security) ? [info(t('settings.console.status'), t('settings.console.statusValue', {
+      start: s.isShell ? t('settings.console.startShell') : t('settings.console.startDesktop'),
+      autologon: security ? autoLogonLabel() : '–'
+    }))] : []),
     // The HUD runs on a WebView2 runtime the account's programs can change: the lock is weaker than it looks.
     ...runtimeWarningItems(),
     // Honest about the Windows policies of the locked couch: without the CouchHUD service they are not active.
-    info(t('settings.console.policies'), security ? ({ service: t('settings.console.policiesService'), direct: t('settings.console.policiesDirect'), none: t('settings.console.policiesNone') })[security.policies ?? 'none'] : '–'),
-    // The service itself: its state for the experts, a clear warning and the repair for everyone when something is wrong.
-    ...(security?.service?.problem ? [repairServiceItem()] : []),
-    ...(security?.service ? expert(info(t('settings.console.service'), security.service.version ? `${security.service.label} (${security.service.version})` : security.service.label)) : []),
+    ...(security && lock !== 'off' && (security.policies ?? 'none') === 'none' ? [info(t('settings.windows.warning'), t('settings.console.policiesOff'))] : []),
     // A parents' code in the service that this HUD did not set (no parental controls here).
     ...(security?.parentCodeUnknown ? [info(t('settings.console.parentUnknown'), t('settings.console.parentUnknownDetail'))] : []),
     // The local code was not taken over: the service holds one of its own (review L-c).
-    ...(security?.codeConflict ? [info(t('settings.console.codeConflict'), t('settings.console.codeConflictDetail'))] : []),
+    ...(security?.codeConflict ? [info(t('settings.console.codeConflict'), t('settings.console.codeConflictDetail'))] : [])
+  ];
+}
+
+/** The CouchHUD service and the lock's Windows policies in detail (expert category Windows integration, in both levels). */
+function serviceFacts() {
+  return [
+    info(t('settings.console.policies'), security ? ({ service: t('settings.console.policiesService'), direct: t('settings.console.policiesDirect'), none: t('settings.console.policiesNone') })[security.policies ?? 'none'] : '–'),
+    ...(security?.service ? [info(t('settings.console.service'), security.service.version ? `${security.service.label} (${security.service.version})` : security.service.label)] : []),
     // Which codes the service holds for this account (it checks them, not the settings file).
     ...(security?.serviceCodes ? [info(t('settings.console.serviceCodes'), t('settings.console.serviceCodesValue', {
       couch: security.serviceCodes.couch ? t('settings.console.codeHeld') : t('settings.console.codeNone'),
       parent: security.serviceCodes.parent ? t('settings.console.codeHeld') : t('settings.console.codeNone')
-    }))] : []),
-    info(t('settings.autoLogon.title'), security ? autoLogonLabel() : '–')
+    }))] : [])
   ];
 }
 
@@ -738,7 +982,7 @@ function displayCategoryItems(s) {
       value: () => (s.screensaverMinutes ? t('settings.after.minutes', { m: s.screensaverMinutes }) : t('settings.common.off')),
       run: async () => {
         const v = await chooseDialog(t('settings.screensaver.title'), [0, 2, 5, 10, 15, 30].map((m) => ({ label: m ? t('settings.screensaver.afterMinutes', { m }) : t('settings.common.off'), value: m })), s.screensaverMinutes ?? 5);
-        if (v === undefined) return;
+        if (v === undefined || !(await idleSettingGrant('screensaverMinutes'))) return;
         await change('screensaverMinutes', v);
         configureScreensaver({ minutes: v });
       }
@@ -751,7 +995,7 @@ function displayCategoryItems(s) {
         value: () => (s.displayOffMinutes ? t('settings.after.minutes', { m: s.displayOffMinutes }) : t('settings.never')),
         run: async () => {
           const v = await chooseDialog(t('settings.screensaver.displayOff'), [0, 10, 30, 60].map((m) => ({ label: m ? t('settings.screensaver.afterSaver', { m }) : t('settings.never'), value: m })), s.displayOffMinutes ?? 0);
-          if (v === undefined) return;
+          if (v === undefined || !(await idleSettingGrant('displayOffMinutes'))) return;
           await change('displayOffMinutes', v);
           configureScreensaver({ displayOff: v });
         }
@@ -857,16 +1101,16 @@ function audioItems(s) {
 
 function windowsItems(s) {
   const full = (s.integrationMode ?? 'light') === 'full';
+  // The level itself, the couch lock and its code are on the first page (Console); this category holds the fine switches.
   if (!full) {
     return [
-      { kind: 'choice', label: t('settings.integration.title'), desc: t('settings.windows.lightDesc'), value: () => t('settings.integration.light'), run: chooseIntegration },
       toggle('closeExplorerInLight', t('settings.windows.hideTaskbar'), t('settings.windows.hideTaskbarDesc')),
       ...(security?.autoLogon ? [action(t('settings.windows.autoOff'), t('settings.windows.autoOffDesc'), disableAutoLogon)] : []),
-      info(t('settings.windows.fullTitle'), t('settings.windows.fullNote'))
+      info(t('settings.windows.fullTitle'), t('settings.windows.fullNote')),
+      ...serviceFacts()
     ];
   }
   return [
-    { kind: 'choice', label: t('settings.integration.title'), desc: t('settings.windows.fullDesc'), value: () => t('settings.integration.fullShort'), run: chooseIntegration },
     {
       kind: 'toggle',
       label: t('settings.windows.shell'),
@@ -874,14 +1118,6 @@ function windowsItems(s) {
       value: () => !!s.isShell,
       run: () => setShell(!s.isShell)
     },
-    {
-      kind: 'choice',
-      label: t('settings.lock.title'),
-      desc: security?.couchLock !== 'off' && security?.accountPassword === false ? t('settings.lock.codeNoPasswordWarn') : t('settings.windows.lockDesc'),
-      value: () => lockModes().find((m) => m.value === (security?.couchLock ?? 'off'))?.label,
-      run: chooseLock
-    },
-    action(security?.hasPasscode ? t('settings.passcode.changeReason') : t('settings.windows.setCode'), t('settings.windows.codeDesc'), changePasscode),
     ...(security && security.couchLock !== 'off' ? [{
       kind: 'toggle',
       label: t('settings.windows.taskManager'),
@@ -903,7 +1139,7 @@ function windowsItems(s) {
     toggle('killExplorerOnReturn', t('settings.windows.killExplorer'), t('settings.windows.killExplorerDesc')),
     ...(security?.autoLogon && security.autoLogonOtherUser ? [info(t('settings.windows.warning'), t('settings.windows.otherUser', { other: security.autoLogonUser, user: security.user }))] : []),
     ...(security?.autoLogonState === 'lost' ? [info(t('settings.windows.warning'), t('settings.windows.lost'))] : []),
-    ...runtimeWarningItems(),
+    ...serviceFacts(),
     info(t('settings.windows.emergency'), t('settings.windows.emergencyDesc')),
     info(t('settings.windows.note'), t('settings.windows.noteDesc'))
   ];
@@ -922,12 +1158,15 @@ function startupItems(s) {
 }
 
 /** Power rows from the shared module, so every menu asks the same questions. */
-const powerItems = (ids) => powerEntries(ids).map((e) => action(e.label, e.detail, e.run));
+const powerItems = (ids) => Object.fromEntries(powerEntries(ids).map((e) => [e.id, action(e.label, e.detail, e.run)]));
 
 function categories() {
   const s = settings ?? {};
-  const [pcMode, standby, restart, shutdown, restartPc] = powerItems(['pc-mode', 'standby', 'restart', 'shutdown', 'restart-pc']);
+  // The mode decides: shell mode has the PC mode and a restart into it, app mode "Quit CouchHUD" in its place (power.js forMode).
+  const power = powerItems(['pc-mode', 'standby', 'restart', 'shutdown', 'restart-pc']);
   const holdOptions = [500, 1000, 1500, 2000].map((ms) => ({ label: holdLabel(ms), value: ms }));
+  const glyphLabels = { auto: t('settings.controller.glyphs.auto'), xbox: t('settings.controller.glyphs.xbox'), playstation: t('settings.controller.glyphs.playstation') };
+  const padGlyphOptions = () => PAD_GLYPH_SETTINGS.map((value) => ({ label: glyphLabels[value], value }));
   return [
     { id: 'console', icon: 'console', name: t('settings.cat.console'), items: consoleItems(s) },
     {
@@ -936,15 +1175,20 @@ function categories() {
       name: t('settings.cat.library'),
       items: [
         action(t('settings.library.add'), t('settings.library.addDesc'), addEntryFlow, '+'),
-        action(t('settings.library.folders'), t('settings.library.foldersDesc'), () => openPage(gameFoldersPage(), t('settings.cat.library'))),
-        action(t('settings.library.clients'), t('settings.library.clientsDesc'), () => openPage(launchersPage(), t('settings.cat.library'))),
+        ...inArea('games',
+          action(t('settings.library.folders'), t('settings.library.foldersDesc'), () => openPage(gameFoldersPage(), t('settings.cat.library'))),
+          action(t('settings.library.clients'), t('settings.library.clientsDesc'), () => openPage(launchersPage(), t('settings.cat.library')))),
         toggle('maximizeBrowser', t('settings.library.maximizeBrowser'), t('settings.library.maximizeBrowserDesc')),
+        browserHistoryToggle(),
         action(t('settings.library.hidden'), t('settings.library.hiddenCount', { count: state.library.filter((i) => i.hidden).length }), () => openPage(hiddenItemsPage(), t('settings.cat.library'))),
+        // Save games: the automatic backup switch is in simple mode too, its limits and the rest are marked expert there. Gaming only
+        // (not even loaded while it is off: the host refuses the save calls then).
+        ...(areaOn('games') ? inArea('games', saveSettingsItems()) : []),
         ...expert(
-          action(t('settings.library.scan'), t('settings.library.scanDesc'), scanFolderFlow),
+          inArea('games', action(t('settings.library.scan'), t('settings.library.scanDesc'), scanFolderFlow)),
           action(t('settings.library.rescan'), t('settings.library.rescanDesc'), () => reloadLibrary(true)),
-          ...saveSettingsItems(),
           {
+            area: areaOfSetting('steamGridDbApiKey'),
             kind: 'text',
             label: t('settings.library.sgdb'),
             desc: t('settings.library.sgdbDesc'),
@@ -958,9 +1202,9 @@ function categories() {
             }
           },
           toggle('onlineArtwork', t('settings.library.onlineArt'), t('settings.library.onlineArtDesc')),
-          action(t('settings.library.clearArt'), t('settings.library.clearArtDesc', { mb: s.artworkCacheMb ?? 0 }), async () => {
+          action(t('settings.library.clearArt'), t('settings.library.clearArtDesc', { size: formatSize(s.artworkCacheBytes) ?? '0 MB' }), async () => {
             if ((await saveSetting('clearArtworkCache', true)) === undefined) return;
-            settings.artworkCacheMb = 0;
+            settings.artworkCacheBytes = 0;
             toast(t('settings.library.artCleared'));
             render();
           })
@@ -972,7 +1216,7 @@ function categories() {
       icon: 'appearance',
       name: t('settings.cat.appearance'),
       items: [
-        { kind: 'choice', label: t('settings.appearance.skin'), desc: state.skin.description, value: () => state.skin.name, run: () => openOverlay(skinMenu()) },
+        { kind: 'choice', label: t('settings.appearance.skin'), desc: state.skin.description, value: () => state.skin.name, run: async () => openOverlay(await skinMenu()) },
         { kind: 'choice', label: t('settings.pointer.title'), desc: t('settings.pointer.desc'), value: () => pointerModes(s.mouseUnlocked).find((m) => m.value === pointerMode(s))?.label, run: choosePointer },
         action(t('settings.appearance.install'), t('settings.appearance.installDesc'), () => openPage(pluginsPage(1), t('settings.cat.appearance'))),
         toggle('trailerPreviews', t('settings.appearance.trailers'), t('settings.appearance.trailersDesc'), (on) => (state.info.trailerPreviews = on)),
@@ -1002,10 +1246,27 @@ function categories() {
               if (ms !== undefined) await change('returnHoldMs', ms);
             }
           },
+          {
+            kind: 'choice',
+            label: t('settings.controller.glyphs'),
+            desc: t('settings.controller.glyphsDesc'),
+            value: () => padGlyphOptions().find((o) => o.value === (s.padGlyphs ?? 'auto'))?.label,
+            run: async () => {
+              const v = await chooseDialog(t('settings.controller.glyphs'), padGlyphOptions(), s.padGlyphs ?? 'auto');
+              if (v === undefined) return;
+              await change('padGlyphs', v);
+              if (settings.padGlyphs !== v) return;
+              // Symbols everywhere at once (app.js draws this page again with them: the screenshot row names the buttons).
+              setPadGlyphs({ padGlyphs: v });
+            }
+          },
           toggle('pauseGameInMenu', t('settings.controller.pause'), t('settings.controller.pauseDesc')),
+          toggle('screenshotCombo', t('settings.controller.screenshot', { guide: glyph('Guide'), y: glyph('Y') }), t('settings.controller.screenshotDesc', { guide: glyph('Guide'), y: glyph('Y') })),
           toggle('bluetoothAutoOn', t('settings.controller.btAuto'), t('settings.controller.btAutoDesc')),
           info(t('settings.controller.input'), state.info.nativeInput ? t('settings.controller.inputNative') : t('settings.controller.inputBrowser'))
         ),
+        // Simple mode: the freeze is an expert row, but when it is on that should not go unseen.
+        ...(!s.expertMode && s.pauseGameInMenu ? [info(t('settings.controller.pause'), t('settings.controller.pauseOnExpert'))] : []),
         info(t('settings.controller.keyboard'), t('settings.controller.keyboardDesc'))
       ]
     },
@@ -1025,6 +1286,7 @@ function categories() {
     },
     {
       id: 'news',
+      area: 'news',
       icon: 'news',
       name: t('settings.cat.news'),
       items: [
@@ -1063,6 +1325,15 @@ function categories() {
           value: () => s.weatherPlace?.name ?? t('settings.home.placeNone'),
           run: chooseWeatherPlace
         },
+        // Simple mode: only this (it asks for the address itself). Expert mode adds address, long-lived token and the test below.
+        // Home Assistant refused the sign-in (the host sends nothing more): sign in again, which replaces it once it worked.
+        s.homeAssistantSignedIn && s.homeAssistantHttpsRequired
+          ? action(t('settings.home.signIn'), t('settings.home.signInHttps', { host: host(s.homeAssistantUrl) }), signInHomeAssistant)
+          : s.homeAssistantSignedIn && s.homeAssistantSignInExpired
+          ? action(t('settings.home.signIn'), t('settings.home.signInExpired', { host: host(s.homeAssistantUrl) }), signInHomeAssistant)
+          : s.homeAssistantSignedIn
+          ? action(t('settings.home.signOut'), t('settings.home.signedInAt', { host: host(s.homeAssistantUrl) }), signOutHomeAssistant)
+          : action(t('settings.home.signIn'), t('settings.home.signInDesc'), signInHomeAssistant),
         ...expert(
           {
             kind: 'text',
@@ -1075,8 +1346,8 @@ function categories() {
               // Another address asks for the token again (the host drops the old one).
               const norm = (u) => (u || '').trim().replace(/\/+$/, '').toLowerCase();
               const moved = norm(url) !== norm(s.homeAssistantUrl);
-              await change('homeAssistantUrl', url, moved && s.homeAssistantTokenSet ? t('settings.home.tokenAgain') : undefined);
-              if (moved) settings.homeAssistantTokenSet = false;
+              await change('homeAssistantUrl', url, moved && (s.homeAssistantTokenSet || s.homeAssistantSignedIn) ? t('settings.home.tokenAgain') : undefined);
+              if (moved) Object.assign(settings, { homeAssistantTokenSet: false, homeAssistantSignedIn: false });
             }
           },
           {
@@ -1085,23 +1356,44 @@ function categories() {
             desc: t('settings.home.haTokenDesc'),
             value: () => (s.homeAssistantTokenSet ? t('settings.common.set') : t('settings.common.notSet')),
             run: async () => {
+              // A long-lived token replaces the sign-in (the host revokes it): asked first.
+              if (s.homeAssistantSignedIn && !(await confirmDialog(t('settings.home.tokenReplacesSignIn'), t('settings.common.continue')))) return;
               const token = await openKeyboard({ title: t('settings.home.haToken'), secret: true, hint: t('settings.home.haTokenHint'), paste: true });
               if (token === undefined) return;
               await change('homeAssistantToken', token, token ? t('settings.home.tokenSaved') : t('settings.home.tokenRemoved'));
               settings.homeAssistantTokenSet = !!token;
+              if (token) settings.homeAssistantSignedIn = false;
             }
           },
-          action(t('settings.home.test'), t('settings.home.testDesc'), testHomeAssistant)
+          action(t('settings.home.test'), t('settings.home.testDesc'), () => testHomeAssistant())
         )
       ]
     },
+    // TV control (LG webOS first): pairing and everything else on its own page; the Guide menu option and "TV follows CouchHUD" here.
+    ...(api.tvStatus ? [{
+      id: 'tv',
+      icon: 'tv',
+      name: t('settings.cat.tv'),
+      badge: state.tv?.error === 'certChanged' || state.tv?.error === 'unpaired' ? 1 : 0,
+      items: [
+        action(t('tv.settings.open'), state.tv?.paired ? tvHint() || tvLine() : t('tv.settings.openDesc'), () => openPage(tvPage(), t('settings.cat.tv'))),
+        toggle('tvInGuide', t('tv.settings.guide'), t('tv.settings.guideDesc'), (on) => setTvInGuide(on)),
+        ...expert(
+          toggle('tvOnWithCouchHud', t('tv.settings.followOn'), t('tv.settings.followOnDesc')),
+          toggle('tvOffWithPc', t('tv.settings.followOff'), t('tv.settings.followOffDesc'))
+        )
+      ]
+    }] : []),
     {
       id: 'network',
       icon: 'network',
       name: t('settings.cat.network'),
       items: [
         action(t('settings.network.wifi'), t('settings.network.wifiDesc'), guarded(t('settings.network.wifi'), () => openPage(networkPage(), t('settings.cat.network')))),
+        // The VPN page reads on a locked couch too; every change on it asks for the unlock (with parental controls the parents' code).
+        ...(api.vpnStatus ? [action(t('vpn.settings.open'), state.vpn ? vpnHint() || vpnLine() : t('vpn.settings.openDesc'), () => openPage(vpnPage(), t('settings.cat.network')))] : []),
         ...expert(
+          ...(api.vpnStatus ? [toggle('vpnInGuide', t('vpn.settings.guide'), t('vpn.settings.guideDesc'), (on) => setVpnInGuide(on))] : []),
           action(t('settings.network.firewall'), t('settings.network.firewallDesc'), async () => {
             toast(t('settings.common.confirmWindowsPrompt'), 4000);
             const result = await attempt(() => api.allowFirewall(), t('settings.network.firewallFailed'));
@@ -1155,11 +1447,11 @@ function categories() {
       icon: 'power',
       name: t('settings.cat.power'),
       items: [
-        standby,
-        pcMode,
-        restart,
-        ...expert(restartPc),
-        shutdown,
+        power.standby,
+        power['pc-mode'] ?? power.quit,
+        power.restart,
+        ...(power['restart-pc'] ? expert(power['restart-pc']) : []),
+        power.shutdown,
         { kind: 'choice', label: t('settings.power.timer'), desc: t('settings.power.timerDesc'), value: () => sleepTimerDetail(), run: chooseSleepTimer }
       ]
     },
@@ -1186,15 +1478,14 @@ function categories() {
             location.reload();
           }
         },
-        action(t('settings.info.wizard'), t('settings.info.wizardDesc'), openSetupWizard, '✦'),
         action(t('settings.info.disclaimer'), t('settings.info.disclaimerDesc'), () => openPage(disclaimerPage(), t('settings.cat.info'))),
         action(t('settings.info.privacy'), t('settings.info.privacyDesc'), () => openPage(privacyPage(), t('settings.cat.info'))),
         ...(state.info.isShell ? [] : [action(t('settings.info.quit'), t('settings.info.quitDesc'), guarded(t('settings.info.quit'), () => attempt(() => api.quit())), '✕', t('settings.hint.quit'))]),
         info(t('settings.info.guide'), t('settings.info.guideDesc')),
         info(t('settings.info.version'), state.info.version || '–'),
         info(t('settings.info.license'), 'GPL-3.0 · © 2026 kewe87'),
+        // How CouchHUD starts is the status line in Console.
         ...expert(
-          info(t('settings.info.mode'), state.info.isShell ? t('settings.info.modeShell') : t('settings.info.modeApp')),
           info(t('settings.info.config'), s.configPath || '–'),
           info(t('settings.info.logs'), s.logPath || '–')
         )
@@ -1232,6 +1523,9 @@ function visibleCategories() {
   const on = !!settings?.expertMode;
   return categories()
     .filter((c) => on || !c.expertOnly)
+    // Switched off areas: their categories and rows are gone until the area is on again (core/areas.js).
+    .filter((c) => areaOn(c.area))
+    .map((c) => ({ ...c, items: shownRows(c.items) }))
     // Without full integration this category would only hold a note; the Windows category explains it.
     .filter((c) => c.id !== 'startup' || (settings?.integrationMode ?? 'light') === 'full')
     .map((c) => ({ ...c, items: c.items.filter((i) => on || !i.expert) }));
@@ -1315,7 +1609,11 @@ function mcpItems(s) {
 async function refreshAssistantTab() {
   await loadSettings();
   const info = await attempt(() => api.systemInfo());
-  if (info) state.info.assistant = info.assistant;
+  if (info) {
+    state.info.assistant = info.assistant;
+    // Reloaded anyway: the settings may have broken or been repaired since the start (the setup assistant asks again by itself).
+    state.info.configFault = !!info.configFault;
+  }
   window.dispatchEvent(new Event('couchhud:tabs'));
   render();
 }
@@ -1349,10 +1647,55 @@ async function chooseWeatherPlace() {
   await refreshWeather();
 }
 
-async function testHomeAssistant() {
-  const entities = await attempt(() => api.getHomeEntities(), t('settings.home.noConnection'));
-  if (!entities) return;
-  toast(t('settings.home.connected', { count: entities.length }), 4000);
+/**
+ * "Sign in with Home Assistant": the host opens Home Assistant's sign-in page in the couch browser and gets the access itself
+ * (the answer comes as the homeAssistantSignIn event, see homeAssistantSignInDone). Simple mode has no address row, so the address is
+ * asked here (prefilled); experts set it in its own row.
+ */
+async function signInHomeAssistant() {
+  let url = settings?.homeAssistantUrl || '';
+  if (!settings?.expertMode || !url || settings?.homeAssistantHttpsRequired) {
+    url = await openKeyboard({ title: t('settings.home.haUrl'), value: url || 'http://homeassistant.local:8123', hint: t('settings.home.haUrlHint'), paste: true });
+    if (!url) return;
+  }
+  const opened = await attempt(() => api.signInHomeAssistant(url), t('settings.home.signInFailed'));
+  if (!opened) return;
+  // The old connection stays until the new sign-in is saved; the page is reloaded when the answer comes.
+  settings = null;
+  toast(t('settings.home.signInOpened'), 5000);
+}
+
+async function signOutHomeAssistant() {
+  if (!(await confirmDialog(t('settings.home.signOutConfirm'), t('settings.home.signOut'), { danger: true }))) return;
+  const result = await attempt(() => api.signOutHomeAssistant(), t('settings.home.signOutFailed'));
+  if (!result) return;
+  if (settings) settings.homeAssistantSignedIn = false;
+  toast(result.revoked ? t('settings.home.signedOut') : t('settings.home.signedOutLocal'), 6000);
+  if (!settings?.homeAssistantTokenSet) {
+    state.info.homeAssistant = false;
+    window.dispatchEvent(new Event('couchhud:tabs'));
+  }
+  render();
+}
+
+/** The host's answer to a sign-in (event homeAssistantSignIn): connected (the Smart Home tab appears) or why not. */
+export async function homeAssistantSignInDone(result) {
+  if (!result?.ok) {
+    toast(result?.error || t('settings.home.signInFailed'), 6000);
+    return;
+  }
+  // Fresh from the host: the sign-in may have brought another address along.
+  await loadSettings();
+  Object.assign(settings, { homeAssistantSignedIn: true, homeAssistantSignInExpired: false, homeAssistantTokenSet: false });
+  await testHomeAssistant('settings.home.signedInConnected');
+}
+
+// i18n-used: settings.home.connected settings.home.signedInConnected
+async function testHomeAssistant(message = 'settings.home.connected') {
+  // One light call (the states), not the picker's catalog: the test says how much Home Assistant offers.
+  const count = await attempt(() => api.testHomeAssistant(), t('settings.home.noConnection'));
+  if (count === undefined || count === null) return;
+  toast(t(message, { count }), 4000);
   state.info.homeAssistant = true;
   await preloadSmartHome(settings);
   const tabs = tabViews();
@@ -1455,6 +1798,22 @@ export const settingsView = {
         el('dt', { textContent: f.label }),
         el('dd', { className: f.secret ? 'setting-secret' : '', textContent: f.value })))) ) : (this.factsNode = null));
     this.itemPane.replaceChildren(el('h2', { className: 'settings-heading', textContent: cat.name }), this.itemScroller);
+  },
+  /**
+   * A link inside the settings: selects a category and, with `key`, the row that carries it (the only place of that setting). The cursor
+   * lands on that row; nothing runs by itself.
+   */
+  jump(catId, key) {
+    const index = this.cats.findIndex((c) => c.id === catId);
+    if (index < 0) return sound.bump();
+    this.index = index;
+    this.catId = catId;
+    this.itemIndex = 0;
+    this.buildItems();
+    const row = key ? this.items.findIndex((i) => i.key === key) : -1;
+    this.itemIndex = Math.max(0, row);
+    this.pane = this.items.length ? 'items' : 'cats';
+    this.update({ instant: true });
   },
   /** Fades the lower edge of the category list while more categories wait below the visible part. */
   markMore() {

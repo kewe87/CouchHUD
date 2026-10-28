@@ -1,5 +1,7 @@
 # Mitmachen bei CouchHUD
 
+**Deutsch** | [English](CONTRIBUTING.en.md)
+
 Schön, dass du da bist! CouchHUD soll ein freies, richtig gutes Wohnzimmer-Frontend für Windows werden, und das geht am besten gemeinsam.
 
 ## Wege, beizutragen
@@ -48,7 +50,7 @@ node scripts/preview-server.js          # http://localhost:5173, komplette UI mi
 `scripts/ui-shot.mjs` steuert die Vorschau in einem Edge ohne Fenster (über das DevTools-Protokoll), drückt Tasten, wechselt Skins, macht Screenshots und prüft Kontraste. Gut für UI-Änderungen und als Beleg im Pull Request:
 
 ```bash
-node scripts/ui-shot.mjs --out shots skin:ps4 wait:300 shot:home key:ArrowRight shot:next
+node scripts/ui-shot.mjs --out shots skin:deepsea wait:300 shot:home key:ArrowRight shot:next
 node scripts/ui-shot.mjs --out shots --size 3840x2160 --query lang=en shot:home4k
 ```
 
@@ -88,7 +90,7 @@ Die Oberfläche gibt es auf Deutsch und Englisch. Regeln (Details und Begriffsta
 
 ## Leitplanken
 
-Die Grundsätze stehen in [docs/ROADMAP.md](docs/ROADMAP.md#leitplanken): alles über die GUI, Controller zuerst, nahtloser Fullscreen, Fremdsoftware in Plugins, ein kaputtes Plugin darf nie die Shell killen.
+Die Grundsätze: alles über die GUI, Controller zuerst, nahtloser Fullscreen, Fremdsoftware in Plugins, ein kaputtes Plugin darf nie die Shell killen.
 
 - Jede Einstellung nur an einer Stelle, im Einfach-Modus keine Fachbegriffe.
 - Jeder Eingriff in Windows ist umkehrbar und steht in der Transparenz-Seite („Was CouchHUD an Windows ändert“).

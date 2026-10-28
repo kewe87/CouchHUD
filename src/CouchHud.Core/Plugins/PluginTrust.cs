@@ -188,11 +188,10 @@ public sealed class PluginTrust(string dataDir, byte[]? key = null)
 
     private void Write(Dictionary<string, string> all)
     {
-        Directory.CreateDirectory(dataDir);
-        var tmp = StoreFile + $".{Guid.NewGuid():N}.tmp";
         var store = new Store { Entries = new Dictionary<string, string>(all, StringComparer.OrdinalIgnoreCase) };
         if (Key is { } k) store.Mac = Mac(k, store.Entries);
-        File.WriteAllText(tmp, JsonSerializer.Serialize(store));
-        File.Move(tmp, StoreFile, overwrite: true);
+        // Written through to the disk, so a reset does not leave zero bytes (that would only be a fault: nothing unknown loads). No .bak on
+        // purpose: an older list could still approve a plugin that was taken back since.
+        CouchHud.Core.Files.DurableFile.WriteAllText(StoreFile, JsonSerializer.Serialize(store), keepBackup: false);
     }
 }

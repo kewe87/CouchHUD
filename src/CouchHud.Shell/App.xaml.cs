@@ -294,7 +294,8 @@ public partial class App : Application
         var dataDir = DataDir;
 
         var config = new ConfigStore(dataDir);
-        CouchHud.Core.Localization.Strings.Use(config.Current.Language);
+        // While the picker waits for a protected profile it speaks the household's language, not the waiting person's.
+        CouchHud.Core.Localization.Strings.Use(ProfileSwitch.Look(config.Current, ProfileSwitch.HeldAtStart(config.Current)).Language);
         var registry = new WindowsRegistry();
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         // Everything that asks Steam or SteamGridDB goes through one polite client (rate limit, Retry-After, circuit breaker).
@@ -344,6 +345,16 @@ public partial class App : Application
                 new FolderGamesProvider(() => config.Current.GameFolders.ToList()),
                 new PluginLibraryProvider(plugins)
             ]);
+        // The store match: the user's pick, else the scanned name (a rename never changes the age rating).
+        storeInfo.Lookup = library.StoreLookupOf;
+        // An automatic match that loses a known rating keeps it as the floor until the parents confirm.
+        storeInfo.RatingDropped = (item, age) => library.KeepAgeFloor(item.Id, age);
+        artwork.StoreMatchOf = id => config.Current.Overrides.GetValueOrDefault(id)?.StoreMatch;
+        // Switched off areas (FeatureAreas): the game stores are not read with Gaming off, unless parental controls need them to see a game
+        // started outside CouchHud (the limits never get looser) or an entry of the store was marked as an app; artwork is fetched only
+        // for what is shown.
+        library.SkipProvider = p => p is IGameStore store && !FeatureAreas.ReadsStore(config.Current, store.Source);
+        library.FetchArtFor = item => FeatureAreas.From(config.Current).Shows(item);
 
         _hud = new Hud(config, library, artwork, storeInfo, new ShellManager(registry), new XInputPoller(), http, dataDir, dev, plugins);
         // Lookups and downloads wait while a game runs.

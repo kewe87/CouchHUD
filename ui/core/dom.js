@@ -1,4 +1,5 @@
-import { fmtDate, fmtNumber, t } from './i18n.js';
+import { fmtDate, fmtNumber, locale, t } from './i18n.js';
+import { formatBytes } from './size.js';
 
 export const $ = (sel) => document.querySelector(sel);
 
@@ -50,17 +51,8 @@ export function keepInView(container, element, { center = false, instant = false
 /** "1 Eintrag" / "3 Einträge". */
 export const entriesLabel = (n) => t('dom.entries', { count: n });
 
-export function formatSize(bytes) {
-  if (!bytes) return null;
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let i = 0;
-  let v = bytes;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${fmtNumber(v, { maximumFractionDigits: v < 10 ? 1 : 0 })} ${units[i]}`;
-}
+/** A size in decimal units (1 MB = 1,000,000 bytes, like Windows Update and Steam); null when unknown. */
+export const formatSize = (bytes) => formatBytes(bytes, locale());
 
 export function formatDuration(minutes) {
   if (!minutes) return null;

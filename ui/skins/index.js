@@ -7,35 +7,35 @@ import { t } from '../core/i18n.js';
 export const BUILTIN_SKINS = [
   {
     id: 'default',
-    name: 'CouchHUD',
+    get name() { return t('skins.name.default'); },
     get description() { return t('skins.default'); },
     css: null,
     glyphs: {}
   },
   {
-    id: 'ps4',
-    name: 'PS4 Classic',
-    get description() { return t('skins.ps4'); },
-    css: 'skins/ps4.css',
-    glyphs: { A: '✕', B: '○', X: '□', Y: '△', LB: 'L1', RB: 'R1', '≡': 'OPTIONS' }
+    id: 'deepsea',
+    get name() { return t('skins.name.deepsea'); },
+    get description() { return t('skins.deepsea'); },
+    css: 'skins/deepsea.css',
+    glyphs: {}
   },
   {
-    id: 'xbox',
-    name: 'Xbox',
-    get description() { return t('skins.xbox'); },
-    css: 'skins/xbox.css',
+    id: 'greenlight',
+    get name() { return t('skins.name.greenlight'); },
+    get description() { return t('skins.greenlight'); },
+    css: 'skins/greenlight.css',
     glyphs: { '≡': '☰' }
   },
   {
-    id: 'cyberpunk',
-    name: 'Cyberpunk',
-    get description() { return t('skins.cyberpunk'); },
-    css: 'skins/cyberpunk.css',
+    id: 'neoncity',
+    get name() { return t('skins.name.neoncity'); },
+    get description() { return t('skins.neoncity'); },
+    css: 'skins/neoncity.css',
     glyphs: { '≡': 'MENU' }
   },
   {
     id: 'nova',
-    name: 'Nova',
+    get name() { return t('skins.name.nova'); },
     get description() { return t('skins.nova'); },
     css: 'skins/nova.css',
     glyphs: {}

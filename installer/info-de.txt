@@ -9,14 +9,14 @@ Was dieses Setup macht
 
 Was dieses Setup NICHT macht
 • Es ändert nichts an der Windows-Anmeldung, ersetzt nicht den Desktop und pausiert keine Dienste.
-• CouchHUD startet in der Stufe „Light“: eine normale Vollbild-App. Shell-Ersatz, Couch-Sperre, Autologin und Dienste gibt es erst, wenn du in CouchHUD selbst „Integration: Voll“ wählst. Jeder Eingriff steht dort unter „Was CouchHUD an Windows ändert“.
+• CouchHUD startet im App-Modus: eine normale Vollbild-App. Shell-Ersatz, Couch-Sperre, Autologin und Dienste gibt es erst, wenn du in CouchHUD selbst den Shell-Modus wählst. Jeder Eingriff steht dort unter „Was CouchHUD an Windows ändert“.
 • CouchHUD läuft ohne Administratorrechte. Was sie braucht, fragt Windows gezielt nach.
 
 Deinstallation
 Die Deinstallation setzt zurück, was CouchHUD an Windows geändert hat (Shell-Eintrag, Task-Manager-Sperre, geplante Aufgaben, Firewall-Regel) und fragt, ob deine Einstellungen gelöscht werden sollen. Notfall jederzeit: Strg + Umschalt (oder LB + RB + View am Controller) beim Start von CouchHUD etwa 1,5 Sekunden halten. Windows sperrt dann, und nach der Anmeldung mit dem Windows-Kennwort des Kontos kommt der normale Desktop.
 
 Beschädigte Einstellungen
-Ist %APPDATA%\CouchHud\config.json beschädigt, läuft CouchHUD gesperrt (kein Spiel startet) und schreibt nichts in die Datei. Ausweg: config.json reparieren oder löschen (CouchHUD beginnt dann mit Standardwerten). Die .bad-Datei daneben ist nur eine Kopie.
+Ist %APPDATA%\CouchHud\config.json beschädigt, läuft CouchHUD gesperrt (kein Spiel startet) und schreibt nichts in die Datei. Ausweg: config.json reparieren oder zurücklegen. Nur config.json zu löschen, beginnt nicht neu; dazu den ganzen Ordner %APPDATA%\CouchHud entfernen (Spielzeit und Profile gehen mit). Die config.json.broken-Datei daneben ist nur eine Kopie.
 
 Haftungsausschluss und Datenschutz
 CouchHUD ist freie Software (GPL-3.0) ohne Gewährleistung, die Nutzung erfolgt auf eigenes Risiko. Keine Telemetrie, kein Konto. Die vollständigen Texte zeigt CouchHUD beim ersten Start und unter Einstellungen › Info.

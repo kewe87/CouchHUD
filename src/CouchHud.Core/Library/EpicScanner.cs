@@ -1,15 +1,17 @@
 using System.Text.Json;
+using CouchHud.Core.Platform;
 using CouchHud.Sdk;
 
 namespace CouchHud.Core.Library;
 
-public sealed class EpicScanner(string? manifestDir = null, string? catalogFile = null) : ILibraryProvider
+public sealed class EpicScanner(string? manifestDir = null, string? catalogFile = null) : ILibraryProvider, IGameStore
 {
     public static string DefaultManifestDir { get; } = Path.Combine(
         Environment.GetEnvironmentVariable("ProgramData") ?? @"C:\ProgramData",
         "Epic", "EpicGamesLauncher", "Data", "Manifests");
 
     public string Name => "Epic Games";
+    public string Source => "epic";
 
     public Task<IReadOnlyList<LibraryItem>> GetItemsAsync(CancellationToken cancellationToken) =>
         Task.Run(Scan, cancellationToken);
@@ -39,6 +41,47 @@ public sealed class EpicScanner(string? manifestDir = null, string? catalogFile 
             }
         }
         return items;
+    }
+
+    /// <summary>A launcher manifest is a few KB; the limit holds for the read itself.</summary>
+    internal const long MaxManifestBytes = 1024 * 1024;
+
+    /// <summary>
+    /// The launcher's manifests as library ids ("epic:AppName"): installed, and those it marks as an install still running
+    /// (<c>bIsIncompleteInstall</c>). The launcher writes no progress there, so this is all the downloads page can say about Epic.
+    /// </summary>
+    public static (IReadOnlySet<string> Installed, IReadOnlySet<string> Incomplete) InstallState(string? manifestDir = null)
+    {
+        var installed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var incomplete = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var dir = manifestDir ?? DefaultManifestDir;
+        try
+        {
+            if (!Directory.Exists(dir)) return (installed, incomplete);
+            foreach (var file in Directory.EnumerateFiles(dir, "*.item").Take(5000))
+            {
+                try
+                {
+                    // A manifest is a few KB; anything far bigger is not the launcher's.
+                    if (BoundedFile.ReadAllText(file, MaxManifestBytes) is not { } text) continue;
+                    using var doc = JsonDocument.Parse(text);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("AppName", out var app) || app.ValueKind != JsonValueKind.String) continue;
+                    var id = $"epic:{app.GetString()}";
+                    var busy = root.TryGetProperty("bIsIncompleteInstall", out var inc) && inc.ValueKind == JsonValueKind.True;
+                    (busy ? incomplete : installed).Add(id);
+                }
+                catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+                {
+                    // Being written right now, or not a manifest: next look.
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"[epic] manifests: {ex.GetType().Name}");
+        }
+        return (installed, incomplete);
     }
 
     internal static LibraryItem? ParseItem(JsonElement json)

@@ -23,11 +23,14 @@ import { categoryIcon } from './settings-icons.js';
 import { setPointer } from '../components/mouse.js';
 import { confirmDialog } from '../components/overlay.js';
 import { ensureUnlocked } from '../components/passcode.js';
+import { admitProtectedChange, configFaultNow } from '../core/lock-rules.js';
 import { setAudioMode, sound } from '../sound.js';
 import { showTermsIfNeeded, termsAccepted, termsPage } from './legal.js';
 import { consoleRevertPage, consoleSetupPage, hasConsoleSetup, isConsoleReady } from './console-setup.js';
 import { consoleDeps, enrollCouchCode } from './settings.js';
 import { setCaseHudApi } from './casehud.js';
+import { AREAS, AREA_DESC_KEYS, AREA_ICONS, AREA_NAME_KEYS, areaOn, enabledAreas, setAreas, shownSteps, toggleArea } from '../core/areas.js';
+import { ensureParentGrant, parental } from '../components/parental.js';
 
 /** Raise when the assistant gains a question every install should see once. */
 export const WIZARD_VERSION = 1;
@@ -63,10 +66,11 @@ const save = async (key, value) => (await call(() => api.setSetting(key, value))
 
 async function loadEnv() {
   const quiet = { quietLocked: true };
+  // The game clients belong to Gaming: not asked for while it is off (the host refuses then).
   const [settings, security, launchers] = await Promise.all([
     attempt(() => api.getSettings(), undefined, quiet),
     attempt(() => api.getSecurity(), undefined, quiet),
-    attempt(() => api.getLaunchers(), undefined, quiet)
+    areaOn('games') ? attempt(() => api.getLaunchers(), undefined, quiet) : []
   ]);
   return { settings: settings ?? {}, security: security ?? {}, launchers: Array.isArray(launchers) ? launchers : [] };
 }
@@ -115,11 +119,30 @@ function steps(page) {
       // The existing first-start notice is this step: same texts, same accept and decline.
       enter: () => page.openTerms()
     },
+    areas: {
+      glyph: '▦',
+      title: () => t('wizard.areas.title'),
+      lead: () => t('wizard.areas.lead'),
+      later: () => where('settings.cat.console', 'settings.areas.title'),
+      // One line per area (A switches it), then "Next" saves the choice; the last of Games, Apps and Browser stays on.
+      options: () => [
+        ...AREAS.map((a, i) => ({
+          id: `area:${a}`, row: i, line: 0, listRow: true, title: t(AREA_NAME_KEYS[a]), detail: t(AREA_DESC_KEYS[a]), icon: AREA_ICONS[a],
+          pill: page.areas.includes(a) ? t('settings.common.on') : t('settings.common.off'), pillOn: page.areas.includes(a),
+          run: () => {
+            const next = toggleArea(page.areas, a);
+            if (next.blocked) toast(t('settings.areas.needOne'));
+            page.areas = next.list;
+          }
+        })),
+        { id: 'continue', row: AREAS.length, line: 1, button: true, title: t('wizard.next'), run: () => page.saveAreas() }
+      ]
+    },
     mode: {
       icon: 'console',
       title: () => t('wizard.mode.title'),
       lead: () => t('wizard.mode.lead'),
-      later: () => where('settings.cat.console'),
+      later: () => where('settings.cat.console', 'settings.mode.title'),
       options: () => {
         const full = isFull(env);
         const ready = isConsoleReady(env.settings, env.security);
@@ -245,7 +268,7 @@ function steps(page) {
         const conflict = page.env?.security?.codeConflict;
         return conflict || (held && (held.couch || held.parent) && !page.env?.security?.hasPasscode) ? t('wizard.lock.serviceCodes') : null;
       },
-      later: () => where('settings.cat.console'),
+      later: () => where('settings.cat.console', 'settings.lock.title'),
       options: () => [
         {
           id: 'code', icon: '🔒', title: t('wizard.lock.code'), bullets: [t('wizard.lock.code1'), t('wizard.lock.code2'), t('wizard.lock.code3')],
@@ -291,6 +314,8 @@ function wizardPage({ firstRun = false, startAt = null } = {}) {
     busy: false,
     // What the mode question decided: 'full' (console setup) or 'light' (way back), run after the last question; null: nothing.
     intent: null,
+    // The areas as chosen in the areas step (saved with its "Next").
+    areas: enabledAreas(),
     // No notification cards over the questions (views/notifications.js).
     quietNotifications: true,
     savedSkin: state.skin,
@@ -299,9 +324,11 @@ function wizardPage({ firstRun = false, startAt = null } = {}) {
     order() {
       // Full as chosen here (set up at the end) or as it is now.
       const full = this.intent === 'full' || (isFull(this.env) && this.intent !== 'light');
-      return [
+      return shownSteps([
         'welcome',
         this.withTerms ? 'terms' : null,
+        // Which parts of CouchHUD are wanted, before anything that belongs to one of them (the game clients need Gaming).
+        'areas',
         'mode',
         'look',
         'sound',
@@ -310,7 +337,24 @@ function wizardPage({ firstRun = false, startAt = null } = {}) {
         // The console setup enrolls the code itself; this step is only for an install already in Full without a lock.
         full && !this.intent && !lockOn(this.env) ? 'lock' : null,
         'done'
-      ].filter(Boolean);
+      ].filter(Boolean), this.areas);
+    },
+
+    /**
+     * The areas step's "Next": saves the choice when it changed. A settings change like Settings › Console › Areas: with parental
+     * controls on the parents' code (the host checks it again, and refuses on a locked couch: the unlock comes first, as there).
+     */
+    async saveAreas() {
+      if (this.areas.join() === enabledAreas().join()) return 'next';
+      const reason = t('settings.areas.reason');
+      if (!(await admitProtectedChange({ reason, parentalOn: !!parental.status?.enabled, scope: { action: 'areas' }, ensureUnlocked, ensureParentGrant }))) return;
+      const result = await call(() => api.setFeatureAreas(this.areas), t('settings.areas.failed'));
+      if (!result.ok) return;
+      this.areas = setAreas(result.value?.areas ?? this.areas);
+      window.dispatchEvent(new CustomEvent('couchhud:areas', { detail: this.areas }));
+      // The game clients appear (or go) with Gaming.
+      await this.reload();
+      return 'next';
     },
     nextOf(id) {
       const order = this.order();
@@ -328,6 +372,7 @@ function wizardPage({ firstRun = false, startAt = null } = {}) {
 
     async reload() {
       this.env = await loadEnv();
+      this.areas = setAreas(this.env.settings.areas ?? enabledAreas());
       this.loaded = true;
     },
 
@@ -472,6 +517,7 @@ function wizardPage({ firstRun = false, startAt = null } = {}) {
         [full ? '📺' : '▭', full ? t('wizard.mode.full') : t('wizard.mode.light')],
         ['🎨', this.savedSkin.name],
         ['🔊', t(soundKey(audioMode(env.settings)))],
+        ['▦', this.areas.map((a) => t(AREA_NAME_KEYS[a])).join(', ')],
         ...(full && env.launchers.length ? [['🎮', t('wizard.done.clients', { count: clients })]] : []),
         ...(full ? [lock] : [])
       ];
@@ -593,7 +639,7 @@ function optionNode(o) {
   if (o.listRow) {
     return el('li', { className: 'wizard-option wizard-row' },
       el('span', { className: 'wizard-row-icon' }, iconEl(o.icon)),
-      el('strong', { textContent: o.title }),
+      o.detail ? el('span', { className: 'wizard-row-text' }, el('strong', { textContent: o.title }), el('small', { textContent: o.detail })) : el('strong', { textContent: o.title }),
       el('span', { className: `pill ${o.pillOn ? 'on' : 'off'}`, textContent: o.pill }));
   }
   return el('li', { className: `wizard-option wizard-card${o.current ? ' current' : ''}${o.compact ? ' compact' : ''}` },
@@ -616,7 +662,7 @@ async function checkIntent(intent) {
 // ---------------------------------------------------------------------------
 // Entry points
 
-const STEP_IDS = ['welcome', 'terms', 'mode', 'look', 'sound', 'clients', 'casehud', 'lock', 'done'];
+const STEP_IDS = ['welcome', 'terms', 'areas', 'mode', 'look', 'sound', 'clients', 'casehud', 'lock', 'done'];
 
 /** Locked, or not known: the start-up decision fails closed (isLocked() answers "open" when the read fails, for its other callers). */
 async function lockedOrUnknown() {
@@ -641,18 +687,24 @@ function takeResume() {
   }
 }
 
-/** Settings › Info: the same release as the settings it changes; a locked couch does not get in. */
+/** Settings › Console: the same release as the settings it changes; a locked couch does not get in. */
 export async function openSetupWizard() {
-  if (!(await ensureUnlocked(t('settings.info.wizard')))) return;
+  // Asked again: what the page read at its start may be old.
+  state.info.configFault = await configFaultNow(state.info.configFault, () => api.getSecurity());
+  if (state.info.configFault) return toast(t('wizard.configFault'), 7000);
+  if (!(await ensureUnlocked(t('settings.console.wizard')))) return;
   push(wizardPage({ firstRun: false }));
 }
 
 /**
  * At start: a new install gets the assistant (with the notice as its second step). An install that accepted the notice before the
  * assistant existed is only asked once whether it wants it. A locked couch gets neither: only the notice, as before.
+ * Settings that are broken or gone after an earlier install (the host's stand-in, `configFault`) are no first start: nothing at all, the
+ * host's notice says what is wrong (the assistant could set a lock and codes over settings that cannot be saved).
  */
 export async function startFirstRun() {
   const resume = takeResume();
+  if (state.info.configFault) return;
   const fresh = !((state.info.acceptedTerms ?? 0) > 0);
   const done = (state.info.setupWizardDone ?? 0) >= WIZARD_VERSION;
   const locked = await lockedOrUnknown();
@@ -668,7 +720,7 @@ export async function startFirstRun() {
   await new Promise((resolve) => setTimeout(resolve, 3000));
   if (state.overlay || state.stack.length) return;
   const start = await confirmDialog(t('wizard.offer.title'), t('wizard.offer.start'), { message: t('wizard.offer.text'), icon: '✦', cancelLabel: t('wizard.offer.later'), cancelIcon: '⏲' });
-  // Asked once: whatever the answer, the entry under Settings › Info stays.
+  // Asked once: whatever the answer, the entry under Settings › Console stays.
   const saved = await attempt(() => api.setSetting('setupWizardDone', WIZARD_VERSION), undefined, { quietLocked: true });
   if (saved !== undefined) state.info.setupWizardDone = WIZARD_VERSION;
   if (start) await openSetupWizard();

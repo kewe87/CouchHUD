@@ -252,7 +252,8 @@ public sealed class LockedDesktop(string dataDir)
         Release(dir, wait: true);
         try
         {
-            Strings.Use(new CouchHud.Core.Config.ConfigStore(dir).Current.Language);
+            // Only the language is needed: read without side effects (this file also holds the elevated release, see ElevatedContractTests).
+            if (CouchHud.Core.Config.ConfigStore.Peek(dir) is { } settings) Strings.Use(settings.ActiveProfile.Language);
             if (PolicyHelper.StuckGroups(dir, [], HasPendingState(dir)).Count == 0) return;
             Console.Error.WriteLine("[lock] Windows restrictions of the lock are stuck, offering the cleanup");
             var answer = MessageBoxW(IntPtr.Zero, Strings.Get("stuck.ask"), "CouchHUD", 0x4 | 0x30 | 0x10000 | 0x40000);

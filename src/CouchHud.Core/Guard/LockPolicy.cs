@@ -31,21 +31,38 @@ public static class LockPolicy
         "enterPcMode", "holdUnlockForSetup", "power", "quit", "unlock", "confirmWindowsUnlock", "getSecurity", "setPasscode", "setCouchLock",
         // The service: its state, and the repair (Windows' UAC prompt is the gate; the way out of a fail-closed lock).
         "getServiceStatus", "repairService",
-        "getSession", "resumeGame", "quitGame", "getAudio", "setVolume", "setMute", "setAudioOutput", "getAppVolumes", "setAppVolume", "setAppMute", "getPads", "rumble",
+        "getSession", "resumeGame", "quitGame", "getAudio", "setVolume", "setMute", "setAudioOutput", "getAppVolumes", "setAppVolume", "setAppMute", "getPads", "getBattery", "rumble",
         "getNews", "getFeeds", "assistantInfo", "askAssistant", "confirmAssistant", "resetAssistant",
-        "getBrowser", "browserLayout", "browserFocus", "browserCommand", "displayOff", "displayOn", "getLaunchers", "getProfile", "capture", "getDownloads", "getDisplay", "getPerformance", "getCaptures",
+        "getBrowser", "browserLayout", "browserFocus", "browserCommand", "displayOff", "displayOn", "getLaunchers", "getProfile", "capture", "getDownloads", "getDisplay",
+        // The downloads page and the list of not installed games may be looked at; installing ("installGame"), starting an update, cancelling
+        // ("cancelDownload") and opening a client's download page ("openClientDownloads") need the unlock.
+        "getDownloadCenter", "dismissDownload", "getUninstalled", "getPerformance", "getCaptures",
+        // Save games are not here on purpose: looking at them (getSaveInfo, getSaveSettings) and every change (backupSaves, restoreSaves,
+        // deleteSaveBackup, setSaveSetting) need the unlock; restoring and deleting also the parents' code (Hud.RequireSaveChange). The
+        // automatic backup after a game is the host's own work and needs no call. The "Continue playing" row lives on getLibrary.
         "getPlugins", "getPluginPage", "getQuickActions", "getNotifications", "markNotificationsRead", "clearNotifications",
         // The answer to the automatic Bluetooth switch-on's countdown: "now" or "leave it off" (the guest could switch the radio off with
         // the keyboard's airplane key anyway; switching it off in CouchHUD, "setBluetooth", needs the code).
         "answerBluetoothRecovery",
-        "getBluetooth", "getRemote", "keyboardState", "getUpdates", "getCatalogUpdates", "getSelfUpdate", "getWeather", "getHomeEntities", "activateHomeEntity",
+        "getBluetooth", "getRemote", "keyboardState", "codeEntryState", "pairingState", "getUpdates", "getCatalogUpdates", "getSelfUpdate", "getWeather", "getHomeEntities", "activateHomeEntity",
         "listSkins", "setSkin", "getGameFolders", "getCollections", "getParental", "parentalCheck", "parentalCloseGame", "parentalAuth", "setParental", "setParentalItemLock", "parentalExtend", "parentalReset", "parentalAcceptClock", "parentalAdoptZone"
     };
 
     /// <summary>Settings a guest may change while locked: sound and look only.</summary>
     public static readonly IReadOnlySet<string> HarmlessSettings = new HashSet<string>
     {
-        "soundVolume", "soundSet", "audioMode", "musicVolume", "trailerPreviews", "rumble", "acceptedTerms",
+        "soundVolume", "soundSet", "audioMode", "musicVolume", "trailerPreviews", "rumble", "padGlyphs", "acceptedTerms",
         "screensaverMinutes", "screensaverStyle", "displayOffMinutes", "pixelShift", "reduceMotion", "pointer", "mouseUnlocked", "nightMode", "nightModeStrength", "expertMode"
     };
+
+    /// <summary>
+    /// Settings that bring a protected profile back to the profile picker (screensaver, display off). With parental controls and several
+    /// profiles they are the parents' (review NEU-1): a child could otherwise switch them off on the locked couch and keep an adult's
+    /// profile without limits forever. The host's own idle threshold (<see cref="CouchHud.Core.Config.ProfileIdleClock"/>) stays anyway.
+    /// </summary>
+    public static readonly IReadOnlySet<string> ProfileIdleSettings = new HashSet<string> { "screensaverMinutes", "displayOffMinutes" };
+
+    /// <summary>A setting a guest may change on the locked couch; <paramref name="profilesGuarded"/>: parental controls on and several profiles.</summary>
+    public static bool IsHarmlessSetting(string key, bool profilesGuarded) =>
+        HarmlessSettings.Contains(key) && !(profilesGuarded && ProfileIdleSettings.Contains(key));
 }

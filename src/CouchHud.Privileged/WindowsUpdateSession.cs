@@ -28,9 +28,11 @@ public interface IWindowsUpdateSession
     /// <summary>
     /// Searches again (with the same criteria as <see cref="Search"/>, so hidden and driver updates stay out also without ids) and
     /// downloads and installs the updates whose id is in <paramref name="ids"/> (null: all found; ids in <see cref="FoundUpdate.NormalizeId"/>
-    /// form). Ids the fresh search no longer finds are skipped. <paramref name="progress"/> gets 0–100 over download and installation.
+    /// form). Ids the fresh search no longer finds are skipped. <paramref name="progress"/> gets 0–100 over download and installation;
+    /// <paramref name="bytes"/> the agent's own byte counters while it downloads (done, total; checked by <see cref="Core.Updates.UpdateSize.Transfer"/>),
+    /// and (0, 0) once the installation begins.
     /// </summary>
-    UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation);
+    UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation, Action<long, long>? bytes = null);
 }
 
 /// <summary>
@@ -62,7 +64,7 @@ public sealed class WindowsUpdateSession(string clientApplicationId = "CouchHud"
         return list;
     }
 
-    public UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation)
+    public UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation, Action<long, long>? bytes = null)
     {
         cancellation.ThrowIfCancellationRequested();
         dynamic session = NewSession();
@@ -87,7 +89,15 @@ public sealed class WindowsUpdateSession(string clientApplicationId = "CouchHud"
             begin: done => downloader.BeginDownload(new DownloadProgressCallback(), new DownloadCompletedCallback(done), null),
             end: job => downloader.EndDownload(job),
             fallback: () => downloader.Download(),
-            percent => progress(percent / 2), cancellation);
+            percent => progress(percent / 2), cancellation,
+            // IDownloadProgress: what is really loaded (express and delta parts), not the full package of MaxDownloadSize.
+            state =>
+            {
+                object? loaded = state.TotalBytesDownloaded, toLoad = state.TotalBytesToDownload;
+                var (done, total) = Core.Updates.UpdateSize.Transfer(loaded, toLoad);
+                bytes?.Invoke(done, total);
+            });
+        bytes?.Invoke(0, 0);
         if (!Succeeded((int)downloaded.ResultCode)) return new UpdateInstallOutcome(0, total, false, $"downloadFailed:{(int)downloaded.ResultCode}");
 
         dynamic ready = WindowsUpdateAgent.CreateCom("Microsoft.Update.UpdateColl");
@@ -146,7 +156,8 @@ public sealed class WindowsUpdateSession(string clientApplicationId = "CouchHud"
     /// Begin…, then poll GetProgress until the completed callback fires (or the job says it is done), then End…. Cancellation asks
     /// the job to abort and still waits for the end (End… must be called). Without the asynchronous call: the synchronous one.
     /// </summary>
-    private static dynamic RunJob(Func<ManualResetEventSlim, dynamic> begin, Func<dynamic, dynamic> end, Func<dynamic> fallback, Action<int> percent, CancellationToken cancellation)
+    private static dynamic RunJob(Func<ManualResetEventSlim, dynamic> begin, Func<dynamic, dynamic> end, Func<dynamic> fallback, Action<int> percent, CancellationToken cancellation,
+        Action<dynamic>? details = null)
     {
         using var done = new ManualResetEventSlim();
         dynamic job;
@@ -170,9 +181,11 @@ public sealed class WindowsUpdateSession(string clientApplicationId = "CouchHud"
             try
             {
                 if ((bool)job.IsCompleted) break;
-                percent(Math.Clamp((int)job.GetProgress().PercentComplete, 0, 100));
+                dynamic state = job.GetProgress();
+                percent(Math.Clamp((int)state.PercentComplete, 0, 100));
+                details?.Invoke(state);
             }
-            catch (COMException)
+            catch (Exception ex) when (ex is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
             {
                 // A progress that cannot be read is no reason to stop.
             }

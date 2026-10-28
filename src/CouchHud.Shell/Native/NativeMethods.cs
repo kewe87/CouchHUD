@@ -57,27 +57,49 @@ internal struct XInputCapabilitiesEx
     public uint Reserved;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal struct SystemPowerStatus
+{
+    public byte AcLineStatus;
+    public byte BatteryFlag;
+    public byte BatteryLifePercent;
+    public byte SystemStatusFlag;
+    public uint BatteryLifeTime;
+    public uint BatteryFullLifeTime;
+}
+
 internal static class NativeMethods
 {
+    /// <summary>Battery and charger state of the PC (no handle, nothing to close).</summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetSystemPowerStatus(out SystemPowerStatus status);
+
     public const uint ErrorSuccess = 0;
 
     /// <summary>Undocumented variant (ordinal 100) that also reports the Guide button.</summary>
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("xinput1_4.dll", EntryPoint = "#100")]
     public static extern uint XInputGetStateEx(uint userIndex, out XInputState state);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
     public static extern uint XInputGetState(uint userIndex, out XInputState state);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("xinput1_4.dll")]
     public static extern uint XInputSetState(uint userIndex, ref XInputVibration vibration);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("xinput1_4.dll")]
     public static extern uint XInputGetBatteryInformation(uint userIndex, byte devType, out XInputBatteryInformation information);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("xinput1_4.dll")]
     public static extern uint XInputGetCapabilities(uint userIndex, uint flags, out XInputCapabilities capabilities);
 
     /// <summary>Undocumented (ordinal 108): capabilities plus USB vendor/product id. First argument must be 1.</summary>
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("xinput1_4.dll", EntryPoint = "#108")]
     public static extern uint XInputGetCapabilitiesEx(uint reserved, uint userIndex, uint flags, out XInputCapabilitiesEx capabilities);
 

@@ -63,6 +63,9 @@ public static class ServiceCodes
     public static async Task<MigrationResult> MigrateAsync(ConfigStore config)
     {
         if (!Expected) return MigrationResult.NotYet;
+        // While config.json is unusable the store runs on its stand-in (ConfigStore.FaultConfig, Windows lock): that is not the user's
+        // choice and must not become the service's lock mode. Taken up once the file works again (or was restored from its .bak).
+        if (config.Fault is not null) return MigrationResult.NotYet;
         var hash = config.Current.PasscodeHash;
         var mode = config.Current.CouchLock;
         var local = Passcode.IsLocalHash(hash);
@@ -99,6 +102,8 @@ public static class ServiceCodes
     public static async Task<LegacyConfirm> ConfirmLegacyCodeAsync(ConfigStore config, IReadOnlyList<string> sequence, bool asNewCode = false)
     {
         if (!Expected) return LegacyConfirm.NotConfirmed;
+        // On the stand-in of unusable settings nothing is changed in the service: the config could not follow (service and config apart).
+        if (config.Fault is not null) return LegacyConfirm.NotConfirmed;
         if (await RefreshAsync().ConfigureAwait(false) is not { LegacyLock: true }) return LegacyConfirm.NotConfirmed;
         var stored = config.Current.PasscodeHash;
         // Only a real stored hash that verifies counts as the old code; nothing stored (or the marker) asks first like a mismatch (review 4),
@@ -122,11 +127,13 @@ public static class ServiceCodes
 
     /// <summary>
     /// The same for a lock of 0.4.0 opened with the Windows sign-in: an administrator confirms that <b>the Windows sign-in</b> is the lock (the
-    /// Windows mode); every code the account had before goes. True when the lock is the service's own now.
+    /// Windows mode); every code the account had before goes. True when the lock is the service's own now. False without asking anything
+    /// while the settings are unusable (the stand-in): the service's mode is not changed then, the config could not follow it.
     /// </summary>
-    public static async Task<bool> ConfirmLegacyWindowsAsync()
+    public static async Task<bool> ConfirmLegacyWindowsAsync(ConfigStore config)
     {
         if (!Expected) return false;
+        if (config.Fault is not null) return false;
         if (await RefreshAsync().ConfigureAwait(false) is not { LegacyLock: true }) return false;
         var result = await AdminService.WithLegacyApprovalAsync(Operation.SetLockMode, AdminService.LegacyWindowsReason,
             () => AdminService.Ops.SetLockModeAsync(LockModes.Windows)).ConfigureAwait(false);

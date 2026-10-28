@@ -111,7 +111,7 @@ public sealed class WindowsUpdateJobs(IWindowsUpdateSession agent, JobStore jobs
                 return;
             }
             job.Progress(1, "installing");
-            var outcome = agent.Install(wanted, percent => job.Progress(Math.Clamp(percent, 0, 99)), stopping);
+            var outcome = agent.Install(wanted, percent => job.Progress(Math.Clamp(percent, 0, 99)), stopping, job.Bytes);
             log.Info($"[windowsUpdate] installed {outcome.Installed}, failed {outcome.Failed}, reboot required {outcome.RebootRequired}, error {outcome.Error ?? "none"}");
             events.Add(caller.Sid, "windowsUpdate", $"installed {outcome.Installed}{(outcome.RebootRequired ? ", reboot required" : "")}");
             if (outcome.Error is null) job.Complete(jobs.Clock.Now, "installed", outcome.Installed, outcome.RebootRequired);

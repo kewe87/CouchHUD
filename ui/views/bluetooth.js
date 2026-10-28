@@ -7,7 +7,8 @@ import { currentView, move, render } from '../core/nav.js';
 import { chooseDialog, confirmDialog } from '../components/overlay.js';
 import { switchOffWarning } from '../core/input-help.js';
 import { sound } from '../sound.js';
-import { t } from '../core/i18n.js';
+import { fmtPercent, t } from '../core/i18n.js';
+import { LOW_PERCENT, bars, percentSteps, validPercent } from '../core/battery-rules.js';
 
 const ICON = { controller: '🎮', headphones: '🎧', keyboard: '⌨', mouse: '🖱', speaker: '🔊', phone: '📱', other: '◉' };
 
@@ -49,10 +50,14 @@ export function bluetoothPage() {
             this.radio?.available ? el('span', { className: `pill ${on ? 'on' : 'off'}`, textContent: on ? t('bluetooth.on') : t('bluetooth.off') }) : null);
         }
         const d = r.d;
+        // The battery Windows knows for a connected device (DEVPKEY_Bluetooth_Battery), with the same bars as the guide menu.
+        const battery = d.connected && validPercent(d.battery) ? d.battery : null;
+        const low = battery !== null && battery <= LOW_PERCENT;
         return el('li', { className: `check-row${d.connected ? ' checked' : ''}` },
           el('span', { className: 'check-box', textContent: ICON[d.kind] ?? '◉' }),
           el('span', { className: 'check-main' }, el('strong', { textContent: d.name }),
-            el('small', { textContent: d.connected ? t('bluetooth.connected') : d.paired ? t('bluetooth.paired') : t('bluetooth.nearby') })));
+            el('small', { className: low ? 'battery-low' : '', textContent: battery !== null ? t('bluetooth.connectedBattery', { percent: fmtPercent(battery) }) : d.connected ? t('bluetooth.connected') : d.paired ? t('bluetooth.paired') : t('bluetooth.nearby') })),
+          battery !== null ? el('span', { className: `battery-bars${low ? ' battery-low' : ''}`, textContent: bars(percentSteps(battery)) }) : null);
       });
       this.scroller = el('ul', { className: 'check-list list-scroll' }, this.items);
       root.append(el('div', { className: 'files' },

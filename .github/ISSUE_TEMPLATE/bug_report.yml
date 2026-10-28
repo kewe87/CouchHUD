@@ -27,16 +27,16 @@ body:
     attributes:
       label: Modus / Mode
       options:
-        - Light
-        - Volle Einbindung / Full integration
-        - Als Shell / As shell
+        - App-Modus / App mode
+        - Shell-Modus, nicht als Windows-Shell eingetragen / Shell mode, not registered as Windows shell
+        - Shell-Modus als Windows-Shell / Shell mode, as Windows shell
     validations:
       required: true
   - type: input
     id: skin
     attributes:
       label: Skin
-      placeholder: "Nova, Xbox, PS4, Cyberpunk, ..."
+      placeholder: "CouchHUD, Deep Sea, Greenlight, Neon City, Nova, ..."
     validations:
       required: true
   - type: dropdown

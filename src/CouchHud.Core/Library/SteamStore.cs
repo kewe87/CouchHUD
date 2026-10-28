@@ -5,29 +5,66 @@ namespace CouchHud.Core.Library;
 /// <summary>Public Steam store endpoints, no API key needed.</summary>
 public static class SteamStore
 {
+    /// <summary>The store search answers in a few KB; more is not a search result.</summary>
+    internal const int MaxSearchBytes = 512 * 1024;
+
     /// <summary>
-    /// App id of the store entry that is the same game by name (see <see cref="NameMatch"/>),
-    /// or null. Near matches are rejected on purpose: wrong data is worse than none.
+    /// App id of the store entry that is the same game by name (see <see cref="NameMatch"/>), or null. Near matches are rejected on
+    /// purpose: wrong data is worse than none. Several different entries with that name (a remake and the original) are no answer
+    /// either, unless exactly one of them has the very name.
     /// </summary>
     public static async Task<string?> FindAppIdAsync(HttpClient http, string name, CancellationToken ct)
     {
-        var url = $"https://store.steampowered.com/api/storesearch/?term={Uri.EscapeDataString(name)}&l=english&cc=US";
-        using var response = await http.GetAsync(url, ct);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        if (!doc.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array) return null;
+        var hits = (await SearchAsync(http, name, ct)).Where(c => NameMatch.Same(c.Name, name)).DistinctBy(c => c.AppId).ToList();
+        if (hits.Count <= 1) return hits.FirstOrDefault()?.AppId;
+        var exact = hits.Where(c => NameMatch.Exact(c.Name, name)).ToList();
+        return exact.Count == 1 ? exact[0].AppId : null;
+    }
 
+    /// <summary>
+    /// The store's search: games only (no DLC, soundtracks, bundles), at most <see cref="StoreMatches.MaxResults"/>. The answer is read
+    /// up to <see cref="MaxSearchBytes"/>; names are cut to the search's length and stripped of control characters.
+    /// </summary>
+    public static async Task<IReadOnlyList<StoreCandidate>> SearchAsync(HttpClient http, string query, CancellationToken ct)
+    {
+        var url = $"https://store.steampowered.com/api/storesearch/?term={Uri.EscapeDataString(query)}&l=english&cc=US";
+        using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+        using var doc = await ReadJsonAsync(response, MaxSearchBytes, ct);
+        var result = new List<StoreCandidate>();
+        if (!doc.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array) return result;
         foreach (var candidate in items.EnumerateArray())
         {
             // DLC, soundtracks and bundles come back from the search too; only the game itself has the art.
             if (candidate.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String && type.GetString() != "app") continue;
-            if (candidate.TryGetProperty("name", out var n) && NameMatch.Same(n.GetString() ?? "", name))
-            {
-                return candidate.GetProperty("id").GetRawText();
-            }
+            if (!candidate.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.Number) continue;
+            var appId = id.GetRawText();
+            if (!StoreMatches.IsAppId(appId)) continue;
+            var name = candidate.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String
+                ? InfoOverrides.Clip(n.GetString(), StoreMatches.MaxQueryLength)
+                : null;
+            if (name is null) continue;
+            result.Add(new StoreCandidate(appId, name));
+            if (result.Count == StoreMatches.MaxResults) break;
         }
-        return null;
+        return result;
+    }
+
+    /// <summary>Parses a JSON answer read up to <paramref name="maxBytes"/>; a longer one is refused instead of buffered.</summary>
+    internal static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, int maxBytes, CancellationToken ct)
+    {
+        if (response.Content.Headers.ContentLength > maxBytes) throw new HttpRequestException($"answer too large ({response.Content.Headers.ContentLength} bytes)");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + read > maxBytes) throw new HttpRequestException($"answer too large (over {maxBytes} bytes)");
+            buffer.Write(chunk, 0, read);
+        }
+        buffer.Position = 0;
+        return await JsonDocument.ParseAsync(buffer, cancellationToken: ct);
     }
 
     /// <summary>App id for library items that come from Steam, null otherwise.</summary>
@@ -81,6 +118,8 @@ public sealed class SteamAppIds
 
     public async Task<string?> FindAsync(string name, CancellationToken ct)
     {
+        // A name that cannot be compared (no Latin letters) is never searched: no answer could be taken anyway.
+        if (NameMatch.Canonical(name).Length == 0) return null;
         if (Peek(name) is { Known: true } known) return known.AppId;
         var id = await SteamStore.FindAppIdAsync(_http, name, ct);
         lock (_lock)

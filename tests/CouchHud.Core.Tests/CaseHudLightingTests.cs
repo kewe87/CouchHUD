@@ -6,7 +6,7 @@ using CouchHud.Core.Localization;
 
 namespace CouchHud.Core.Tests;
 
-/// <summary>CaseHUD 1.0: first-start disclaimer, lighting (capability, PATCH validation, refusals).</summary>
+/// <summary>CaseHUD 1.0: first-start disclaimer, lighting (capability, PATCH validation, refusals). From the couch: on/off, brightness, effect.</summary>
 public class CaseHudLightingTests
 {
     private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
@@ -104,17 +104,9 @@ public class CaseHudLightingTests
         Assert.Equal("rainbow", state.Effect);
         Assert.Equal(4, state.Effects!.Count);
         Assert.Equal("Rainbow wave", state.Effects[2].Label);
-        Assert.Equal(["cw", "ccw"], state.Effects[2].Params![1].Values!);
-        Assert.True(state.Devices![1].Disabled);
-        Assert.Equal("conflict", state.Devices[1].State);
-        Assert.Equal("Held by another program", state.Devices[1].Message);
-        Assert.True(state.Devices[1].IgnoreConflicts);
-        Assert.Equal("hid", state.Devices[0].Backend);
-        Assert.Equal(5, state.Params!["speed"].GetInt32());
         // The PATCH answer is the full state, the same shape as GET, read through the same parser.
         var changed = await client.PatchLightingAsync(Build("""{"brightness":40}"""));
         Assert.Equal(4, changed!.Effects!.Count);
-        Assert.Equal(2, changed.Devices!.Count);
         Assert.Equal("GET /api/v1/lighting", $"{handler.Requests[0].Method} {handler.Requests[0].Path}");
         Assert.Equal("PATCH /api/v1/lighting", $"{handler.Requests[1].Method} {handler.Requests[1].Path}");
         Assert.Equal("""{"brightness":40}""", handler.Requests[1].Body);
@@ -127,7 +119,8 @@ public class CaseHudLightingTests
     [InlineData(413, "payload_too_large", null, "casehud.err.tooLarge")]
     [InlineData(500, "internal", null, "casehud.err.internal")]
     [InlineData(403, "forbidden", null, "casehud.err.forbidden")]
-    [InlineData(401, "unauthorized", null, "casehud.err.forbidden")]
+    [InlineData(401, "unauthorized", null, "casehud.err.unauthorized")]
+    [InlineData(404, "not_found", null, "casehud.err.notFound")]
     [InlineData(405, "method_not_allowed", null, "casehud.err.notAllowed")]
     public async Task Refusals_map_to_page_problems_or_readable_texts(int status, string code, string? problem, string? textKey)
     {
@@ -159,24 +152,10 @@ public class CaseHudLightingTests
     [InlineData("""{"enabled":false}""", """{"enabled":false}""")]
     [InlineData("""{"effect":"solid"}""", """{"effect":"solid"}""")]
     [InlineData("""{"effect":"lab-only"}""", """{"effect":"lab-only"}""")]
-    [InlineData("""{"params":{"speed":99}}""", """{"params":{"speed":10}}""")]
-    [InlineData("""{"params":{"speed":0}}""", """{"params":{"speed":1}}""")]
-    [InlineData("""{"params":{"speed":3.4}}""", """{"params":{"speed":3}}""")]
-    [InlineData("""{"params":{"gain":0.25}}""", """{"params":{"gain":0.25}}""")]
-    [InlineData("""{"params":{"direction":"ccw","mirror":true}}""", """{"params":{"direction":"ccw","mirror":true}}""")]
-    // Only the changed param goes out: CaseHUD keeps the others.
-    [InlineData("""{"params":{"mirror":true}}""", """{"params":{"mirror":true}}""")]
     // Switching effects: the effect alone, CaseHUD restores its last values.
     [InlineData("""{"effect":"breathing"}""", """{"effect":"breathing"}""")]
-    // Effect and params together are checked against the new effect.
-    [InlineData("""{"effect":"solid","params":{"color":"#00FF7f"}}""", """{"effect":"solid","params":{"color":"#00ff7f"}}""")]
-    [InlineData("""{"effect":"breathing","params":{"period":2.34}}""", """{"effect":"breathing","params":{"period":2.34}}""")]
-    [InlineData("""{"effect":"breathing","params":{"period":0.1}}""", """{"effect":"breathing","params":{"period":0.5}}""")]
-    // Brightness, effect and params can be set before switching on.
+    // Brightness and effect can be set before switching on.
     [InlineData("""{"brightness":20,"effect":"solid"}""", """{"brightness":20,"effect":"solid"}""")]
-    // Devices: an object keyed by id, only "disabled".
-    [InlineData("""{"devices":{"strip":{"disabled":false}}}""", """{"devices":{"strip":{"disabled":false}}}""")]
-    [InlineData("""{"devices":{"strip":{"disabled":false},"ctl-1":{"disabled":true}}}""", """{"devices":{"strip":{"disabled":false},"ctl-1":{"disabled":true}}}""")]
     public void Valid_patches_are_clamped_and_rebuilt(string patch, string expected) => Assert.Equal(expected, Body(patch));
 
     [Theory]
@@ -187,69 +166,38 @@ public class CaseHudLightingTests
     [InlineData("""{"brightness":"50"}""")]
     [InlineData("""{"effect":"meteor"}""")]
     [InlineData("""{"effect":7}""")]
-    [InlineData("""{"params":{"color":"#ff0000"}}""")]
-    [InlineData("""{"params":{"nope":1}}""")]
-    [InlineData("""{"params":{"speed":"fast"}}""")]
-    [InlineData("""{"params":{"direction":"up"}}""")]
-    [InlineData("""{"params":{"mirror":1}}""")]
-    [InlineData("""{"params":{"future":"x"}}""")]
-    [InlineData("""{"params":[1]}""")]
-    [InlineData("""{"effect":"solid","params":{"color":"red"}}""")]
-    [InlineData("""{"effect":"solid","params":{"speed":5}}""")]
-    [InlineData("""{"devices":[{"id":"strip","disabled":false}]}""")]
-    [InlineData("""{"devices":{"other":{"disabled":true}}}""")]
-    [InlineData("""{"devices":{"strip":{}}}""")]
-    [InlineData("""{"devices":{"strip":true}}""")]
-    [InlineData("""{"devices":{"strip":{"disabled":"no"}}}""")]
-    [InlineData("""{"devices":{"strip":{"disabled":true,"ignoreConflicts":true}}}""")]
-    [InlineData("""{"devices":{"strip":{"settings":{"mode":"y"}}}}""")]
+    // Effect parameters and devices are built in CaseHUD's window: nothing of them goes out from the couch, not even a valid value.
+    [InlineData("""{"params":{"speed":5}}""")]
+    [InlineData("""{"params":{}}""")]
+    [InlineData("""{"effect":"solid","params":{"color":"#00ff7f"}}""")]
+    [InlineData("""{"devices":{"strip":{"disabled":false}}}""")]
+    [InlineData("""{"devices":{}}""")]
     [InlineData("""{"devices":{"ctl-1":{"disabled":true,"zones":{"z1":{"segments":[]}}}}}""")]
-    [InlineData("""{"params":{"caption":"hi"}}""")]
-    [InlineData("""{"effect":"breathing","params":{"speed":5}}""")]
+    [InlineData("""{"shutdown":"keep"}""")]
+    [InlineData("""{"tl":true}""")]
     public void Invalid_patches_are_refused(string patch) => Assert.Throws<ArgumentException>(() => Build(patch));
 
     [Fact]
-    public void Labels_and_steps_are_read()
+    public void Labels_are_read_and_cleaned()
     {
         var state = Last();
         Assert.Equal("Einfarbig", state.Effects![0].LabelDe);
         Assert.Equal("Solid", state.Effects[0].Label);
-        var period = state.Effects[1].Params![0];
-        Assert.Equal(0.1, period.Step);
-        Assert.Equal("Period", period.Label);
-        Assert.Null(period.LabelDe);
-        var speed = state.Effects[2].Params![0];
-        Assert.Equal(1, speed.Step);
-        Assert.Equal("Tempo", speed.LabelDe);
-        // No step, or one that is no positive number: the page falls back to its own guess.
-        Assert.Null(state.Effects[2].Params![4].Step);
-        var bad = Parse("""{"effects":[{"name":"x","params":[{"key":"n","type":"number","min":0,"max":5,"step":-1},{"key":"m","type":"number","min":0,"max":5,"step":"1"}]}]}""");
-        Assert.All(bad.Effects![0].Params!, p => Assert.Null(p.Step));
-    }
-
-    [Fact]
-    public void A_whole_step_keeps_numbers_whole()
-    {
-        var state = Parse("""{"effect":"x","effects":[{"name":"x","params":[{"key":"n","type":"number","min":0.5,"max":5,"step":0.5},{"key":"w","type":"number","min":0,"max":50,"default":10,"step":1}]}]}""");
-        Assert.Equal("""{"params":{"n":1.25,"w":3}}""",
-            JsonSerializer.Serialize(CaseHudLighting.BuildPatch(JsonDocument.Parse("""{"params":{"n":1.25,"w":2.6}}""").RootElement, state), CaseHudJson.Options));
-    }
-
-    [Theory]
-    [InlineData(0, 4.5, 1.0, 4.5, 4.5)]        // whole steps, a bound off the grid: rounding up to 5 would leave the range
-    [InlineData(0, 4.5, 1.0, 4.4, 4.0)]
-    [InlineData(0.333, 1, null, 0.333, 0.333)] // two places would give 0.33, below min
-    [InlineData(0, 0.666, null, 0.666, 0.666)] // 0.67 would be above max
-    [InlineData(1, 10, 1.0, 9.5, 10.0)]
-    public void Numbers_stay_in_range_after_rounding(double min, double max, double? step, double value, double expected)
-    {
-        var stepJson = step is { } st ? ",\"step\":" + st.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-        var state = Parse("{\"effect\":\"x\",\"effects\":[{\"name\":\"x\",\"params\":[{\"key\":\"n\",\"type\":\"number\",\"min\":" + min.ToString(inv) + ",\"max\":" + max.ToString(inv) + stepJson + "}]}]}");
-        var body = CaseHudLighting.BuildPatch(JsonDocument.Parse("{\"params\":{\"n\":" + value.ToString(inv) + "}}").RootElement, state);
-        var n = (double)((Dictionary<string, object>)body["params"])["n"];
-        Assert.Equal(expected, n);
-        Assert.InRange(n, min, max);
+        Assert.Null(state.Effects[2].LabelDe);
+        // A label is shown on the page: no bidi override or control character, at most 64 text elements.
+        var odd = Parse("{\"effects\":[{\"name\":\"x\",\"label\":\"\\u202Eevil\\u0007\",\"labelDe\":\"" + new string('a', 100) + "\"},{\"name\":\"y\",\"label\":\"\\u200B\"}]}");
+        Assert.Equal("evil", odd.Effects![0].Label);
+        Assert.Equal(65, odd.Effects[0].LabelDe!.Length);
+        Assert.Null(odd.Effects[1].Label);
+        // The name stays raw (it goes back in a PATCH); the page shows its cleaned copy when there is no label.
+        var named = Parse("{\"effect\":\"\\u202Ez\",\"effects\":[{\"name\":\"\\u202Ez\"},{\"name\":\"" + new string('b', 100) + "\"}]}");
+        Assert.Equal("\u202Ez", named.Effects![0].Name);
+        Assert.Equal("z", named.Effects[0].Display);
+        Assert.Equal("\u202Ez", named.Effect);
+        Assert.Equal("z", named.EffectDisplay);
+        Assert.Equal(100, named.Effects[1].Name.Length);
+        Assert.Equal(CaseHudLighting.MaxLabel + 1, named.Effects[1].Display.Length);
+        Assert.Equal("\u202Ez", CaseHudLighting.BuildPatch(JsonDocument.Parse("{\"effect\":\"\\u202Ez\"}").RootElement, named)["effect"]);
     }
 
     [Fact]
@@ -278,31 +226,11 @@ public class CaseHudLightingTests
     }
 
     [Fact]
-    public void Device_state_is_only_one_of_the_documented_values()
-    {
-        var state = Parse("""{"devices":[{"id":"a","state":"exploded"},{"id":"b","state":"error","message":"I/O"}]}""");
-        Assert.Equal("", state.Devices![0].State);
-        Assert.Equal("error", state.Devices[1].State);
-        Assert.Equal("I/O", state.Devices[1].Message);
-    }
-
-    [Fact]
-    public void Without_effects_no_effect_or_params_can_be_sent()
+    public void Without_effects_no_effect_can_be_sent()
     {
         var bare = new CaseHudLightingState(true, 50);
         Assert.Throws<ArgumentException>(() => CaseHudLighting.BuildPatch(JsonDocument.Parse("""{"effect":"solid"}""").RootElement, bare));
-        Assert.Throws<ArgumentException>(() => CaseHudLighting.BuildPatch(JsonDocument.Parse("""{"params":{"color":"#ffffff"}}""").RootElement, bare));
         Assert.Single(CaseHudLighting.BuildPatch(JsonDocument.Parse("""{"brightness":10}""").RootElement, bare));
-    }
-
-    [Fact]
-    public void Number_params_without_a_range_are_refused()
-    {
-        foreach (var range in new[] { "", "\"min\":1,", "\"max\":9,", "\"min\":9,\"max\":1," })
-        {
-            var state = Parse("{\"enabled\":true,\"brightness\":5,\"effect\":\"x\",\"effects\":[{\"name\":\"x\",\"params\":[{" + range + "\"key\":\"n\",\"type\":\"number\"}]}]}");
-            Assert.Throws<ArgumentException>(() => CaseHudLighting.BuildPatch(JsonDocument.Parse("{\"params\":{\"n\":3}}").RootElement, state));
-        }
     }
 
     // ---- reading CaseHUD's answer defensively
@@ -312,18 +240,16 @@ public class CaseHudLightingTests
     {
         var state = Parse("""
             {"enabled":"yes","brightness":"bright","effect":5,"params":{"a":[1],"b":{"x":1},"c":"ok","d":2},
-             "effects":[{"name":7,"featured":true},{"label":"no name"},{"name":"wave","featured":"true","params":[{"key":1,"type":"number"},{"key":"k"},{"key":"s","type":"enum","values":["a",2,null,"b"]}]}],
+             "effects":[{"name":7,"featured":true},{"label":"no name"},{"name":"wave","featured":"true","label":3,"params":[{"key":1,"type":"number"}]}],
              "devices":[{"id":3},{"name":"x"},{"id":"ok","name":5},{"id":"good","disabled":true}]}
             """);
         Assert.False(state.Enabled);
         Assert.Equal(0, state.Brightness);
         Assert.Equal("", state.Effect);
-        Assert.Equal(["c", "d"], state.Params!.Keys.Order());
         var wave = Assert.Single(state.Effects!);
         Assert.Equal("wave", wave.Name);
         Assert.False(wave.Featured);
-        Assert.Equal(["a", "b"], Assert.Single(wave.Params!).Values!);
-        Assert.Equal("good", Assert.Single(state.Devices!).Id);
+        Assert.Null(wave.Label);
         // A patch can name only what survived.
         Assert.Throws<ArgumentException>(() => CaseHudLighting.BuildPatch(JsonDocument.Parse("""{"effect":"7"}""").RootElement, state));
     }
@@ -333,22 +259,14 @@ public class CaseHudLightingTests
     {
         var longText = new string('x', CaseHudLighting.MaxString + 1);
         var many = string.Join(',', Enumerable.Range(0, 300).Select(i => $"{{\"name\":\"e{i}\",\"params\":[]}}"));
-        var devices = string.Join(',', Enumerable.Range(0, 300).Select(i => $"{{\"id\":\"d{i}\"}}"));
-        var values = string.Join(',', Enumerable.Range(0, 300).Select(i => $"\"v{i}\""));
-        var parameters = string.Join(',', Enumerable.Range(0, 300).Select(i => $"\"p{i}\":{i}"));
-        var state = Parse("{\"enabled\":true,\"brightness\":250,\"effect\":\"" + longText + "\",\"params\":{" + parameters + ",\"long\":\"" + longText + "\"}," +
-            "\"devices\":[" + devices + ",{\"id\":\"" + longText + "\"}]," +
-            "\"effects\":[{\"name\":\"" + longText + "\"},{\"name\":\"fx\",\"label\":\"" + longText + "\",\"params\":[{\"key\":\"s\",\"type\":\"enum\",\"values\":[" + values + "]}]}," + many + "]}");
+        var state = Parse("{\"enabled\":true,\"brightness\":250,\"effect\":\"" + longText + "\"," +
+            "\"effects\":[{\"name\":\"" + longText + "\"},{\"name\":\"fx\",\"label\":\"" + longText + "\"}," + many + "]}");
         Assert.Equal(100, state.Brightness);
         Assert.Equal("", state.Effect);
-        Assert.Equal(CaseHudLighting.MaxEntries, state.Params!.Count);
-        Assert.DoesNotContain("long", state.Params.Keys);
-        Assert.Equal(CaseHudLighting.MaxEntries, state.Devices!.Count);
         Assert.Equal(CaseHudLighting.MaxEntries - 1, state.Effects!.Count);   // the first 128 entries, one of them without a valid name
         var fx = state.Effects[0];
         Assert.Equal("fx", fx.Name);
         Assert.Null(fx.Label);
-        Assert.Equal(CaseHudLighting.MaxEntries, fx.Params![0].Values!.Count);
         Assert.Null(CaseHudLighting.Parse(JsonDocument.Parse("[]").RootElement));
     }
 

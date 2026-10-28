@@ -65,6 +65,17 @@ public static class WebViewEnvironment
         return [.. removed];
     }
 
+    /// <summary>
+    /// The one variable CouchHUD's own code puts back: the WPF WebView2 control writes its DefaultBackgroundColor into this process's
+    /// environment (for the first paint before the browser runs). Only a colour; still removed like every other, but not worth a log
+    /// line each time a web view is made.
+    /// </summary>
+    public const string OwnBackgroundColor = "WEBVIEW2_DEFAULT_BACKGROUND_COLOR";
+
+    /// <summary>The removed names that did not come from the WPF control itself: these are worth a log line every time.</summary>
+    public static IReadOnlyList<string> Foreign(IEnumerable<string> removed) =>
+        [.. removed.Where(n => !string.Equals(n, OwnBackgroundColor, StringComparison.OrdinalIgnoreCase))];
+
     /// <summary>Whether anything with the prefix is still there (after <see cref="ScrubProcess()"/>: should never be).</summary>
     public static bool AnyLeft() => Overrides(Environment.GetEnvironmentVariables().Keys.OfType<string>()).Count > 0;
 }
@@ -129,6 +140,21 @@ public static class DevMode
         kind == Microsoft.Win32.RegistryValueKind.DWord && value is int number ? number : null;
 
     /// <summary>
+    /// The one warning line for the log when the machine switch holds values but is ignored because non-administrators can write the
+    /// key; null when there is nothing to warn about. Names only, never the values (they came from someone who should not set them).
+    /// </summary>
+    public static string? UnsafeSwitchWarning(MachineDevSwitch machine)
+    {
+        if (machine.AdminOnly) return null;
+        var names = new List<string>();
+        if (machine.DeveloperMode is not null) names.Add(DeveloperModeValue);
+        if (machine.RemoteDebuggingPort is not null) names.Add(RemoteDebuggingPortValue);
+        return names.Count == 0
+            ? null
+            : $"[dev] warning: HKLM\\{MachineKey} is writable by non-administrators, ignoring {string.Join(" and ", names)}";
+    }
+
+    /// <summary>
     /// --dev and remote debugging. A release build ignores --dev unless an administrator set DeveloperMode=1 in HKLM (a standard user
     /// can put --dev into a shortcut, a Run entry or the shell value of the account). Remote debugging needs the same administrator
     /// switch in every build and a port of 1024–65535; the environment variable route is gone (see <see cref="WebViewEnvironment"/>).
@@ -157,6 +183,9 @@ public enum BrowserSurface
 public static class BrowserArguments
 {
     public const string HudBase = "--autoplay-policy=no-user-gesture-required";
+
+    /// <summary>The couch browser's own fixed arguments: no picture-in-picture (see <see cref="Guard.BrowserGuard.BrowserArguments"/>). Nothing from the user goes in here.</summary>
+    public const string PaneBase = Guard.BrowserGuard.BrowserArguments;
 
     /// <summary>
     /// The arguments CouchHUD adds for developers: --remote-debugging-port only (Chromium binds it to 127.0.0.1; never with

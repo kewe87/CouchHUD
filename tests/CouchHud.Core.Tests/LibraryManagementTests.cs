@@ -128,6 +128,19 @@ public class LibraryManagementTests
         Assert.Equal(42.5, new ConfigStore(dir).Current.PlaytimeMinutes["custom:kodi"]);
     }
 
+    [Fact]
+    public async Task A_session_counts_as_last_played_and_as_the_last_session()
+    {
+        var (library, _, dir) = await NewLibrary();
+        var ended = DateTimeOffset.FromUnixTimeMilliseconds(1_800_000_000_000);
+        library.AddPlaytime("custom:kodi", 30, ended);
+        var item = library.AddPlaytime("custom:kodi", 12.5, ended);
+        Assert.Equal(12.5, item.LastSessionMinutes);
+        Assert.Equal(ended.ToUnixTimeMilliseconds(), item.LastPlayed);
+        Assert.Equal(12.5, new ConfigStore(dir).Current.LastSessionMinutes["custom:kodi"]);
+        Assert.Equal(ended.ToUnixTimeMilliseconds(), new ConfigStore(dir).Current.LastLaunched["custom:kodi"]);
+    }
+
     private static async Task<(LibraryService, ConfigStore, string)> NewLibrary()
     {
         var dir = TempDir("couchhud-lib-");

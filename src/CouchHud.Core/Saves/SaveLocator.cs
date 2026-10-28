@@ -16,6 +16,15 @@ public sealed record SaveContext
     public string WinDir { get; init; } = "";
     public string UserName { get; init; } = "";
 
+    /// <summary>The folder holding all user profiles (C:\Users); empty: not checked. Nothing below it but the own and the public profile is touched.</summary>
+    public string ProfilesDir { get; init; } = "";
+
+    /// <summary>The folder the backups are written to; nothing below it is ever part of a save (a backup would back up itself). Empty: none.</summary>
+    public string BackupDir { get; init; } = "";
+
+    /// <summary>Tests only: decides which files count as held online only instead of their attributes.</summary>
+    internal Func<FileInfo, bool>? HeldOnline { get; init; }
+
     /// <summary>Install folder of the game, null if unknown (then &lt;base&gt; paths can't be resolved).</summary>
     public string? InstallDir { get; init; }
 
@@ -41,6 +50,7 @@ public sealed record SaveContext
         WinProgramData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         WinDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
         UserName = Environment.UserName,
+        ProfilesDir = Path.GetDirectoryName(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).TrimEnd('\\', '/')) ?? "",
         SteamRoot = steamRoot,
         SteamUserIds = steamRoot is null ? [] : SteamUserIdsOf(steamRoot)
     };
@@ -117,6 +127,9 @@ public sealed record SaveScan(
 
     /// <summary>More files than <see cref="SaveLocator.MaxFiles"/>: the list is cut off.</summary>
     public bool Truncated { get; init; }
+
+    /// <summary>Cloud files only held online (OneDrive placeholders) the automatic backup left out so as not to download them.</summary>
+    public IReadOnlyList<string> SkippedOnline { get; init; } = [];
 
     public long TotalBytes => Files.Sum(f => f.Size);
     public DateTime? LastWriteUtc => Files.Count == 0 ? null : Files.Max(f => f.LastWriteUtc);
@@ -262,14 +275,20 @@ public static class SaveLocator
     public const string AbsoluteToken = "abs";
 
     /// <summary>Files currently on disk that match the patterns, mapped to the placeholder roots.</summary>
-    public static SaveScan Scan(ManifestEntry entry, SaveContext ctx, int maxFiles = MaxFiles)
+    /// <param name="avoidRecall">Leave out cloud files that are only online (the automatic backup must not start downloads).</param>
+    public static SaveScan Scan(ManifestEntry entry, SaveContext ctx, int maxFiles = MaxFiles, CancellationToken ct = default, bool avoidRecall = false)
     {
+        var online = new List<string>();
+        // The long name: a backup folder given as an 8.3 path (PROGRA~2) must not slip past the comparison.
+        var backupDir = string.IsNullOrWhiteSpace(ctx.BackupDir) ? null : Normalize(NativeFiles.LongNameOfExisting(Path.GetFullPath(ctx.BackupDir)));
+        var heldOnline = ctx.HeldOnline ?? SavePathGuard.NeedsRecall;
         var patterns = ResolvePatterns(entry, ctx);
         var registry = entry.Registry.Where(r => Applies(r, ctx)).Select(r => r.Path).ToList();
         var files = new Dictionary<string, SaveFile>(StringComparer.OrdinalIgnoreCase);
         var errors = new List<string>();
         var truncated = false;
         var roots = ctx.Roots();
+        var redirects = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var pattern in patterns)
         {
@@ -279,14 +298,29 @@ public static class SaveLocator
             {
                 foreach (var file in FilesOf(hit))
                 {
+                    ct.ThrowIfCancellationRequested();
                     // Left behind by an aborted restore; never part of a save.
                     if (file.Name.EndsWith(TempSuffix, StringComparison.OrdinalIgnoreCase)) continue;
                     if (files.ContainsKey(file.FullName)) continue;
+                    // The backups themselves, if the backup folder lies in a save folder: they would grow with every backup.
+                    if (backupDir is not null && IsUnder(NativeFiles.LongName(file.FullName), backupDir)) continue;
+                    if (avoidRecall && heldOnline(file))
+                    {
+                        online.Add(file.FullName);
+                        continue;
+                    }
                     if (files.Count >= maxFiles) { truncated = true; break; }
                     var (token, rel) = Relative(file.FullName, roots);
                     if (token is null)
                     {
                         errors.Add(Strings.Get("saves.skippedUnknown", file.FullName));
+                        continue;
+                    }
+                    // A junction or link planted in a save folder (a mod, a download) must not pull other data into the backup.
+                    var root = SavePathGuard.RootFor(token, rel, ctx);
+                    if (root is null || SavePathGuard.IsInForeignProfile(file.FullName, ctx) || SavePathGuard.HasReparsePointBelow(root, file.FullName, redirects))
+                    {
+                        errors.Add(Strings.Get("saves.skippedRedirect", file.FullName));
                         continue;
                     }
                     files[file.FullName] = new SaveFile(file.FullName, token, rel, file.Length, file.LastWriteTimeUtc);
@@ -297,7 +331,8 @@ public static class SaveLocator
         return new SaveScan(entry, patterns, registry, files.Values.OrderBy(f => f.FullPath, StringComparer.OrdinalIgnoreCase).ToList())
         {
             Errors = errors,
-            Truncated = truncated
+            Truncated = truncated,
+            SkippedOnline = online
         };
     }
 
@@ -327,8 +362,8 @@ public static class SaveLocator
             yield break;
         }
         if (!Directory.Exists(path)) yield break;
-        var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint };
-        foreach (var f in new DirectoryInfo(path).EnumerateFiles("*", options)) yield return f;
+        // Junctions and links are not followed; cloud folders (OneDrive) are ordinary folders here.
+        foreach (var f in SavePathGuard.FilesBelow(path)) yield return f;
     }
 
     // --- Wildcards -------------------------------------------------------
@@ -376,7 +411,7 @@ public static class SaveLocator
         {
             foreach (var entry in new DirectoryInfo(current).EnumerateFileSystemInfos())
             {
-                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0 && SavePathGuard.IsRedirect(entry.FullName)) continue;
                 if (!FileSystemName.MatchesSimpleExpression(seg, entry.Name, true)) continue;
                 if (!last && entry is not DirectoryInfo) continue;
                 Walk(entry.FullName, segments, index + 1, results);
@@ -391,8 +426,7 @@ public static class SaveLocator
     {
         if (!Directory.Exists(dir)) yield break;
         yield return dir;
-        var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint };
-        foreach (var d in new DirectoryInfo(dir).EnumerateDirectories("*", options)) yield return d.FullName;
+        foreach (var d in SavePathGuard.DirectoriesBelow(dir)) yield return d;
     }
 
     // --- What a restore may write to --------------------------------------

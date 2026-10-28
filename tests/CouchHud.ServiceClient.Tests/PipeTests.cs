@@ -26,7 +26,7 @@ public class ClientPipeTests
         var client = new ServiceClient(scm, server.Options());
         var reply = await client.CallAsync(Operation.SetAutoLogon, new SetAutoLogonArgs("secret-password"));
         Assert.Equal(CallOutcome.Squatted, reply.Outcome);
-        await Task.Delay(200);
+        await server.WaitSettledAsync(1);
         Assert.Equal(0, server.RequestCount);
     }
 

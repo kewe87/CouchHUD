@@ -13,9 +13,12 @@ import { openFileBrowser } from './file-browser.js';
 import { openKeyboard } from './keyboard.js';
 import { detailPage } from '../views/detail.js';
 import { ensureParentGrant, parental } from './parental.js';
-import { ensureUnlocked } from './passcode.js';
+import { ensureUnlocked, guarded } from './passcode.js';
+import { artworkPickerPage } from './artwork-picker.js';
+import { infoMenu, storeMatchMenu } from './item-info.js';
 import { isWebUrl } from '../core/links.js';
 import { lower, t } from '../core/i18n.js';
+import { TARGET_EXTENSIONS, isScript, launchRows, scriptArgsProblem, targetLabel } from '../core/launch-rules.js';
 
 const PROGRAM_EXTENSIONS = ['.exe', '.lnk', '.url', '.bat', '.cmd'];
 
@@ -303,11 +306,26 @@ const quoteArg = (arg) => {
 
 export const formatArgs = (args = []) => args.map(quoteArg).join(' ');
 
-/** Saves the startup parameters and the working folder; a game's needs the parents' code when parental controls are on. */
-async function saveLaunchOptions(item, args, cwd) {
-  if (!(await ensureUnlocked(t('libraryTools.edit.guardLaunch')))) return;
-  if (item.type === 'game' && parental.status?.enabled
-    && !(await ensureParentGrant(t('libraryTools.edit.guardLaunchGame'), { action: 'editType', item: item.id }))) return;
+/**
+ * Changing what an entry starts runs any program: the unlock, and with parental controls on the parents' code for exactly this entry
+ * (games and apps alike). The host checks the same again (Hud.RequireLaunchChange).
+ */
+async function guardLaunchChange(item) {
+  if (!(await ensureUnlocked(t('libraryTools.edit.guardLaunch')))) return false;
+  return !parental.status?.enabled
+    || !!(await ensureParentGrant(t('libraryTools.edit.guardLaunchParental'), { action: 'startOptions', item: item.id }));
+}
+
+/** The detail page shows that own startup options are on. */
+function markCustomLaunch(custom) {
+  const page = state.stack.at(-1);
+  if (page?.details) page.details.customLaunch = custom;
+  render();
+}
+
+/** An entry the user added keeps its parameters and folder in its own fields. */
+async function saveOwnLaunch(item, args, cwd) {
+  if (!(await guardLaunchChange(item))) return false;
   const updated = await attempt(() => api.editLaunch(item.id, args, cwd), t('libraryTools.edit.failed'));
   if (!updated) return false;
   Object.assign(item, updated);
@@ -316,21 +334,67 @@ async function saveLaunchOptions(item, args, cwd) {
   return true;
 }
 
-function launchOptionEntries(item) {
-  const args = formatArgs(item.launch.args);
-  const cwd = item.launch.workingDirectory ?? '';
-  const ownFolder = (item.launch.target ?? '').replace(/[\\/][^\\/]*$/, '');
-  const isDefaultCwd = !cwd || cwd.toLowerCase() === ownFolder.toLowerCase();
-  return [
-    {
+/** Every other entry: an override ({ args, cwd, target }: a string sets, null goes back to automatic). */
+async function saveLaunchOverride(item, changes, message = t('libraryTools.edit.launchSaved')) {
+  if (!(await guardLaunchChange(item))) return null;
+  const view = await attempt(() => api.setLaunchOverride(item.id, changes), t('libraryTools.edit.failed'));
+  if (!view) return null;
+  toast(message);
+  markCustomLaunch(view.custom);
+  return view;
+}
+
+/** A note where the parameters are set instead (Steam's properties, the store's launcher): nothing pretends to work. */
+function launchNote(title, message) {
+  openOverlay({ title, message, entries: [{ label: t('libraryTools.edit.understood'), run: () => {} }] });
+}
+
+/** "Startup options": parameters, working folder and an own start target (.exe, .bat, .cmd in the game's folder). Expert mode only. */
+async function startOptionsMenu(item) {
+  if (!(await ensureUnlocked(t('libraryTools.edit.guardLaunch')))) return;
+  const view = await attempt(() => api.getLaunchOptions(item.id), t('libraryTools.edit.failed'));
+  const rows = launchRows(view, { expert: true });
+  if (!rows) {
+    if (view) toast(t('libraryTools.edit.launchNone'));
+    return;
+  }
+  const own = view.argsMode === 'own';
+  const args = formatArgs(view.args);
+  const cwd = view.workingDirectory ?? '';
+  const isDefaultCwd = !cwd || cwd.toLowerCase() === (view.programFolder ?? '').toLowerCase();
+  const program = view.target ?? item.launch?.target;
+  const saveArgs = (value) => (own ? saveOwnLaunch(item, value, isDefaultCwd ? '' : cwd) : saveLaunchOverride(item, { args: value }));
+  const saveCwd = (folder) => (own ? saveOwnLaunch(item, args, folder ?? '') : saveLaunchOverride(item, { cwd: folder }));
+  const entries = [];
+  if (rows.args === 'edit') {
+    entries.push({
       label: t('libraryTools.edit.args'),
       detail: args || t('libraryTools.edit.argsNone'),
       run: async () => {
-        const value = await openKeyboard({ title: t('libraryTools.edit.argsTitle'), value: args, hint: t('libraryTools.edit.argsHint') });
-        if (value !== undefined) await saveLaunchOptions(item, value, isDefaultCwd ? '' : cwd);
+        const value = await openKeyboard({ title: t('libraryTools.edit.argsTitle'), value: args, hint: isScript(program) ? t('libraryTools.edit.argsHintScript') : t('libraryTools.edit.argsHint') });
+        if (value === undefined) return;
+        if (scriptArgsProblem(value, program)) {
+          toast(t('libraryTools.edit.scriptArgs'));
+          return;
+        }
+        await saveArgs(value);
       }
-    },
-    {
+    });
+  } else if (rows.args === 'steam') {
+    entries.push({
+      label: t('libraryTools.edit.args'),
+      detail: t('libraryTools.edit.argsInSteam'),
+      run: () => launchNote(t('libraryTools.edit.args'), t('libraryTools.edit.argsInSteamHow'))
+    });
+  } else if (rows.args === 'launcher') {
+    entries.push({
+      label: t('libraryTools.edit.args'),
+      detail: t('libraryTools.edit.argsInLauncher'),
+      run: () => launchNote(t('libraryTools.edit.args'), t('libraryTools.edit.argsInLauncherHow'))
+    });
+  }
+  if (rows.cwd) {
+    entries.push({
       label: t('libraryTools.edit.cwd'),
       detail: isDefaultCwd ? t('libraryTools.edit.cwdDefault') : cwd,
       run: async () => {
@@ -338,29 +402,68 @@ function launchOptionEntries(item) {
           { label: t('libraryTools.edit.cwdPick'), icon: '📁', value: 'pick' },
           ...(isDefaultCwd ? [] : [{ label: t('libraryTools.edit.cwdReset'), icon: '↻', value: 'reset' }])
         ]);
-        if (choice === 'reset') await saveLaunchOptions(item, args, '');
+        if (choice === 'reset') await saveCwd(null);
         else if (choice === 'pick') {
-          const folder = await openFileBrowser({ title: t('libraryTools.edit.cwdPickTitle'), mode: 'folder' });
-          if (folder) await saveLaunchOptions(item, args, folder);
+          const folder = await openFileBrowser({ title: t('libraryTools.edit.cwdPickTitle'), mode: 'folder', start: view.programFolder ?? null });
+          if (folder) await saveCwd(folder);
         }
       }
-    }
-  ];
+    });
+  }
+  if (rows.target) {
+    entries.push({
+      label: t('libraryTools.edit.target'),
+      detail: targetLabel(view, t('libraryTools.edit.targetAuto')),
+      run: async () => {
+        const choice = await chooseDialog(t('libraryTools.edit.target'), [
+          { label: t('libraryTools.edit.targetPick'), detail: t('libraryTools.edit.targetPickDetail'), icon: '📄', value: 'pick' },
+          ...(view.target ? [{ label: t('libraryTools.edit.targetReset'), icon: '↻', value: 'reset' }] : [])
+        ]);
+        if (choice === 'reset') await saveLaunchOverride(item, { target: null }, t('libraryTools.edit.launchResetDone'));
+        else if (choice === 'pick') {
+          const path = await openFileBrowser({ title: t('libraryTools.edit.targetPickTitle'), mode: 'file', extensions: TARGET_EXTENSIONS, start: view.installFolder ?? null });
+          if (path) await saveLaunchOverride(item, { target: path });
+        }
+      }
+    });
+  }
+  if (rows.reset) {
+    entries.push({
+      label: t('libraryTools.edit.launchReset'),
+      detail: t('libraryTools.edit.launchResetDetail'),
+      run: async () => {
+        if (!(await confirmDialog(t('libraryTools.edit.launchResetConfirm', { name: item.name }), t('libraryTools.edit.launchResetButton')))) return;
+        await saveLaunchOverride(item, { target: null }, t('libraryTools.edit.launchResetDone'));
+      }
+    });
+  }
+  entries.push({ label: t('libraryTools.edit.cancel'), run: () => {} });
+  openOverlay({ title: t('libraryTools.edit.launchTitle', { name: item.name }), entries });
 }
 
-/** Edit menu on the detail page. */
+/**
+ * Edit menu on the detail page: name, artwork, texts and store entry in both modes; startup options (parameters, folder, own start target)
+ * are technical, so expert mode only, for every source that has any. Then game/app, hiding, and what only own entries have.
+ */
 export async function editItemMenu(item) {
-  // Startup parameters and working folder: own entries that start an exe, expert mode only.
-  const canLaunchOptions = item.source === 'custom' && item.launch?.kind === 'exe' && !!(await attempt(() => api.getSettings()))?.expertMode;
+  const expert = !!(await attempt(() => api.getSettings()))?.expertMode;
   const entries = [
-    ...(canLaunchOptions ? launchOptionEntries(item) : []),
     {
       label: t('libraryTools.edit.rename'),
+      icon: '✎',
       run: async () => {
         const name = await openKeyboard({ title: t('libraryTools.edit.newName'), value: item.name });
         if (name !== undefined) await applyEdit(item, { name }, name ? t('libraryTools.edit.renamedTo', { name }) : t('libraryTools.edit.nameReset'));
       }
     },
+    { label: t('artworkPicker.action'), icon: '🖼', run: guarded(t('artworkPicker.title'), () => push(artworkPickerPage(item))) },
+    { label: t('itemInfo.action'), detail: t('itemInfo.actionDetail'), icon: 'ℹ', run: () => infoMenu(item) },
+    ...(item.source !== 'steam'
+      ? [{ label: t('itemInfo.store.action'), detail: t('itemInfo.store.actionDetail'), icon: '🛒', run: () => storeMatchMenu(item) }]
+      : []),
+    ...(expert && item.launch?.embedded !== true
+      ? [{ label: t('libraryTools.edit.launchOptions'), detail: t('libraryTools.edit.launchOptionsDetail'), icon: '⚙', run: () => startOptionsMenu(item) }]
+      : []),
     {
       label: item.type === 'game' ? t('libraryTools.edit.toApp') : t('libraryTools.edit.toGame'),
       run: async () => {

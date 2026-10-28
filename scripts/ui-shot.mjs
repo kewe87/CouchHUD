@@ -3,7 +3,7 @@
 //
 //   node scripts/ui-shot.mjs --out DIR [--size 1920x1080] [--dpr 1] [--port 5199] STEP...
 //
-// Steps:  skin:ps4   key:ArrowDown   key:Enter   keys:ArrowDown*3   wait:300
+// Steps:  skin:deepsea   key:ArrowDown   key:Enter   keys:ArrowDown*3   wait:300
 //         mouse:x,y (move the mouse: shows the pointer)  shot:name  eval:<js>       contrast:label   text:abc (type into page)
 // Keys: Arrow*, Enter=A, Escape=B, q/e=LB/RB, x, y, m=Start, Home=Guide.
 // Options: --query lang=en (URL query of the preview page).

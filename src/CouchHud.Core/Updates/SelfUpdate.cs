@@ -208,6 +208,53 @@ public static class ReleaseIntegrity
 }
 
 /// <summary>
+/// The one cancel of a setup download, raced against the hand-over: <see cref="Cancel"/> and <see cref="TryHandOver"/> take the same slot,
+/// so a cancel either really stops the update (true, and the hand-over is refused) or comes too late and says so (false), never both.
+/// </summary>
+public sealed class DownloadCancel : IDisposable
+{
+    private readonly CancellationTokenSource _source = new();
+    private CancellationTokenSource? _open;
+    private volatile bool _cancelled;
+
+    public DownloadCancel() => _open = _source;
+
+    public CancellationToken Token => _source.Token;
+
+    /// <summary>Neither cancelled nor handed over yet.</summary>
+    public bool Open => Volatile.Read(ref _open) is not null;
+
+    /// <summary>A cancel took the slot (the token may follow a moment later).</summary>
+    public bool Cancelled => _cancelled;
+
+    /// <summary>Cancels the download; false once the hand-over has begun or it was already cancelled.</summary>
+    public bool Cancel()
+    {
+        var source = Interlocked.Exchange(ref _open, null);
+        if (source is null) return false;
+        _cancelled = true;
+        try
+        {
+            source.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The download already ended and saw the cancel through the slot.
+        }
+        return true;
+    }
+
+    /// <summary>Takes the slot for the hand-over; false when a cancel came first (then nothing may be handed over).</summary>
+    public bool TryHandOver() => Interlocked.Exchange(ref _open, null) is not null && !_source.IsCancellationRequested;
+
+    public void Dispose()
+    {
+        Volatile.Write(ref _open, null);
+        _source.Dispose();
+    }
+}
+
+/// <summary>
 /// A downloaded setup whose signature and hash passed. The file stays open (reading allowed, writing
 /// and deleting refused) until this is disposed, so nothing can swap it before it is started.
 /// </summary>
@@ -426,16 +473,21 @@ public sealed class SelfUpdateService(HttpClient http, string dataDir, Func<Date
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException || (ex is OperationCanceledException && !ct.IsCancellationRequested))
                 {
+                    // A cancel that broke the connection mid-read is a cancel, not a failed download.
+                    if (ct.IsCancellationRequested) throw new OperationCanceledException(ex.Message, ex, ct);
                     throw new CatalogException(ex is OperationCanceledException
                         ? (total.IsCancellationRequested ? Strings.Get("selfupdate.downloadSlow") : Strings.Get("net.stalled"))
                         : Strings.Get("net.downloadFailed", ex.Message));
                 }
             }
 
+            ct.ThrowIfCancellationRequested();
             // Hash from the handle that is kept: once it is open nobody can write to the file any more.
             handle = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (release.SetupSize > 0 && handle.Length != release.SetupSize) throw new CatalogException(Strings.Get("selfupdate.setupSize"));
             ReleaseIntegrity.VerifyHash(handle, expected);
+            // A cancel during the hash still wins here (the caller's DownloadCancel decides the race with the hand-over).
+            ct.ThrowIfCancellationRequested();
             var verified = new VerifiedSetup(path, handle, expected, checksum, signature);
             handle = null;
             return verified;

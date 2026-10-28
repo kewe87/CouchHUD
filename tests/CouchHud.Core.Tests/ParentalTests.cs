@@ -82,6 +82,49 @@ public class ParentalTests
     }
 
     [Fact]
+    public void Time_played_past_the_limit_shows_as_zero_left_and_stays_up_fail_closed()
+    {
+        // 2 minutes, played on through the grace period before the game is closed: the account is overdrawn by ~50 s.
+        var (s, m, _, _, _) = Make(c => c.WeekdayMinutes = 2);
+        Play(s, m, TimeSpan.FromSeconds(170));
+        Assert.True(s.Expired);
+        var running = s.Status("g1");
+        Assert.Equal(0, running.RemainingSeconds);
+        Assert.True(running.TimeUp);
+
+        // The game is gone: the service flag (running game) falls back, the account itself stays used up.
+        m.Advance(TimeSpan.FromSeconds(3));
+        s.Tick(null);
+        Assert.False(s.Expired);
+        var idle = s.Status(null);
+        Assert.Equal(0, idle.RemainingSeconds);
+        Assert.Equal("day", idle.Limiter);
+        Assert.True(idle.TimeUp);
+        Assert.False(s.CanStart("g2").Ok);
+        Assert.Equal("day", s.CanStart("g2").Reason);
+
+        // Extra time is counted from the overdrawn account, not from zero: 15 minutes give ~14 minutes.
+        s.Extend(15);
+        var after = s.Status(null);
+        Assert.InRange(after.RemainingSeconds!.Value, 14 * 60 - 5, 15 * 60 - 40);
+        Assert.False(after.TimeUp);
+    }
+
+    [Fact]
+    public void Time_up_is_false_without_a_limit_and_true_outside_the_window()
+    {
+        var (free, _, _, _, _) = Make(c => c.WeekdayMinutes = 0);
+        Assert.False(free.Status("g1").TimeUp);
+        var (off, _, _, _, _) = Make(c => c.Enabled = false);
+        Assert.False(off.Status("g1").TimeUp);
+        var (window, _, _, _, _) = Make(c => (c.WeekdayMinutes, c.WindowStartMinute, c.WindowEndMinute) = (0, 8 * 60, 9 * 60));
+        var st = window.Status(null);
+        Assert.False(st.InWindow);
+        Assert.Equal(0, st.RemainingSeconds);
+        Assert.True(st.TimeUp);
+    }
+
+    [Fact]
     public void Zero_minutes_means_no_limit()
     {
         var (s, m, _, _, w) = Make(c => c.WeekdayMinutes = 0);
@@ -334,7 +377,11 @@ public class ParentalTests
     [Fact]
     public void Age_unknown_and_zero_are_told_apart()
     {
-        static int? Age(string json) => StoreInfoService.ParseAge(System.Text.Json.JsonDocument.Parse(json).RootElement);
+        static int? Age(string json)
+        {
+            var data = System.Text.Json.JsonDocument.Parse(json).RootElement;
+            return AgeRatings.Effective(AgeRatings.Parse(data), AgeRatings.ParseRequiredAge(data), AgeRatings.Usk)?.Age;
+        }
         Assert.Equal(16, Age("""{"required_age":18,"ratings":{"usk":{"rating":"16"}}}"""));
         Assert.Equal(0, Age("""{"ratings":{"usk":{"rating":"0"}}}"""));
         Assert.Equal(18, Age("""{"required_age":"18"}"""));
@@ -394,7 +441,8 @@ public class ParentalTests
             Assert.True(service.CanStart("g").Ok);
 
             File.Delete(file);
-            Assert.True(new PlayLedger(file, key, expectExisting: true).Tampered); // deleted
+            File.Delete(file + ".bak");
+            Assert.True(new PlayLedger(file, key, expectExisting: true).Tampered); // deleted, with its copy
             Assert.False(new PlayLedger(file, key, expectExisting: false).Tampered); // first run
         }
         finally

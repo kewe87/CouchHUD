@@ -7,9 +7,10 @@ namespace CouchHud.Shell.Services;
 /// Xbox app / Game Pass and Microsoft Store games. They are store packages; the ones
 /// with a MicrosoftGame.config are games. Started through their app id like the Start menu does.
 /// </summary>
-public sealed class XboxScanner : ILibraryProvider
+public sealed class XboxScanner : ILibraryProvider, CouchHud.Core.Library.IGameStore
 {
     public string Name => "Xbox";
+    public string Source => "xbox";
 
     public Task<IReadOnlyList<LibraryItem>> GetItemsAsync(CancellationToken cancellationToken) => Task.Run(ScanAsync, cancellationToken);
 

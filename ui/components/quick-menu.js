@@ -12,15 +12,19 @@ import { notificationsPage } from '../views/notifications.js';
 import { bluetoothPage } from '../views/bluetooth.js';
 import { appVolumePage } from '../views/app-volume.js';
 import { galleryPage } from '../views/gallery.js';
-import { capture, downloadsPage } from '../views/deck.js';
+import { capture } from '../views/deck.js';
+import { downloadsQuickDetail } from '../views/downloads.js';
 import { chooseDialog, confirmDialog } from './overlay.js';
 import { sound } from '../sound.js';
 import { t, fmtNumber, fmtPercent, fmtTime, fmtDate } from '../core/i18n.js';
 import { powerRows } from '../core/power.js';
 import { weatherLine } from '../core/weather.js';
 import { remainingLabel } from './parental.js';
+import { batteryEntries, systemBadge } from '../core/battery-rules.js';
+import { refreshBattery } from '../core/battery.js';
 
-const BATTERY = { full: '▮▮▮', medium: '▮▮▯', low: '▮▯▯', empty: '▯▯▯', wired: '⚡', unknown: '?' };
+/** Icons of the Bluetooth devices with a battery (the kinds of views/bluetooth.js). */
+const KIND_ICON = { controller: '🎮', headphones: '🎧', keyboard: '⌨', mouse: '🖱', speaker: '🔊', phone: '📱' };
 const DEVICE_ICON = { tv: '📺', headphones: '🎧', speakers: '🔊', other: '🔈' };
 
 /** No sound device at all: the slider would only show a misleading 0 %. */
@@ -38,17 +42,23 @@ export const quick = {
     if (row?.kind === 'volume') {
       return noOutput() ? [['B', t('quick.hintClose')]] : [['◀▶', t('quick.hintVolume')], ['A', t('quick.hintMute')], ['B', t('quick.hintClose')]];
     }
+    // Rows of other modules with a value to change (the TV's volume): ◀▶ changes, A does the row's own thing.
+    if (row?.adjust) return [['◀▶', row.adjustHint ?? t('quick.hintVolume')], ['A', row.hint ?? t('quick.hintSelect')], ['B', t('quick.hintClose')]];
     return [['A', row?.hint ?? t('quick.hintSelect')], ['B', t('quick.hintClose')]];
   }
 };
 
-/** Other modules add rows (smart home scenes, RGB effects ...): () => [{ icon, label, detail?, run }] */
+/** Other modules add rows (smart home scenes, RGB effects ...): () => [{ icon, label, detail?, run, keepOpen?, hint?, adjust?(step), adjustHint? }] */
 export function addQuickRows(provider) {
   quick.extraRows.push(provider);
 }
 
 export async function openQuickMenu() {
+  // A protected profile waits at the profile picker (components/profiles.js): nothing opens over it.
+  if (state.pickerHold) return;
   quick.weather = weatherLine(true);
+  // Fresh battery values (the host answers with its last read and sends a new one when something changed).
+  refreshBattery();
   quick.open = true;
   state.panel = quick;
   quick.index = 0;
@@ -129,6 +139,10 @@ function rows() {
       }
     });
   }
+  // Unread notifications come right after the game, so a card that just went by is one press away.
+  const unread = state.notifications?.unread ?? 0;
+  const notificationsRow = { kind: 'action', icon: '🔔', label: t('quick.notifications'), detail: unread ? t('quick.unread', { count: unread }) : t('quick.noUnread'), run: () => openPage(notificationsPage()) };
+  if (unread) list.push(notificationsRow);
   if (quick.audio) {
     list.push({ kind: 'volume' });
     list.push({ kind: 'action', icon: '♪', label: t('quick.appVolume'), detail: t('quick.appVolumeDetail'), run: () => openPage(appVolumePage()) });
@@ -149,8 +163,7 @@ function rows() {
       });
     }
   }
-  const unread = state.notifications?.unread ?? 0;
-  list.push({ kind: 'action', icon: '🔔', label: t('quick.notifications'), detail: unread ? t('quick.unread', { count: unread }) : t('quick.noUnread'), run: () => openPage(notificationsPage()) });
+  if (!unread) list.push(notificationsRow);
   for (const provider of quick.extraRows) list.push(...provider().map((r) => ({ kind: 'action', ...r })));
   for (const a of quick.pluginActions ?? []) {
     list.push({
@@ -164,7 +177,9 @@ function rows() {
       }
     });
   }
-  list.push({ kind: 'action', icon: '🌐', label: t('quick.browser'), run: () => goTab(tabViews().findIndex((v) => v.id === 'browser')) });
+  // The browser row only while its area is on (Settings › Console › Areas): then it has a tab.
+  const browserTab = tabViews().findIndex((v) => v.id === 'browser');
+  if (browserTab >= 0) list.push({ kind: 'action', icon: '🌐', label: t('quick.browser'), run: () => goTab(browserTab) });
   list.push({ kind: 'action', icon: '⌂', label: t('quick.home'), run: () => goTab(0) });
   const assistantTab = tabViews().findIndex((v) => v.id === 'assistant');
   if (assistantTab >= 0) list.push({ kind: 'action', icon: '✦', label: t('quick.assistant'), run: () => goTab(assistantTab) });
@@ -172,7 +187,7 @@ function rows() {
   list.push({ kind: 'action', icon: '📸', label: t('quick.screenshot'), detail: s ? t('quick.screenshotOf', { name: s.name }) : t('quick.screenshotScreen'), run: () => capture('screenshot') });
   if (s) list.push({ kind: 'action', icon: '⏺', label: t('quick.clip'), detail: t('quick.clipDetail'), run: () => capture('clip') });
   list.push({ kind: 'action', icon: '▣', label: t('quick.captures'), detail: t('quick.capturesDetail'), run: () => openPage(galleryPage()) });
-  list.push({ kind: 'action', icon: '⬇', label: t('quick.downloads'), detail: t('quick.downloadsDetail'), run: () => openPage(downloadsPage()) });
+  list.push({ kind: 'action', icon: '⬇', label: t('quick.downloads'), detail: downloadsQuickDetail(), run: () => goTab(tabViews().findIndex((v) => v.id === 'downloads')) });
   list.push({ kind: 'action', icon: 'ᛒ', label: t('quick.bluetooth'), detail: t('quick.bluetoothDetail'), run: () => openPage(bluetoothPage()) });
   list.push({ kind: 'action', icon: '▤', label: t('quick.tasks'), run: () => openPage(tasksPage()) });
   list.push(...powerRows());
@@ -192,6 +207,22 @@ function volumeRow() {
     el('div', { className: 'quick-slider' },
       el('div', { className: 'quick-track' }, el('div', { className: 'quick-fill', style: { width: `${level}%` } })),
       el('span', { className: 'quick-level', textContent: a.muted ? t('quick.muted') : t('quick.percent', { value: a.volume }) })));
+}
+
+/**
+ * The batteries in the menu's head: the PC's own (only where there is one), each controller ("🎮 1 ▮▮▯", wired 🔌) and each connected
+ * Bluetooth device that reports a percent. Low ones stand out. Names are device names: text only.
+ */
+function batteryLine() {
+  const nodes = [];
+  const system = systemBadge(state.battery?.system);
+  if (system) nodes.push(el('span', { className: `quick-battery${system.low ? ' battery-low' : ''}`, textContent: `${system.icon} ${fmtPercent(system.percent)}` }));
+  for (const b of batteryEntries(quick.pads, state.battery?.devices)) {
+    const icon = KIND_ICON[b.kind] ?? '◉';
+    const value = b.percent != null ? `${b.value} ${fmtPercent(b.percent)}` : b.value;
+    nodes.push(el('span', { className: `quick-pad${b.low ? ' battery-low' : ''}`, textContent: `${icon} ${b.label}${value ? ` ${value}` : ''}` }));
+  }
+  return nodes;
 }
 
 export function renderQuick() {
@@ -228,7 +259,7 @@ export function renderQuick() {
       el('div', { className: 'quick-status' },
         quick.weather ? el('span', { textContent: quick.weather }) : null,
         remainingLabel() ? el('span', { className: 'quick-parental', textContent: `⏳ ${remainingLabel()}` }) : null,
-        quick.pads.map((p) => el('span', { className: 'quick-pad', textContent: `🎮 ${p.index + 1} ${BATTERY[p.battery] ?? ''}` }))),
+        batteryLine()),
       // Space is reserved from the first frame, so the list does not jump once the numbers arrive.
       api.getPerformance ? el('div', { className: 'quick-perf' },
         el('span', {}, el('b', { textContent: quick.perf ? fmtPercent(quick.perf.cpu) : '–' }), 'CPU'),
@@ -267,6 +298,11 @@ export async function handleQuick(action) {
     case 'left':
     case 'right':
       if (row.kind === 'volume') return noOutput() ? sound.bump() : changeVolume(action === 'left' ? -5 : 5);
+      if (row.adjust) {
+        sound.move();
+        await row.adjust(action === 'left' ? -1 : 1);
+        return renderQuick();
+      }
       return;
     case 'a':
       if (row.kind === 'volume' && noOutput()) return sound.bump();

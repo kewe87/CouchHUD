@@ -99,15 +99,35 @@ h1, h2, h3, p {
 #tabs {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 1.2rem;
 }
 
 #tab-list {
   display: flex;
-  gap: 2.2rem;
+  gap: 1.8rem;
   list-style: none;
   margin: 0;
   padding: 0;
+  /* The status on the right always stays whole; with too little room the tabs are cut (renderTabs keeps the active one in view). */
+  min-width: 0;
+  overflow: hidden;
+}
+
+#tab-list > li {
+  flex: none;
+}
+
+#tab-list.cut-end {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 3rem), transparent);
+}
+
+#tab-list.cut-start {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 3rem);
+}
+
+#tab-list.cut-start.cut-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
 }
 
 #tab-list li {
@@ -126,8 +146,10 @@ h1, h2, h3, p {
 
 #status {
   display: flex;
+  flex: none;
+  margin-left: 1.5rem;
   align-items: center;
-  gap: 1.5rem;
+  gap: 1.1rem;
 }
 
 #clock {
@@ -161,6 +183,16 @@ h1, h2, h3, p {
 .btn-b { background: #e5534b; color: #1a0605; }
 .btn-x { background: #3b82f6; color: #040d1f; }
 .btn-y { background: #d4a72c; color: #111; }
+
+/* A PlayStation pad in use (core/skins.js sets data-pad): its symbols in its colors. :where keeps the weight of the plain rules
+   above, so a skin's own glyph colors still win. */
+:where(:root[data-pad="playstation"]) .btn-a { background: #7fa8ff; color: #04102a; }
+:where(:root[data-pad="playstation"]) .btn-b { background: #ff7b7b; color: #1f0606; }
+:where(:root[data-pad="playstation"]) .btn-x { background: #f39ad8; color: #1f0718; }
+:where(:root[data-pad="playstation"]) .btn-y { background: #4fd6a6; color: #04170f; }
+/* The square (□) comes out at about half the size of ✕ ○ △ in the UI fonts: drawn larger so the four look alike. */
+:where(:root[data-pad="playstation"]) .glyph.btn-x { font-size: 1.3rem; }
+:where(:root[data-pad="playstation"]) .passcode-key[data-glyph="X"] { font-size: 2.2rem; }
 
 /* Keys with a label rather than a letter get a fixed cap width, so the hint bar keeps its
    size when a skin swaps the label (OPTIONS, MENU, ☰, L1 ...). */
@@ -300,7 +332,6 @@ body[data-view="passcode"] #tabs .shoulder {
   flex: none;
   border-radius: var(--tile-radius);
   transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease), opacity 0.22s;
-  box-shadow: 0 0.5rem 1.4rem rgba(0, 0, 0, 0.45);
 }
 
 .tile.focused {
@@ -393,7 +424,6 @@ body[data-view="passcode"] #tabs .shoulder {
   max-height: 9rem;
   object-fit: contain;
   object-position: left bottom;
-  filter: drop-shadow(0 0.3rem 1.2rem rgba(0, 0, 0, 0.55));
   animation: logo-in 0.35s var(--ease);
 }
 
@@ -415,10 +445,13 @@ body[data-view="passcode"] #tabs .shoulder {
 }
 
 .shelf-wrap {
+  position: relative;
   flex: none;
-  margin: 0 -4rem;
-  padding: 2rem 4rem;
+  /* Room above and below for the focus glow (up to 3rem plus the zoom), so the row's clip never cuts it; the margin keeps the layout. */
+  margin: -2rem -4rem;
+  padding: 4rem 4rem;
   overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 4rem, #000 calc(100% - 4rem), transparent);
 }
 
 .shelf {
@@ -453,11 +486,41 @@ body[data-view="passcode"] #tabs .shoulder {
   opacity: 0.8;
 }
 
+/* "Continue playing": the first card is twice as wide and exactly as tall as a cover (2:3 cover → 4:3 card). */
+.shelf .tile.tile-hero {
+  width: calc(var(--shelf-tile) * 2);
+}
+
+.shelf .hero-art {
+  aspect-ratio: 4 / 3;
+}
+
+/* In the top padding of the shelf, so it takes no room; fades in while the focus is in "Continue playing". */
+.shelf-label {
+  position: absolute;
+  top: 0.1rem;
+  left: 4rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.2s var(--ease);
+  pointer-events: none;
+}
+
+.shelf-label.shown {
+  opacity: 1;
+}
+
 /* Grids */
 
-#view[data-view="spiele"],
+#view[data-view="games"],
 #view[data-view="apps"],
-#view[data-view="collection"] {
+#view[data-view="collection"],
+#view[data-view="uninstalled"],
+#view[data-view="artwork-picker"] {
   display: flex;
   flex-direction: column;
 }
@@ -482,14 +545,14 @@ body[data-view="passcode"] #tabs .shoulder {
   overflow: hidden;
   margin: 0 -4rem;
   padding: 0 4rem;
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 1.5rem, #000 calc(100% - 2.5rem), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 3rem, #000 calc(100% - 5rem), transparent);
 }
 
 .grid {
   display: grid;
   grid-template-columns: repeat(var(--cols), 1fr);
   gap: 1.6rem 1.4rem;
-  padding: 1.5rem 0 3rem;
+  padding: 4rem 0 5rem;
 }
 
 .grid .cover {
@@ -648,7 +711,6 @@ body[data-view="passcode"] #tabs .shoulder {
   max-height: 11rem;
   object-fit: contain;
   object-position: left bottom;
-  filter: drop-shadow(0 0.3rem 1.2rem rgba(0, 0, 0, 0.6));
 }
 
 .detail-actions {
@@ -700,6 +762,19 @@ body[data-view="passcode"] #tabs .shoulder {
 
 .detail-info {
   align-self: end;
+}
+
+/* The age rating the age limit goes by: a small read-only badge above the facts. */
+.age-badge {
+  display: inline-block;
+  margin-bottom: 0.8rem;
+  padding: 0.15rem 0.6rem;
+  border: 0.12rem solid var(--fg);
+  border-radius: 0.4rem;
+  color: var(--fg);
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1.4;
 }
 
 .detail-info dl {
@@ -773,6 +848,86 @@ body[data-view="passcode"] #tabs .shoulder {
 #overlay.preview .dialog {
   background: #141928;
   backdrop-filter: none;
+}
+
+/* A web page's question (alert, confirm, download): a frame of its own and the globe, so it never passes for CouchHUD's. */
+#overlay.web .dialog {
+  border: 0.2rem dashed rgba(120, 170, 255, 0.85);
+  background: #0f1420;
+}
+
+#overlay.web .dialog-title::before {
+  content: '🌐 ';
+}
+
+#overlay.web .dialog-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/* A web page's prompt on the on-screen keyboard: the same web frame. */
+.osk.web {
+  border: 0.2rem dashed rgba(120, 170, 255, 0.85);
+  background: #0f1420;
+}
+
+/* A page in full screen leaves this strip (30 px, see MainWindow.FullScreenStrip) to the HUD: it is a website, always visible. */
+#web-fullscreen-badge {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 30px;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  background: #0f1420;
+  border-bottom: 2px dashed rgba(120, 170, 255, 0.85);
+  color: #dfe8ff;
+  font: 600 16px/1 'Segoe UI', sans-serif;
+  pointer-events: none;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: nowrap;
+  padding: 0 12px;
+}
+
+/* Never shrunk: the web mark and the warning. Only the host gives way (cut to 48 characters first, see shortHost). */
+#web-fullscreen-badge .web-badge-icon,
+#web-fullscreen-badge .web-badge-label {
+  flex-shrink: 0;
+}
+
+#web-fullscreen-badge .web-badge-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Said once by a screen reader when the warning starts, not shown. */
+#web-fullscreen-badge .web-badge-say {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+/* The unlock runs out: the warning with its countdown in the strip (the page covers the toasts in full screen). */
+#web-fullscreen-badge.closing {
+  background: #2a1d05;
+  border-bottom-color: #ffb020;
+}
+
+#web-fullscreen-badge .web-badge-warn {
+  flex-shrink: 0;
+  margin-left: 0.5em;
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: #ffb020;
+  color: #1a1000;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 /* The hints bar over a blurred, dimmed screen gets its own calm backing. */
@@ -851,10 +1006,9 @@ body.overlay-open #hints {
   min-width: 0;
 }
 
+/* Danger rows only tint text and icon: an outline of their own looked like a second focus (VM test 0.5). */
 .menu li.danger .menu-label,
 .menu li.danger .menu-icon { color: #ff7b72; }
-
-.menu li.danger { border-color: rgba(255, 123, 114, 0.35); }
 
 .menu li.focused {
   background: rgba(59, 156, 255, 0.2);
@@ -876,6 +1030,10 @@ body.overlay-open #hints {
   top: 6rem;
   left: 50%;
   transform: translateX(-50%);
+  /* Without a width the box shrinks to half the screen (left: 50%) and a longer text wraps into a tall block, on a 5:4 or
+     16:10 screen (1280 wide) sooner than at 1920 x 1080. */
+  width: max-content;
+  max-width: min(60rem, calc(100vw - 4rem));
   padding: 0.9rem 1.6rem;
   border-radius: 2rem;
   background: rgba(20, 25, 40, 0.92);
@@ -886,17 +1044,60 @@ body.overlay-open #hints {
 }
 
 /* A text of several lines (what an administrator approves): low on the screen, above the hints, so the page title stays visible. */
-#toast.long {
+/* The code entry: its lock symbol sits right below the toast's usual spot (a toast of two lines or more covered it). There every
+   toast goes low too, so the lock, the title and the dots stay free at every screen size; the prompt keeps that space free of its
+   keys and legend (body[data-view="passcode"] .passcode). */
+#toast.long,
+body[data-view="passcode"] #toast {
   top: auto;
   bottom: 6rem;
-  width: max-content;
-  max-width: min(60rem, calc(100vw - 4rem));
   border-radius: 1.2rem;
   line-height: 1.4;
 }
 
 #toast[hidden] {
   display: none;
+}
+
+/* A screenshot was taken (Guide + Y, guide menu): the picture and where it went, bottom right above the button hints, out of the way
+   of the page's title, the text toast and notification banners (top right). */
+#shot-toast {
+  position: fixed;
+  bottom: 7rem;
+  right: 3rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  max-width: min(36rem, calc(100vw - 6rem));
+  padding: 0.8rem 1.2rem 0.8rem 0.8rem;
+  border-radius: 1.2rem;
+  background: rgba(20, 25, 40, 0.94);
+  border: 0.1rem solid rgba(255, 255, 255, 0.16);
+  font-weight: 600;
+  line-height: 1.35;
+  z-index: 21;
+  animation: pop 0.2s var(--ease);
+}
+
+#shot-toast[hidden] {
+  display: none;
+}
+
+#shot-toast img {
+  width: 9rem;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 0.6rem;
+  flex: none;
+}
+
+#shot-toast .shot-toast-icon {
+  font-size: 2rem;
+  flex: none;
+}
+
+#shot-toast.failed {
+  border-color: rgba(255, 140, 90, 0.6);
 }
 
 /* Scrollable lists inside a view (system menu, settings): the page never scrolls. */
@@ -1497,7 +1698,6 @@ body.mouse-active .tile.hover:not(.focused) {
 .timeup-option.focused {
   background: var(--accent);
   color: var(--accent-contrast);
-  box-shadow: 0 0 1.4rem var(--accent-glow);
 }
 
 .timeup-option strong,
@@ -1524,8 +1724,8 @@ body.mouse-active .tile.hover:not(.focused) {
   flex-direction: column;
   gap: 1.2rem;
   padding: 2.4rem 2rem 7rem;
-  background: rgba(10, 13, 22, 0.92);
-  backdrop-filter: blur(1.4rem) saturate(1.3);
+  /* Opaque: through a see-through panel the page behind showed as faint blobs (a bright toggle as a circle, VM test 0.5). */
+  background: rgb(10, 13, 22);
   border-left: 0.08rem solid rgba(255, 255, 255, 0.1);
   box-shadow: -2rem 0 4rem rgba(0, 0, 0, 0.5);
   transform: translateX(105%);
@@ -1812,6 +2012,37 @@ body.quick-open #top {
   white-space: nowrap;
 }
 
+/* Batteries: the PC's next to the clock (laptops only), a controller only while it runs low; the same warning colour everywhere. */
+#battery-status,
+#pad-battery {
+  font-size: 1.25rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#pad-battery,
+#battery-status.low,
+.battery-low {
+  color: #ffd166;
+}
+
+.check-row small.battery-low {
+  color: #ffd166;
+}
+
+.battery-bars {
+  margin-left: auto;
+  font-size: 1.1rem;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.battery-bars.battery-low {
+  color: #ffd166;
+}
+
 .smarthome {
   height: 100%;
   display: flex;
@@ -1886,6 +2117,48 @@ body.quick-open #top {
   color: var(--fg);
   font-size: 1.3rem;
   font-weight: 700;
+}
+
+/* Nothing chosen yet: a short explanation and one card into the picker. */
+.ha-empty {
+  margin-top: 1rem;
+  max-width: 52rem;
+}
+
+.ha-empty-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.4rem;
+}
+
+.ha-choose .ha-icon {
+  filter: none;
+}
+
+/* Picker: chips wrap on narrow screens; the list keeps its rows. */
+.ha-pick {
+  max-width: 80rem;
+}
+
+.ha-pick-chips {
+  flex-wrap: wrap;
+}
+
+.ha-pick-icon {
+  width: 2rem;
+  flex: none;
+  text-align: center;
+  font-size: 1.4rem;
+}
+
+.ha-pick-row.missing .check-main {
+  opacity: 0.6;
+}
+
+.ha-pick-row.grabbed {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.18);
+  transform: translateX(0.8rem);
 }
 
 /* ------------------------------------------------------------------ CaseHUD */
@@ -2002,16 +2275,6 @@ body.quick-open #top {
 
 .casehud .check-row.ch-card small {
   white-space: normal;
-}
-
-/* The colour of a lighting parameter, next to its name. */
-.ch-swatch {
-  flex: none;
-  width: 1.6rem;
-  height: 1.6rem;
-  margin: 0 0.8rem 0 auto;
-  border-radius: 50%;
-  border: 0.12rem solid var(--fg);
 }
 
 /* ------------------------------------------------------------------ news */
@@ -2253,7 +2516,8 @@ body.quick-open #top {
   display: flex;
   flex-direction: column;
   gap: 1.2rem;
-  padding-top: 1.4rem;
+  /* Room below the chips, so they never sit on the hint bar (Nova draws it as a pill that reaches up). */
+  padding: 1.4rem 0 1rem;
   max-width: 82rem;
 }
 
@@ -2292,9 +2556,13 @@ body.quick-open #top {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
-  padding: 0.4rem 1rem 0.8rem 0;
+  /* list-scroll pulls the box out by its clip room; the same padding puts the bubbles back on the header's line. */
+  padding: 2rem 1.2rem 2rem 0.6rem;
   overflow-y: auto;
   scrollbar-width: none;
+  /* Scrolled messages fade out over the padding above and below instead of being cut at a hard edge next to the
+     header or the chips; at rest the first and last bubble sit fully inside it. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2rem, #000 calc(100% - 2rem), transparent);
 }
 
 .bubble {
@@ -2383,31 +2651,49 @@ body.quick-open #top {
 }
 
 .chips {
+  position: relative;
+  flex: none;
   list-style: none;
   margin: 0;
+  padding: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.7rem;
+  gap: 0.8rem;
+  /* One row that never wraps: assistant.js scrolls the focused chip into it, cut edges fade. */
+  overflow: hidden;
+}
+
+.chips.cut-end {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 4rem), transparent);
+}
+
+.chips.cut-start {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 4rem);
+}
+
+.chips.cut-start.cut-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 4rem, #000 calc(100% - 4rem), transparent);
 }
 
 .chip {
+  flex: none;
+  white-space: nowrap;
   padding: 0.75rem 1.2rem;
   border-radius: 2rem;
   background: var(--panel);
   border: 0.12rem solid rgba(255, 255, 255, 0.1);
   font-size: 1.1rem;
-  transition: transform 0.12s, border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, background 0.12s, color 0.12s, box-shadow 0.12s;
 }
 
 .chip.primary {
   font-weight: 700;
 }
 
+/* Focus is a frame drawn inside the chip: no zoom into the neighbour, no glow the row's clip would cut. */
 .chip.focused {
   border-color: var(--accent);
   background: rgba(255, 255, 255, 0.12);
-  transform: scale(1.05);
-  box-shadow: 0 0 1.2rem var(--accent-glow);
+  box-shadow: inset 0 0 0 0.12rem var(--accent);
 }
 
 .setting-secret {
@@ -2551,6 +2837,19 @@ body.quick-open #top {
   color: #fff;
   /* Dark enough for white letters at any hue (4.5:1 and up). */
   background: linear-gradient(135deg, hsl(var(--h) 60% 32%), hsl(calc(var(--h) + 40) 60% 24%));
+}
+
+/* A recent site or bookmark stays one line per text: a long title or host ends in "…" instead of breaking over several lines. */
+.check-row.browser-site .check-main {
+  flex: 1;
+}
+
+.check-row.browser-site .check-main strong,
+.check-row.browser-site .check-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 /* Same width as the icon boxes of the other rows, so the text column lines up. */
@@ -2778,10 +3077,6 @@ body.quick-open #top {
     0 1.2rem 3rem rgba(0, 0, 0, 0.6);
 }
 
-:root[data-hdr] .hero-logo {
-  filter: drop-shadow(0 0 1.6rem rgba(255, 255, 255, 0.35)) drop-shadow(0 0.3rem 1.2rem rgba(0, 0, 0, 0.55));
-}
-
 :root[data-hdr] .hero-info h1 {
   color: var(--hdr-white, #fff);
   text-shadow: 0 0 2rem var(--accent-glow), 0 0.2rem 1.2rem rgba(0, 0, 0, 0.5);
@@ -2808,12 +3103,6 @@ body.quick-open #top {
   100% { filter: brightness(1) drop-shadow(0 0 1.2rem var(--accent-glow)); }
 }
 
-:root[data-hdr] .quick-row.focused,
-:root[data-hdr] .check-row.focused,
-:root[data-hdr] .settings li.focused {
-  box-shadow: 0 0 1.8rem var(--accent-glow);
-}
-
 :root[data-hdr] #cursor {
   filter: drop-shadow(0 0 1rem var(--accent-glow)) drop-shadow(0 0.25rem 0.4rem rgba(0, 0, 0, 0.55));
 }
@@ -2828,6 +3117,14 @@ body.quick-open #top {
   gap: 1.2rem;
   height: 100%;
   text-align: center;
+}
+
+/* The toast sits low on the code entry (see #toast): the prompt keeps the bottom 11rem free for it, so a toast of up to five lines
+   covers neither the lock at the top nor the keyboard legend below the keys. "safe": when the prompt is taller (a hint, the help
+   without a controller, keys in two rows) it starts at the top instead of spilling under the tabs. */
+body[data-view="passcode"] .passcode {
+  justify-content: safe center;
+  padding-bottom: 11rem;
 }
 
 .passcode-lock {
@@ -3334,8 +3631,8 @@ body.quick-open #top {
 }
 
 /* Values on a focused row keep the row's text colour (yellow/white focus fills in some skins). */
-[data-skin="cyberpunk"] .settings li.focused .setting-value,
-[data-skin="xbox"] .settings li.focused .setting-value {
+[data-skin="neoncity"] .settings li.focused .setting-value,
+[data-skin="greenlight"] .settings li.focused .setting-value {
   color: inherit;
 }
 
@@ -3407,9 +3704,9 @@ body.quick-open #top {
   mix-blend-mode: plus-lighter;
 }
 
-:root[data-skin="ps4"] { --tilt-scale: 0.55; --glare-color: rgba(190, 220, 255, 0.22); }
-:root[data-skin="xbox"] { --tilt-scale: 0.8; --glare-color: rgba(200, 255, 200, 0.22); }
-:root[data-skin="cyberpunk"] { --tilt-scale: 0.6; --glare-color: rgba(252, 238, 10, 0.18); }
+:root[data-skin="deepsea"] { --tilt-scale: 0.55; --glare-color: rgba(190, 220, 255, 0.22); }
+:root[data-skin="greenlight"] { --tilt-scale: 0.8; --glare-color: rgba(200, 255, 232, 0.22); }
+:root[data-skin="neoncity"] { --tilt-scale: 0.6; --glare-color: rgba(246, 233, 58, 0.18); }
 :root[data-skin="nova"] { --tilt-scale: 1.2; --glare-color: rgba(190, 215, 255, 0.4); }
 
 /* ------------------------------------------------------------------ launch transition */
@@ -3619,26 +3916,26 @@ body.quick-open #top {
   to { transform: rotate(360deg); }
 }
 
-/* PS4: calm blue wash, a hair-thin line instead of a bar, square cover */
-[data-skin="ps4"] .launch-backdrop { background-color: #00164a; }
-[data-skin="ps4"] .launch-shade { background: radial-gradient(ellipse at 50% 45%, rgba(0, 20, 70, 0.35), rgba(0, 6, 24, 0.9) 90%); }
-[data-skin="ps4"] .launch-card { box-shadow: 0 0 0 0.1rem rgba(255, 255, 255, 0.5), 0 2rem 4rem rgba(0, 0, 0, 0.6); }
-[data-skin="ps4"] .launch-bar { --launch-bar-height: 0.12rem; width: 26rem; background: rgba(255, 255, 255, 0.25); }
-[data-skin="ps4"] .launch-bar i { background: #fff; }
-[data-skin="ps4"] .launch-status { font-weight: 300; letter-spacing: 0.12em; text-transform: uppercase; font-size: 1.1rem; }
+/* Deep Sea: calm blue wash, a hair-thin line instead of a bar, square cover */
+[data-skin="deepsea"] .launch-backdrop { background-color: #00164a; }
+[data-skin="deepsea"] .launch-shade { background: radial-gradient(ellipse at 50% 45%, rgba(0, 20, 70, 0.35), rgba(0, 6, 24, 0.9) 90%); }
+[data-skin="deepsea"] .launch-card { box-shadow: 0 0 0 0.1rem rgba(255, 255, 255, 0.5), 0 2rem 4rem rgba(0, 0, 0, 0.6); }
+[data-skin="deepsea"] .launch-bar { --launch-bar-height: 0.12rem; width: 26rem; background: rgba(255, 255, 255, 0.25); }
+[data-skin="deepsea"] .launch-bar i { background: #fff; }
+[data-skin="deepsea"] .launch-status { font-weight: 300; letter-spacing: 0.12em; text-transform: uppercase; font-size: 1.1rem; }
 
-/* Xbox: green ring spinner and a soft green glow behind the cover */
-[data-skin="xbox"] .launch-ring { display: block; border-top-color: var(--accent-bright, var(--accent-text)); }
-[data-skin="xbox"] .launch-bar { display: none; }
-[data-skin="xbox"] .launch-card { box-shadow: 0 0 0 0.2rem #fff, 0 0 6rem 0.5rem var(--accent-glow), 0 2rem 4rem rgba(0, 0, 0, 0.6); }
-[data-skin="xbox"] .launch-shade { background: radial-gradient(ellipse at 50% 55%, rgba(16, 124, 16, 0.22), rgba(5, 8, 5, 0.9) 80%); }
+/* Greenlight: a short, thick pill bar and a soft green glow behind the cover */
+[data-skin="greenlight"] .launch-bar { --launch-bar-height: 0.4rem; --launch-bar-radius: 0.2rem; width: 14rem; }
+[data-skin="greenlight"] .launch-bar i { background: var(--accent-bright, var(--accent-text)); }
+[data-skin="greenlight"] .launch-card { box-shadow: 0 0 0 0.2rem #fff, 0 0 6rem 0.5rem var(--accent-glow), 0 2rem 4rem rgba(0, 0, 0, 0.6); }
+[data-skin="greenlight"] .launch-shade { background: radial-gradient(ellipse at 50% 55%, rgba(11, 122, 87, 0.22), rgba(5, 8, 7, 0.9) 80%); }
 
-/* Cyberpunk: hard edges, segmented bar, a short glitch now and then */
-[data-skin="cyberpunk"] .launch-card { clip-path: polygon(0 0, calc(100% - 1.2rem) 0, 100% 1.2rem, 100% 100%, 1.2rem 100%, 0 calc(100% - 1.2rem)); box-shadow: none; }
-[data-skin="cyberpunk"] .launch-bar { border-radius: 0; background: rgba(252, 238, 10, 0.12); }
-[data-skin="cyberpunk"] .launch-bar i { border-radius: 0; background: repeating-linear-gradient(90deg, var(--accent) 0 0.5rem, transparent 0.5rem 0.75rem); }
-[data-skin="cyberpunk"] .launch-status { text-transform: uppercase; letter-spacing: 0.15em; color: var(--accent-text); animation: launch-glitch 5s steps(1) infinite; }
-[data-skin="cyberpunk"] .launch-shade { background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.18) 0 0.12rem, transparent 0.12rem 0.25rem), radial-gradient(ellipse at 50% 45%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.9) 85%); }
+/* Neon City: hard edges, segmented bar, a short glitch now and then */
+[data-skin="neoncity"] .launch-card { clip-path: polygon(0 0, calc(100% - 1.2rem) 0, 100% 1.2rem, 100% 100%, 1.2rem 100%, 0 calc(100% - 1.2rem)); box-shadow: none; }
+[data-skin="neoncity"] .launch-bar { border-radius: 0; background: rgba(246, 233, 58, 0.12); }
+[data-skin="neoncity"] .launch-bar i { border-radius: 0; background: repeating-linear-gradient(90deg, var(--accent) 0 0.5rem, transparent 0.5rem 0.75rem); }
+[data-skin="neoncity"] .launch-status { text-transform: uppercase; letter-spacing: 0.15em; color: var(--accent-text); animation: launch-glitch 5s steps(1) infinite; }
+[data-skin="neoncity"] .launch-shade { background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.18) 0 0.12rem, transparent 0.12rem 0.25rem), radial-gradient(ellipse at 50% 45%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.9) 85%); }
 
 @keyframes launch-glitch {
   0%, 92%, 100% { transform: none; text-shadow: none; }
@@ -4272,6 +4569,20 @@ body[data-view="terms"] #notify-stack .notify-card:not(.security) {
   gap: 0.8rem;
 }
 
+/* Areas: four rows with a description each, wider so the descriptions stay on one line, and tighter, so the
+   list fits between the lead and the hint at the bottom instead of running into both. */
+.wizard-step-areas .wizard-body {
+  gap: 1rem;
+}
+
+.wizard-step-areas .wizard-line.wizard-list {
+  width: min(56rem, 100%);
+}
+
+.wizard-step-areas .wizard-row {
+  padding: 0.75rem 1.4rem;
+}
+
 .wizard-line.wizard-list {
   width: min(46rem, 100%);
 }
@@ -4304,6 +4615,20 @@ body[data-view="terms"] #notify-stack .notify-card:not(.security) {
 .wizard-row-icon {
   display: inline-flex;
   color: var(--accent-text);
+}
+
+/* A line with a short description under its title (the areas step). */
+.wizard-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.2rem;
+  text-align: left;
+}
+
+.wizard-row-text small {
+  color: var(--muted);
+  font-size: 1rem;
 }
 
 .wizard-row.focused {
@@ -4377,4 +4702,135 @@ body[data-view="terms"] #notify-stack .notify-card:not(.security) {
   max-width: 60rem;
   color: var(--muted);
   font-size: 1.05rem;
+}
+
+/* ------------------------------------------------------------------ downloads */
+
+#downloads-status {
+  padding: 0.35rem 0.9rem;
+  border-radius: 2rem;
+  background: var(--panel);
+  border: 0.08rem solid var(--accent);
+  font-weight: 600;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Running without a known percentage: a calm moving stripe, never a number. */
+.progress-unknown i {
+  width: 30%;
+  animation: progress-unknown 2.4s ease-in-out infinite;
+}
+
+@keyframes progress-unknown {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+
+:root[data-motion="off"] .progress-unknown i {
+  width: 100%;
+  opacity: 0.35;
+  animation: none;
+}
+
+.download-row.state-failed small {
+  color: #ffb4a8;
+}
+
+.downloads-note {
+  margin-top: 1rem;
+  max-width: 60rem;
+}
+
+.tile-uninstalled .art {
+  filter: saturate(0.55) brightness(0.8);
+}
+
+.tile-uninstalled.focused .art {
+  filter: none;
+}
+
+.tile-badge {
+  position: absolute;
+  bottom: 0.4rem;
+  right: 0.5rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 1rem;
+  background: rgba(0, 0, 0, 0.65);
+  font-size: 1rem;
+}
+
+/* Profiles: the picker and the round avatar in the profile's color (a preset, see components/profiles.js). */
+.profile-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2rem;
+  height: 100%;
+  text-align: center;
+}
+
+.profile-picker h2 {
+  margin: 0;
+  font-size: 2.8rem;
+}
+
+.profile-tiles {
+  list-style: none;
+  margin: 1.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.6rem;
+  max-width: 90vw;
+}
+
+.profile-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  width: 10rem;
+  padding: 1rem 0.6rem;
+  border-radius: var(--tile-radius);
+  border: 0.15rem solid transparent;
+}
+
+.profile-tile.focused {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 1.4rem var(--accent-glow);
+}
+
+.profile-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1.3rem;
+}
+
+.profile-lock {
+  min-height: 1.2rem;
+}
+
+.profile-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  background: var(--profile-color, #3fa9f5);
+  font-size: 1.4rem;
+}
+
+.profile-avatar.big {
+  width: 6.5rem;
+  height: 6.5rem;
+  font-size: 3.6rem;
 }

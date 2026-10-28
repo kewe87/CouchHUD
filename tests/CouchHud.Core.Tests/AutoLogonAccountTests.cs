@@ -59,6 +59,21 @@ public class AutoLogonAccountTests
     [InlineData("x", true)]
     public void Empty_password_is_not_usable(string? password, bool expected) =>
         Assert.Equal(expected, AutoLogonAccount.IsUsablePassword(password));
+
+    [Fact]
+    public void Switching_off_what_is_off_already_is_no_error()
+    {
+        // Off with nothing of CouchHUD's stored, refused by the service (nothing of the caller's), still off: met, not refused (VM test 0.5).
+        Assert.True(AutoLogonAccount.AlreadyOff(AutoLogonState.Off, refusedByService: true, enabledAfter: false));
+        // Lost (Windows switched it off, CouchHUD's marker and maybe the stored password remain): a refusal stays an error.
+        Assert.False(AutoLogonAccount.AlreadyOff(AutoLogonState.Lost, refusedByService: true, enabledAfter: false));
+        // On: a refusal stays a refusal; any other failure is not "off already" either.
+        Assert.False(AutoLogonAccount.AlreadyOff(AutoLogonState.CouchHud, refusedByService: true, enabledAfter: false));
+        Assert.False(AutoLogonAccount.AlreadyOff(AutoLogonState.External, refusedByService: true, enabledAfter: false));
+        Assert.False(AutoLogonAccount.AlreadyOff(AutoLogonState.Off, refusedByService: false, enabledAfter: false));
+        // Switched on meanwhile (Windows asked again after the refusal): not off.
+        Assert.False(AutoLogonAccount.AlreadyOff(AutoLogonState.Off, refusedByService: true, enabledAfter: true));
+    }
 }
 
 public class PasswordAttemptLimiterTests

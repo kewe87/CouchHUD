@@ -32,7 +32,7 @@ export function pairingPage() {
             el('li', { textContent: t('phone.step1') }),
             el('li', { textContent: t('phone.step2') }),
             el('li', { textContent: t('phone.step3') })),
-          r.code ? el('p', { className: 'meta', textContent: t('phone.code', { code: r.code, address: r.address }) }) : null,
+          r.code ? el('p', { className: 'meta pair-code', textContent: t('phone.code', { code: r.code, address: r.address }) }) : null,
           el('p', { className: 'meta', textContent: r.devices?.length ? t('phone.paired', { names: r.devices.map((d) => d.name).join(', ') }) : t('phone.noneYet') }))));
     },
     handle(action) {

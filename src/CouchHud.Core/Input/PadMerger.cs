@@ -1,12 +1,13 @@
 namespace CouchHud.Core.Input;
 
-/// <summary>Raw state of one XInput slot.</summary>
+/// <summary>Raw state of one pad slot (an XInput slot, or a PlayStation pad read over HID in the same shape).</summary>
 public readonly record struct PadSample(ushort Buttons, byte LeftTrigger, byte RightTrigger, short LX, short LY, short RX, short RY);
 
 /// <summary>
-/// Merges the states of all connected XInput slots into one logical pad. Steam Input, DS4Windows
-/// and similar tools add virtual pads that mirror the real one; a button counts as down as soon as
-/// any pad holds it and as up once no pad does, so events are never duplicated.
+/// Merges the states of all connected pad slots into one logical pad. Steam Input, DS4Windows
+/// and similar tools add virtual pads that mirror the real one (also a PlayStation pad CouchHUD reads
+/// itself over HID); a button counts as down as soon as any pad holds it and as up once no pad does,
+/// so events are never duplicated.
 /// </summary>
 public sealed class PadMerger
 {
@@ -31,6 +32,15 @@ public sealed class PadMerger
 
     public bool IsPressed(string button) => _union.Contains(button);
 
+    /// <summary>The slots that saw a new press in the last poll (a button or stick direction that was not held there before).</summary>
+    public IReadOnlyList<int> PressedSlots { get; private set; } = [];
+
+    /// <summary>Per slot with a new press in the last poll: the newly held buttons, sorted and joined ("a,up").</summary>
+    public IReadOnlyList<(int Slot, string Key)> NewPresses { get; private set; } = [];
+
+    /// <summary>Whether a slot holds any button, direction or trigger after the last poll.</summary>
+    public bool Holds(int slot) => slot >= 0 && slot < _perSlot.Length && _perSlot[slot].Count > 0;
+
     /// <summary>Raised once per instance when two slots report identical changes in the same poll.</summary>
     public event Action<int, int>? MirrorDetected;
 
@@ -48,6 +58,22 @@ public sealed class PadMerger
         return best is { } b ? (b.LX / 32768.0, b.LY / 32768.0, b.RY / 32768.0) : (0, 0, 0);
     }
 
+    private static readonly Dictionary<string, ushort> Dpad = new() { ["up"] = 0x0001, ["down"] = 0x0002, ["left"] = 0x0004, ["right"] = 0x0008 };
+
+    /// <summary>
+    /// A direction that is held only by the left stick, not by the d-pad of any pad (in the last poll). Where the stick is the
+    /// cursor (the couch browser) such a direction is no button.
+    /// </summary>
+    public bool FromStickOnly(string button)
+    {
+        if (!Dpad.TryGetValue(button, out var mask)) return false;
+        foreach (var s in _samples)
+        {
+            if (s is { } p && (p.Buttons & mask) != 0) return false;
+        }
+        return true;
+    }
+
     /// <summary>Feeds one poll (index = slot, null = disconnected) and returns the Down/Up events of the merged pad.</summary>
     public IReadOnlyList<(string Button, bool Down)> Update(IReadOnlyList<PadSample?> slots)
     {
@@ -58,6 +84,19 @@ public sealed class PadMerger
             perSlot[i] = slots[i] is { } s ? ToPressed(s) : [];
             union.UnionWith(perSlot[i]);
         }
+
+        var pressedSlots = new List<int>();
+        var newPresses = new List<(int, string)>();
+        for (var i = 0; i < perSlot.Length; i++)
+        {
+            var before = i < _perSlot.Length ? _perSlot[i] : [];
+            var fresh = perSlot[i].Where(b => !before.Contains(b)).Order(StringComparer.Ordinal).ToList();
+            if (fresh.Count == 0) continue;
+            pressedSlots.Add(i);
+            newPresses.Add((i, string.Join(",", fresh)));
+        }
+        PressedSlots = pressedSlots;
+        NewPresses = newPresses;
 
         var events = new List<(string, bool)>();
         foreach (var b in union) if (!_union.Contains(b)) events.Add((b, true));

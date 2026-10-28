@@ -395,7 +395,9 @@ public static class CaseHudPolicy
     public static readonly IReadOnlySet<string> All = new HashSet<string>(OpenWhileLocked)
     {
         "caseHudCheckUpdate", "caseHudPrepare", "caseHudStart", "caseHudInstall", "caseHudUpdate", "caseHudOpenGui", "caseHudPanels",
-        "caseHudPatchPanel", "caseHudDesigns", "caseHudSets", "caseHudApplySet", "caseHudRotation", "caseHudCommunity", "caseHudImport", "caseHudAwtrix",
+        "caseHudPatchPanel", "caseHudSets", "caseHudApplySet", "caseHudRotation", "caseHudAwtrix",
+        // The automation on or off: a setting like the rotation (its rules are edited in CaseHUD's window only).
+        "caseHudAutomation",
         "caseHudPatchLighting",
         // Switching CaseHUD's API on or off is a setting of CaseHUD: never without the code.
         "caseHudSetApi"

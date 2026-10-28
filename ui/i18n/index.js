@@ -13,6 +13,10 @@ import deCore from './de/core.js';
 import deMock from './de/mock.js';
 import deCaseHud from './de/casehud.js';
 import deWizard from './de/wizard.js';
+import deVpn from './de/vpn.js';
+import deDownloads from './de/downloads.js';
+import deTv from './de/tv.js';
+import deProfiles from './de/profiles.js';
 import enSettings from './en/settings.js';
 import enSetup from './en/setup.js';
 import enTransparency from './en/transparency.js';
@@ -26,10 +30,14 @@ import enCore from './en/core.js';
 import enMock from './en/mock.js';
 import enCaseHud from './en/casehud.js';
 import enWizard from './en/wizard.js';
+import enVpn from './en/vpn.js';
+import enDownloads from './en/downloads.js';
+import enTv from './en/tv.js';
+import enProfiles from './en/profiles.js';
 
-export const FILES = ['settings', 'setup', 'transparency', 'legal', 'system', 'views1', 'views2', 'components1', 'components2', 'core', 'mock', 'casehud', 'wizard'];
+export const FILES = ['settings', 'setup', 'transparency', 'legal', 'system', 'views1', 'views2', 'components1', 'components2', 'core', 'mock', 'casehud', 'wizard', 'vpn', 'downloads', 'tv', 'profiles'];
 
 export const dictionaries = {
-  de: Object.assign({}, deSettings, deSetup, deTransparency, deLegal, deSystem, deViews1, deViews2, deComponents1, deComponents2, deCore, deMock, deCaseHud, deWizard),
-  en: Object.assign({}, enSettings, enSetup, enTransparency, enLegal, enSystem, enViews1, enViews2, enComponents1, enComponents2, enCore, enMock, enCaseHud, enWizard)
+  de: Object.assign({}, deSettings, deSetup, deTransparency, deLegal, deSystem, deViews1, deViews2, deComponents1, deComponents2, deCore, deMock, deCaseHud, deWizard, deVpn, deDownloads, deTv, deProfiles),
+  en: Object.assign({}, enSettings, enSetup, enTransparency, enLegal, enSystem, enViews1, enViews2, enComponents1, enComponents2, enCore, enMock, enCaseHud, enWizard, enVpn, enDownloads, enTv, enProfiles)
 };

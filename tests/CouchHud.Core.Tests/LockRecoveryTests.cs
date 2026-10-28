@@ -482,13 +482,13 @@ public sealed class ParentalAuditTests : IDisposable
         ledger.Add(day, "g", 600);
         ledger.Save(day);
         ledger.Add(day, "g", 300);
-        ledger.Save(day); // .bak now holds the 600 s state
+        ledger.Save(day); // the .bak holds the 900 s state as well (refreshed after every save)
 
-        // A power cut left half a file: the signed copy from before is used, the day is not "used up".
+        // A power cut left half a file: the signed copy is used, with the last save, the day is not "used up".
         File.WriteAllText(file, "{\"Days\":{\"2026-10-19\":");
         var recovered = new PlayLedger(file, key, expectExisting: true);
         Assert.False(recovered.Tampered);
-        Assert.Equal(600, recovered.Seconds(day), 3);
+        Assert.Equal(900, recovered.Seconds(day), 3);
 
         // A complete file with a changed number is tampering, the copy does not save the child here.
         ledger.Save(day);

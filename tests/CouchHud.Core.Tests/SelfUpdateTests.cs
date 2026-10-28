@@ -272,6 +272,77 @@ public class SelfUpdateTests : IDisposable
     }
 
     [Fact]
+    public async Task A_cancel_after_the_download_returned_stops_the_hand_over()
+    {
+        // The last byte and the hash are through, then the cancel arrives: it must win (true) and the hand-over must be refused.
+        var (service, _) = Service(Github(cdn: null));
+        using var cancel = new DownloadCancel();
+        var verified = await service.DownloadAsync(Release(), Path.Combine(_dir, "tmp"), cancel.Token);
+        Assert.True(cancel.Open);
+        Assert.True(cancel.Cancel());
+        Assert.True(cancel.Cancelled);
+        Assert.True(cancel.Token.IsCancellationRequested);
+        Assert.False(cancel.Open);
+        Assert.False(cancel.TryHandOver());
+        Assert.False(cancel.Cancel());
+        verified.Dispose();
+    }
+
+    [Fact]
+    public async Task A_cancel_after_the_hand_over_began_reports_false()
+    {
+        var (service, _) = Service(Github(cdn: null));
+        using var cancel = new DownloadCancel();
+        using var verified = await service.DownloadAsync(Release(), Path.Combine(_dir, "tmp"), cancel.Token);
+        Assert.True(cancel.TryHandOver());
+        Assert.False(cancel.Cancel());
+        Assert.False(cancel.Cancelled);
+        Assert.False(cancel.Token.IsCancellationRequested);
+        Assert.False(cancel.TryHandOver());
+    }
+
+    [Fact]
+    public void A_cancel_after_the_end_reports_false()
+    {
+        var cancel = new DownloadCancel();
+        cancel.Dispose();
+        Assert.False(cancel.Cancel());
+        Assert.False(cancel.TryHandOver());
+    }
+
+    /// <summary>A body that, mid-read, is cancelled and then breaks the way a closed connection does.</summary>
+    private sealed class BreakingStream(CancellationTokenSource cancel) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            cancel.Cancel();
+            throw new IOException("connection closed");
+        }
+    }
+
+    [Fact]
+    public async Task A_cancel_that_breaks_the_connection_is_a_cancel_not_a_failed_download()
+    {
+        using var cancel = new CancellationTokenSource();
+        var github = Github(cdn: null);
+        var (service, _) = Service(request => request.RequestUri!.AbsoluteUri == Base + Setup
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new BreakingStream(cancel)) }
+            : github(request));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.DownloadAsync(Release(), Path.Combine(_dir, "tmp"), cancel.Token));
+        Assert.Empty(Directory.GetDirectories(Path.Combine(_dir, "tmp")));
+    }
+
+    [Fact]
     public async Task Disposing_removes_the_setup()
     {
         var (service, _) = Service(Github(cdn: null));

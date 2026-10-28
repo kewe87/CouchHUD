@@ -90,11 +90,21 @@ public sealed class CaseHudManager : IDisposable
         _apiSwitch = new CaseHudApiSwitch(TrustedExe, RunCliAsync, line => Console.Error.WriteLine(line));
         _installer = new CaseHudInstaller(_releases, new CaseHudInstallGate(), _discovery.FindInstall, CurrentClientFresh, new ShellSetupRunner(() => _discovery.FindInstall() is not null),
             StartCoreAsync, _gameRunning, () => (_config.Current.CaseHudInstallAutostart, _config.Current.CaseHudInstallFps),
-            Path.Combine(_dataDir, "casehud-temp"), text => { _busy = text; Publish(); },
+            Path.Combine(_dataDir, "casehud-temp"), text =>
+            {
+                _busy = text;
+                if (text is not null) Downloads?.Report(DownloadLine, detail: text);
+                Publish();
+            },
             apiAfterInstall: ApiAfterInstall, enableApi: EnableApiAfterInstallAsync);
         // Once, here: the manager is created once (Lazy in Hud), so this cannot delete a setup that is running.
         CleanTemp();
     }
+
+    /// <summary>The downloads page: an installation or update of CaseHUD is one of its lines.</summary>
+    public CouchHud.Core.Library.DownloadCenter? Downloads { get; init; }
+
+    private const string DownloadLine = "casehud";
 
     private static CaseHudCapabilityStore? _sharedCapabilities;
     private static readonly object SharedLock = new();
@@ -514,7 +524,17 @@ public sealed class CaseHudManager : IDisposable
             case "caseHudInstall":
             case "caseHudUpdate":
                 _error = null;
-                await _installer.InstallAsync(Arg(0).ValueKind == JsonValueKind.String ? Arg(0).GetString() : null);
+                Downloads?.Begin(DownloadLine, CouchHud.Core.Library.DownloadKind.CaseHud, "casehud", "CaseHUD", isUpdate: method == "caseHudUpdate");
+                try
+                {
+                    await _installer.InstallAsync(Arg(0).ValueKind == JsonValueKind.String ? Arg(0).GetString() : null);
+                    Downloads?.Complete(DownloadLine, ok: true);
+                }
+                catch (Exception ex)
+                {
+                    Downloads?.Complete(DownloadLine, ok: false, ex.Message);
+                    throw;
+                }
                 lock (_lock) _installState = null;
                 _release = await _releases.CheckAsync(_discovery.FindInstall()?.Version);
                 return Describe();
@@ -540,34 +560,46 @@ public sealed class CaseHudManager : IDisposable
             case "caseHudPatchPanel":
                 // CaseHUD's refusal reaches the page as a readable, cleaned and capped text (as for lighting).
                 try { return await Client().PatchPanelAsync(Str(0), CaseHudPanelPatch.FromJson(Arg(1))); }
-                catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex)) { throw new InvalidOperationException(CaseHudLighting.ErrorText(ex)); }
+                catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex))
+                {
+                    if (ex.Code == "unauthorized") OnUnauthorized();
+                    throw new InvalidOperationException(CaseHudLighting.ErrorText(ex));
+                }
             case "caseHudLighting": return await LightingAsync();
             case "caseHudPatchLighting": return await PatchLightingAsync(Arg(0));
-            case "caseHudDesigns": return await Client().DesignsAsync();
             case "caseHudSets": return await Client().SetsAsync();
             case "caseHudApplySet":
             {
-                var ids = Arg(2).ValueKind == JsonValueKind.Array ? Arg(2).EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList() : null;
-                await Client().ApplySetAsync(Str(0), Str(1), ids is { Count: > 0 } ? ids : null);
+                // Only a style CaseHUD lists, in a known theme, on displays CaseHUD knows (at most CaseHudSets.MaxPanels of them).
+                var client = Client();
+                var panels = Arg(2);
+                var known = panels.ValueKind == JsonValueKind.Array && panels.GetArrayLength() > 0
+                    ? (_lastStatus?.Panels ?? await client.PanelsAsync()).Select(p => p.Id)
+                    : null;
+                var apply = CaseHudSets.Check(Str(0), Str(1), panels, await client.SetsAsync(), known);
+                await client.ApplySetAsync(apply.Set, apply.Theme, apply.Panels);
                 return null;
             }
             case "caseHudScenes": return await Client().ScenesAsync();
             case "caseHudActivateScene":
                 try { await Client().ActivateSceneAsync(Str(0)); }
                 catch (CaseHudException ex) when (ex.Code == "conflict") { throw new InvalidOperationException(Strings.Get("casehud.sceneConflict")); }
+                catch (CaseHudException ex) when (ex.Code == "not_found" || ex.Status == 404) { throw new InvalidOperationException(Strings.Get("casehud.sceneNotFound")); }
                 return null;
             case "caseHudRotation": await Client().SetRotationAsync(Bool(0)); return null;
+            case "caseHudAutomation":
+                try { await Client().SetAutomationAsync(Bool(0)); }
+                catch (CaseHudException ex) when (ex.Status is 404 or 405) { throw new InvalidOperationException(Strings.Get("casehud.err.notAllowed")); }
+                return null;
             case "caseHudNextScene": await Client().NextSceneAsync(); return null;
             case "caseHudPower": await Client().PowerAsync(Bool(0)); return null;
             case "caseHudIdentify": await Client().IdentifyAsync(Arg(0).ValueKind == JsonValueKind.String ? Arg(0).GetString() : null); return null;
-            case "caseHudCommunity": return await Client().CommunityAsync();
-            case "caseHudImport": await Client().ImportCommunityAsync(Str(0)); return null;
             case "caseHudAwtrix": await Client().SetAwtrixAsync(Bool(0)); return null;
             case "caseHudPreview":
             {
-                // As a data: URL: the token stays on the host side and never appears in a WebView URL.
-                var size = Arg(2).ValueKind == JsonValueKind.Number ? Arg(2).GetInt32() : (int?)null;
-                var png = await Client().PreviewAsync(Str(0), Str(1), size, Arg(3).ValueKind == JsonValueKind.String ? Arg(3).GetString() : null);
+                // As a data: URL: the token stays on the host side and never appears in a WebView URL. Only displays have a preview here.
+                var size = Arg(1).ValueKind == JsonValueKind.Number && Arg(1).TryGetInt32(out var n) ? n : (int?)null;
+                var png = await Client().PanelPreviewAsync(Str(0), size);
                 return "data:image/png;base64," + Convert.ToBase64String(png);
             }
             default:
@@ -589,7 +621,12 @@ public sealed class CaseHudManager : IDisposable
         }
         if (!CaseHudLighting.Supported(_lastStatus)) throw new InvalidOperationException(Strings.Get("casehud.lightingUnsupported"));
         try { return _lighting = await client.LightingAsync(); }
-        catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex)) { throw new InvalidOperationException(CaseHudLighting.ErrorText(ex)); }
+        catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex))
+        {
+            // Converted here, so HandleAsync no longer sees the code: a stale token is reported before.
+            if (ex.Code == "unauthorized") OnUnauthorized();
+            throw new InvalidOperationException(CaseHudLighting.ErrorText(ex));
+        }
     }
 
     /// <summary>
@@ -613,6 +650,7 @@ public sealed class CaseHudManager : IDisposable
         }
         catch (CaseHudException ex) when (ex.Status > 0 && !CaseHudState.IsApiDisabled(ex))
         {
+            if (ex.Code == "unauthorized") OnUnauthorized();
             // A 400 usually means the state moved on (a device went away, lighting was switched off): the next check uses the fresh one.
             if (ex.Status == 400)
             {
@@ -652,7 +690,7 @@ public sealed class CaseHudManager : IDisposable
         }
     }
 
-    /// <summary>CaseHUD's own window on the PC (design editor): the API opens it and puts it in front; older versions get started again instead.</summary>
+    /// <summary>CaseHUD's own window on the PC (designs, effects, devices, automation rules): the API opens it and puts it in front; older versions get started again instead.</summary>
     private async Task OpenGuiAsync()
     {
         var install = _discovery.FindInstall() ?? throw new CaseHudException("not_installed", Strings.Get("casehud.notInstalled"));
@@ -755,85 +793,15 @@ public sealed class CaseHudManager : IDisposable
     /// (links and short names resolved), no reparse point on the way, and inside Program Files (only administrators write there).
     /// Never a path from api.json or instance.pid, never one in a user-writable folder; null otherwise.
     /// </summary>
-    private string? TrustedExe()
-    {
-        var install = _discovery.FindInstall();
-        if (install is null) return null;
-        try
-        {
-            var exe = CanonicalPath(Path.GetFullPath(install.Exe));
-            PathSafety.RequireNoReparsePoints(exe);
-            if (CaseHudCli.IsTrustedInstallPath(exe, TrustedCliRunner.TrustedRoots())) return exe;
-            Console.Error.WriteLine("[casehud] api switch: CaseHUD is not installed below Program Files, not run");
-            return null;
-        }
-        catch (Exception ex) when (ex is CatalogException or IOException or ArgumentException or UnauthorizedAccessException)
-        {
-            Console.Error.WriteLine($"[casehud] api switch: install path rejected ({ex.GetType().Name})");
-            return null;
-        }
-    }
+    private string? TrustedExe() => TrustedCliRunner.Verify(_discovery.FindInstall()?.Exe, CaseHudInfo.ExeName, "casehud");
 
     /// <summary>
     /// Runs the verified exe with one argument, no window, no shell. Only stderr is redirected (for one capped log line); stdout is not, so
-    /// no pipe of ours is left for a child to hold. The wait is bounded by <see cref="CaseHudCli.RunAsync"/>: timeout or cancellation kill
-    /// the process tree, stderr gets a short grace after the exit. Null exit = timed out (ended).
+    /// no pipe of ours is left for a child to hold. The wait is bounded: timeout or cancellation kill the process tree, stderr gets a short
+    /// grace after the exit. Null exit = timed out (ended). Shared with the VPN apps: <see cref="TrustedCliRunner"/>.
     /// </summary>
-    private static async Task<(int? Exit, string Stderr)> RunCliAsync(string exe, string arguments, CancellationToken ct)
-    {
-        var info = new ProcessStartInfo(exe)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            WorkingDirectory = Path.GetDirectoryName(exe)!
-        };
-        info.ArgumentList.Add(arguments);
-        Process? process;
-        try { process = Process.Start(info); }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException) { return (-1, ex.GetType().Name); }
-        if (process is null) return (-1, "");
-        return await CaseHudCli.RunAsync(new CliProcess(process), ct);
-    }
-
-    private sealed class CliProcess : ICaseHudCliProcess
-    {
-        private readonly Process _process;
-
-        public CliProcess(Process process)
-        {
-            _process = process;
-            Stderr = ReadCappedAsync(process.StandardError);
-        }
-
-        public Task<string> Stderr { get; }
-        public int ExitCode => _process.ExitCode;
-        public Task WaitForExitAsync(CancellationToken ct) => _process.WaitForExitAsync(ct);
-
-        public void Kill()
-        {
-            try { _process.Kill(entireProcessTree: true); }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException or AggregateException) { }
-        }
-
-        // Closes our end of the pipe: a read still waiting (a child holds the other end) ends with an exception, caught below.
-        public void Dispose() => _process.Dispose();
-    }
-
-    /// <summary>At most 4096 characters are kept; the rest is read and dropped so the process never blocks on a full pipe.</summary>
-    private static async Task<string> ReadCappedAsync(StreamReader reader)
-    {
-        var kept = new StringBuilder();
-        var chunk = new char[1024];
-        try
-        {
-            int read;
-            while ((read = await reader.ReadAsync(chunk)) > 0)
-                if (kept.Length < 4096) kept.Append(chunk, 0, Math.Min(read, 4096 - kept.Length));
-        }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { }
-        return kept.ToString();
-    }
+    private static Task<(int? Exit, string Stderr)> RunCliAsync(string exe, string arguments, CancellationToken ct) =>
+        TrustedCliRunner.RunAsync(exe, [arguments], CaseHudCli.Timeout, ct);
 
     private void CleanTemp()
     {

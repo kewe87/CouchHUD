@@ -7,11 +7,12 @@ using CouchHud.Sdk;
 namespace CouchHud.Core.Library;
 
 /// <summary>GOG games, installed with or without Galaxy (the installers register them).</summary>
-public sealed class GogScanner(IRegistry registry) : ILibraryProvider
+public sealed class GogScanner(IRegistry registry) : ILibraryProvider, IGameStore
 {
     private const string GamesKey = @"HKLM\SOFTWARE\WOW6432Node\GOG.com\Games";
 
     public string Name => "GOG";
+    public string Source => "gog";
 
     public Task<IReadOnlyList<LibraryItem>> GetItemsAsync(CancellationToken cancellationToken) => Task.Run(Scan, cancellationToken);
 
@@ -48,11 +49,12 @@ public sealed class GogScanner(IRegistry registry) : ILibraryProvider
 }
 
 /// <summary>Ubisoft Connect games; the launcher keeps one registry key per installed game.</summary>
-public sealed class UbisoftScanner(IRegistry registry) : ILibraryProvider
+public sealed class UbisoftScanner(IRegistry registry) : ILibraryProvider, IGameStore
 {
     private const string InstallsKey = @"HKLM\SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs";
 
     public string Name => "Ubisoft Connect";
+    public string Source => "ubisoft";
 
     public Task<IReadOnlyList<LibraryItem>> GetItemsAsync(CancellationToken cancellationToken) => Task.Run(Scan, cancellationToken);
 
@@ -84,9 +86,10 @@ public sealed class UbisoftScanner(IRegistry registry) : ILibraryProvider
 /// Folders the user wants watched (e.g. D:\Games): every subfolder with a game exe
 /// becomes an entry, also games installed later. Wrong guesses can be hidden.
 /// </summary>
-public sealed class FolderGamesProvider(Func<IReadOnlyList<string>> folders) : ILibraryProvider
+public sealed class FolderGamesProvider(Func<IReadOnlyList<string>> folders) : ILibraryProvider, IGameStore
 {
     public string Name => "Spieleordner";
+    public string Source => "folder";
 
     public Task<IReadOnlyList<LibraryItem>> GetItemsAsync(CancellationToken cancellationToken) =>
         Task.Run(() => Scan(cancellationToken), cancellationToken);

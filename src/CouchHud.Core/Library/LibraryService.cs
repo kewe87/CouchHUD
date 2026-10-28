@@ -32,6 +32,21 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     public void AddProvider(ILibraryProvider provider) => _providers.Add(provider);
 
     /// <summary>
+    /// A provider left out of the next scan (a game store while Gaming is switched off, see FeatureAreas). What it found
+    /// before is not deleted from the config: favourites, play times and overrides come back with the next scan that runs it.
+    /// </summary>
+    public Func<ILibraryProvider, bool>? SkipProvider { get; set; }
+
+    /// <summary>Entries whose artwork is looked up and downloaded (those of switched off areas wait). Null: all.</summary>
+    public Func<LibraryItem, bool>? FetchArtFor { get; set; }
+
+    /// <summary>Whether the scan whose entries are shown left stores out (set together with the entries).</summary>
+    private bool _partialScan;
+
+    /// <summary>Scans are numbered: one that finishes after a newer one started is dropped (its store choice may be out of date).</summary>
+    private long _scanNumber;
+
+    /// <summary>
     /// A watched folder may contain games a store already knows (e.g. D:\Games\SteamLibrary).
     /// The store entry wins: it has the better launch, artwork and playtime.
     /// </summary>
@@ -47,7 +62,11 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
 
     public async Task<IReadOnlyList<LibraryItem>> ScanAsync(CancellationToken ct = default)
     {
-        var results = await Task.WhenAll(_providers.Select(p => SafeScan(p, ProviderTimeout, ct)));
+        var number = Interlocked.Increment(ref _scanNumber);
+        var skip = SkipProvider;
+        var scanned = _providers.Where(p => skip is null || !skip(p)).ToList();
+        var partial = scanned.Count < _providers.Count;
+        var results = await Task.WhenAll(scanned.Select(p => SafeScan(p, ProviderTimeout, ct)));
         var cfg = config.Current;
         var custom = CustomEntries.From(cfg.Apps);
 
@@ -56,8 +75,15 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
             .ToList());
         lock (_lock)
         {
+            // A newer scan started meanwhile: its result counts, this one changes nothing.
+            if (number != Interlocked.Read(ref _scanNumber)) return _items;
             _baseNames.Clear();
-            foreach (var item in raw) _baseNames[item.Id] = item.Name;
+            _baseLastPlayed.Clear();
+            foreach (var item in raw)
+            {
+                _baseNames[item.Id] = item.Name;
+                _baseLastPlayed[item.Id] = item.LastPlayed;
+            }
         }
         var merged = raw.Select(ApplyUserState).ToList();
 
@@ -67,6 +93,10 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         var withArt = cached.Select(i => i with { Art = ArtworkOverrides.Apply(i.Art, overrides.GetValueOrDefault(i.Id)) }).ToList();
         lock (_lock)
         {
+            if (number != Interlocked.Read(ref _scanNumber)) return _items;
+            _partialScan = partial;
+            _scannedArt.Clear();
+            foreach (var item in raw) _scannedArt[item.Id] = item.Art;
             _baseArt.Clear();
             foreach (var item in cached) _baseArt[item.Id] = item.Art;
             _items = withArt;
@@ -83,7 +113,7 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     public LibraryItem MarkLaunched(string id)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        config.Update(c => c.LastLaunched[id] = now);
+        config.Update(c => c.ActiveProfile.LastLaunched[id] = now);
         return Replace(id, i => i with { LastPlayed = now });
     }
 
@@ -92,8 +122,9 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         var favorite = false;
         config.Update(c =>
         {
-            favorite = !c.Favorites.Remove(id);
-            if (favorite) c.Favorites.Add(id);
+            var favorites = c.ActiveProfile.Favorites;
+            favorite = !favorites.Remove(id);
+            if (favorite) favorites.Add(id);
         });
         Replace(id, i => i with { Favorite = favorite });
         return favorite;
@@ -115,15 +146,18 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     private LibraryItem ApplyUserState(LibraryItem item)
     {
         var cfg = config.Current;
-        cfg.LastLaunched.TryGetValue(item.Id, out var launched);
-        cfg.PlaytimeMinutes.TryGetValue(item.Id, out var minutes);
+        var profile = cfg.ActiveProfile;
+        profile.LastLaunched.TryGetValue(item.Id, out var launched);
+        profile.PlaytimeMinutes.TryGetValue(item.Id, out var minutes);
+        profile.LastSessionMinutes.TryGetValue(item.Id, out var lastSession);
         cfg.Overrides.TryGetValue(item.Id, out var custom);
         return item with
         {
-            Favorite = cfg.Favorites.Contains(item.Id),
+            Favorite = profile.Favorites.Contains(item.Id),
             // Our own launch timestamps beat whatever the store recorded.
             LastPlayed = Math.Max(item.LastPlayed, launched),
             PlaytimeMinutes = minutes,
+            LastSessionMinutes = lastSession,
             Name = string.IsNullOrWhiteSpace(custom?.Name) ? item.Name : custom!.Name!,
             Type = custom?.Type switch { "game" => ItemType.Game, "app" => ItemType.App, _ => item.Type },
             Hidden = custom?.Hidden ?? false
@@ -195,13 +229,13 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
 
     public IReadOnlyList<ItemCollection> GetCollections()
     {
-        lock (_lock) return config.Current.Collections.Select(Clone).ToList();
+        lock (_lock) return config.Current.ActiveProfile.Collections.Select(Clone).ToList();
     }
 
     /// <summary>Applies one change to the collections and returns the new list.</summary>
     public IReadOnlyList<ItemCollection> UpdateCollections(Action<List<ItemCollection>> change)
     {
-        config.Update(c => change(c.Collections));
+        config.Update(c => change(c.ActiveProfile.Collections));
         return GetCollections();
     }
 
@@ -212,7 +246,115 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
 
     private readonly Dictionary<string, Artwork> _baseArt = new();
 
+    /// <summary>The art as the scanner gave it, before any look-up: where a changed store match starts again.</summary>
+    private readonly Dictionary<string, Artwork> _scannedArt = new();
+
+    /// <summary>
+    /// What the store look-up of an entry goes by (<see cref="StoreMatches.Of"/>): Steam's app id, the user's pick, or the name the entry
+    /// was scanned with. Never the name the user gave it: a rename must not change the age rating.
+    /// </summary>
+    public StoreLookup StoreLookupOf(LibraryItem item)
+    {
+        string scanned;
+        lock (_lock) scanned = BaseName(item);
+        return StoreMatches.Of(item, config.Current.Overrides.GetValueOrDefault(item.Id), scanned);
+    }
+
+    /// <summary>Texts, which of them are the user's, and the store match, for the edit menu (<paramref name="info"/>: the store's).</summary>
+    public ItemInfoView GetItemInfo(string id, StoreInfo? info)
+    {
+        var item = Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        var o = config.Current.Overrides.GetValueOrDefault(id);
+        var shown = InfoOverrides.Merge(info, o);
+        return new ItemInfoView(shown?.Description, shown?.Developers ?? [], shown?.Publishers ?? [], shown?.ReleaseDate, shown?.Genres ?? [],
+            InfoOverrides.Custom(o), StoreMatches.View(item, o));
+    }
+
+    /// <summary>Own texts for an entry (see <see cref="InfoOverrides"/>); every field is checked before anything is stored.</summary>
+    public void SetItemInfo(string id, InfoChange change)
+    {
+        if (Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
+        config.Update(c =>
+        {
+            var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
+            InfoOverrides.Apply(o, change);
+            if (o.IsEmpty) c.Overrides.Remove(id);
+            else c.Overrides[id] = o;
+        });
+    }
+
+    /// <summary>
+    /// The store entry for an entry that is not Steam's own: an app id, "none", or null for automatic (<see cref="StoreMatches.Apply"/> for the
+    /// age floor). The automatic art is looked up again from the scanned art; the user's own picks stay on top.
+    /// </summary>
+    public LibraryItem SetStoreMatch(string id, string? match, string? name, int? previousAge, bool confirmed)
+    {
+        var item = Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        if (!StoreMatches.CanChoose(item)) throw new ArgumentException(Strings.Get("store.steamOwn", item.Name));
+        StoreMatches.Validate(match);
+        ItemOverride? after = null;
+        config.Update(c =>
+        {
+            var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
+            StoreMatches.Apply(o, match, name, previousAge, confirmed);
+            if (o.IsEmpty) c.Overrides.Remove(id);
+            else c.Overrides[id] = o;
+            after = o;
+        });
+        LibraryItem result;
+        lock (_lock)
+        {
+            var current = _items.First(i => i.Id == id);
+            var scanned = _scannedArt.TryGetValue(id, out var s) ? s : current.Art;
+            var art = artwork.ApplyCached([current with { Art = scanned }])[0].Art;
+            _baseArt[id] = art;
+            result = Replace(id, i => i with { Art = ArtworkOverrides.Apply(art, after) });
+        }
+        Changed?.Invoke(Items);
+        _ = FetchMissingArtworkAsync();
+        return result;
+    }
+
+    /// <summary>
+    /// An automatic store match lost the rating it had (<see cref="StoreInfoService.RatingDropped"/>): that rating stays as the age floor (the
+    /// stricter of it and one already pending) until the parents confirm the match again (Edit › Store entry, <see cref="StoreMatches.Apply"/>).
+    /// </summary>
+    public void KeepAgeFloor(string id, int age)
+    {
+        if (age <= 0) return;
+        config.Update(c =>
+        {
+            var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
+            if (age <= (o.StoreAgeFloor ?? 0)) return;
+            o.StoreAgeFloor = age;
+            c.Overrides[id] = o;
+        });
+    }
+
     private string BaseName(LibraryItem item) => _baseNames.TryGetValue(item.Id, out var n) ? n : item.Name;
+
+    /// <summary>What the store recorded as last played, before our own launch times were put on top (per profile).</summary>
+    private readonly Dictionary<string, long> _baseLastPlayed = new();
+
+    /// <summary>
+    /// Another profile is on the couch: favorites, launch times and play statistics are that person's now. Recomputed from what the
+    /// stores gave (names and last played as scanned), so nothing of the previous profile stays on the entries; art stays as it is.
+    /// </summary>
+    public IReadOnlyList<LibraryItem> ReapplyUserState()
+    {
+        IReadOnlyList<LibraryItem> result;
+        lock (_lock)
+        {
+            _items = _items.Select(i => ApplyUserState(i with
+            {
+                Name = BaseName(i),
+                LastPlayed = _baseLastPlayed.TryGetValue(i.Id, out var played) ? played : 0
+            })).ToList();
+            result = _items;
+        }
+        Changed?.Invoke(result);
+        return result;
+    }
 
     private readonly Dictionary<string, string> _baseNames = new();
 
@@ -237,12 +379,44 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
             var index = CustomEntries.From(c.Apps).Select(i => i.Id).ToList().IndexOf(id);
             if (index < 0 || string.IsNullOrEmpty(valid[index].Path) || !string.IsNullOrEmpty(valid[index].Url)) throw new KeyNotFoundException(Strings.Get("library.notCustom", id));
             var entry = valid[index];
-            entry.Cwd = LaunchOptions.ValidateWorkingDirectory(workingDirectory, entry.Path!);
+            if (LaunchOptions.IsScript(entry.Path)) LaunchOptions.CheckScriptArguments(args);
+            entry.Cwd =LaunchOptions.ValidateWorkingDirectory(workingDirectory, entry.Path!);
             entry.Args = [.. args];
             rebuilt = CustomEntries.From([entry])[0];
         });
         return Replace(id, i => i with { Launch = rebuilt!.Launch, InstallDir = rebuilt.InstallDir });
     }
+
+    /// <summary>What the edit menu shows about the start of an entry (see <see cref="LaunchOverrides.View"/>).</summary>
+    public LaunchOptionsView GetLaunchOptions(string id)
+    {
+        var item = Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        return LaunchOverrides.View(item, config.Current.Overrides.GetValueOrDefault(id));
+    }
+
+    /// <summary>
+    /// Startup parameters, working folder or an own start target for any entry, stored as an override (the checks are
+    /// <see cref="LaunchOverrides.Apply"/>). The library entry itself stays as scanned; the start applies the override.
+    /// </summary>
+    public LaunchOptionsView SetLaunchOverride(string id, LaunchOverrideChange change, LaunchFileSystem? fs = null)
+    {
+        var item = Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        fs ??= LaunchFileSystem.Real;
+        ItemOverride? after = null;
+        config.Update(c =>
+        {
+            var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
+            LaunchOverrides.Apply(o, item, change, fs);
+            if (o.IsEmpty) c.Overrides.Remove(id);
+            else c.Overrides[id] = o;
+            after = o;
+        });
+        return LaunchOverrides.View(item, after);
+    }
+
+    /// <summary>What a start of this entry runs: the scanned start with the user's override on top, checked again now.</summary>
+    public LaunchTarget EffectiveLaunch(LibraryItem item, LaunchFileSystem? fs = null) =>
+        LaunchOverrides.Effective(item, config.Current.Overrides.GetValueOrDefault(item.Id), fs ?? LaunchFileSystem.Real);
 
     /// <summary>A web entry opens in Edge (copy-protected streaming) or in the couch browser. Takes effect with the next scan.</summary>
     public void SetCustomEdge(string id, bool edge)
@@ -272,26 +446,40 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
             if (index < 0) return;
             c.Apps.Remove(valid[index]);
             c.Overrides.Remove(id);
-            c.Favorites.Remove(id);
-            Collections.Forget(c.Collections, id);
+            // The entry is gone for everybody: out of every profile's favorites and collections.
+            foreach (var profile in c.AllProfiles)
+            {
+                profile.Favorites.Remove(id);
+                Collections.Forget(profile.Collections, id);
+            }
             removed = true;
         });
         if (!removed) throw new KeyNotFoundException(Strings.Get("library.notCustom", id));
         lock (_lock) _items = _items.Where(i => i.Id != id).ToList();
     }
 
-    /// <summary>Adds a finished play session.</summary>
-    public LibraryItem AddPlaytime(string id, double minutes)
+    /// <summary>
+    /// Adds a finished play session: the total grows, the session is remembered as the last one, and its end counts as "last played"
+    /// (a game started outside CouchHUD has no launch time of ours).
+    /// </summary>
+    public LibraryItem AddPlaytime(string id, double minutes, DateTimeOffset? ended = null)
     {
         if (minutes <= 0) return Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        var at = (ended ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
         double total = 0;
+        long last = 0;
         config.Update(c =>
         {
-            c.PlaytimeMinutes.TryGetValue(id, out var before);
+            var profile = c.ActiveProfile;
+            profile.PlaytimeMinutes.TryGetValue(id, out var before);
             total = before + minutes;
-            c.PlaytimeMinutes[id] = total;
+            profile.PlaytimeMinutes[id] = total;
+            profile.LastSessionMinutes[id] = minutes;
+            profile.LastLaunched.TryGetValue(id, out var launched);
+            last = Math.Max(launched, at);
+            profile.LastLaunched[id] = last;
         });
-        return Replace(id, i => i with { PlaytimeMinutes = total });
+        return Replace(id, i => i with { PlaytimeMinutes = total, LastSessionMinutes = minutes, LastPlayed = Math.Max(i.LastPlayed, last) });
     }
 
     private async Task FetchMissingArtworkAsync()
@@ -301,7 +489,13 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         {
             // Looked up on the automatic art, so a picked image never hides a slot from the lookup.
             IReadOnlyList<LibraryItem> baseItems;
-            lock (_lock) baseItems = _items.Select(i => i with { Art = BaseArt(i) }).ToList();
+            var fetchFor = FetchArtFor;
+            bool partial;
+            lock (_lock)
+            {
+                baseItems = _items.Where(i => fetchFor is null || fetchFor(i)).Select(i => i with { Art = BaseArt(i) }).ToList();
+                partial = _partialScan;
+            }
             var updated = await artwork.ResolveAsync(baseItems);
             if (updated is not null)
             {
@@ -322,9 +516,13 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
             }
 
             // The images themselves: once to disk, slowly, in the background. The UI shows each as it arrives.
-            var slots = Items.SelectMany(i => new[] { i.Art.Cover, i.Art.Hero, i.Art.Logo, i.Art.Icon }).ToList();
+            var slots = Items.Where(i => fetchFor is null || fetchFor(i))
+                .SelectMany(i => new[] { i.Art.Cover, i.Art.Hero, i.Art.Logo, i.Art.Icon }).ToList();
             var arrived = await artwork.DownloadMissingAsync(slots, () => Changed?.Invoke(Items));
-            artwork.PruneImages(Items);
+            // A scan without some stores does not know their entries: their pictures stay until a full scan.
+            bool stillFull;
+            lock (_lock) stillFull = !_partialScan;
+            if (!partial && stillFull) artwork.PruneImages(Items);
             if (arrived > 0) Changed?.Invoke(Items);
         }
         catch (Exception ex)

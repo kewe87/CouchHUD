@@ -56,6 +56,17 @@ public static class AutoLogonAccount
         return string.Equals(Norm(stored.Domain), Norm(current.Domain), StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Switching off what is off already: before the call nothing of CouchHUD's was there (state Off: Windows has it off, no marker, no
+    /// config flag), the CouchHUD service refused because nothing of it is the caller's to switch off (it forgets the owner when it switches
+    /// off), and Windows still shows it off after the refusal. The wish is met, so no "the service refused" (VM test 0.5). Only the refusal
+    /// counts: a service that is not there or failed is still an error, and so is a refusal in the Lost state (Windows switched it off, but
+    /// CouchHUD's marker and possibly the stored password are still there: "Delete saved password" must not report success then) or while
+    /// it is on.
+    /// </summary>
+    public static bool AlreadyOff(AutoLogonState before, bool refusedByService, bool enabledAfter) =>
+        before == AutoLogonState.Off && refusedByService && !enabledAfter;
+
     public static AutoLogonStatus Evaluate(bool enabled, string storedUser, string storedDomain, bool setUpByCouchHud, LogonAccount current, string? currentUpn, string machine)
     {
         if (!enabled) return new AutoLogonStatus(setUpByCouchHud ? AutoLogonState.Lost : AutoLogonState.Off, "", false);

@@ -1,6 +1,8 @@
 // Turns controller, keyboard and (fallback) browser gamepad input into one
 // stream of navigation actions, including key repeat for held directions.
 
+import { kindFromGamepadId, kindFromPresses } from './core/pad-glyphs.js';
+
 const REPEAT_DELAY = 380;
 const REPEAT_RATE = 90;
 const REPEATING = new Set(['up', 'down', 'left', 'right']);
@@ -83,10 +85,18 @@ export class Input {
     window.addEventListener('blur', () => this.releaseAll());
   }
 
-  /** Browser Gamepad API, only used when the main process can't read XInput. */
-  attachGamepadApi() {
+  /**
+   * Browser Gamepad API, only used when the main process has no input of its own (the preview). Like the host's PadMerger, all
+   * pads count as one: a button is down while any pad holds it, so a pad and its virtual mirror (Steam Input, DS4Windows) press
+   * once. onKind hears the kind of the pad with a new press ("xbox" or "playstation") for the button symbols.
+   */
+  attachGamepadApi(onKind = () => {}) {
     const prev = new Map();
+    let union = new Set();
+    let lastPlayStationAt = -Infinity;
     const loop = () => {
+      const next = new Set();
+      const kinds = [];
       for (const gp of navigator.getGamepads ? navigator.getGamepads() : []) {
         if (!gp) continue;
         const now = new Set();
@@ -97,10 +107,17 @@ export class Input {
         if (lx < -0.5) now.add('left');
         if (lx > 0.5) now.add('right');
         const before = prev.get(gp.index) || new Set();
-        for (const b of now) if (!before.has(b)) this.press(b);
-        for (const b of before) if (!now.has(b)) this.release(b);
+        if ([...now].some((b) => !before.has(b))) kinds.push(kindFromGamepadId(gp.id));
         prev.set(gp.index, now);
+        for (const b of now) next.add(b);
       }
+      // One decision per frame: a PlayStation pad and its mirror pressing together never flip the symbols back and forth.
+      const told = kindFromPresses(kinds, performance.now(), lastPlayStationAt);
+      lastPlayStationAt = told.lastPlayStationAt;
+      if (told.kind) onKind(told.kind);
+      for (const b of next) if (!union.has(b)) this.press(b);
+      for (const b of union) if (!next.has(b)) this.release(b);
+      union = next;
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);

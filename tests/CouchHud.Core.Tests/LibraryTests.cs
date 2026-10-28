@@ -141,7 +141,10 @@ public class LibraryTests
         File.WriteAllText(Path.Combine(dir, "config.json"), "{ broken");
         Assert.Equal("default", new ConfigStore(dir).Current.Skin);
 
+        // Starting over means the whole folder: the copy of the broken file alone keeps it locked (ConfigFault.Missing).
         File.Delete(Path.Combine(dir, "config.json"));
+        Assert.Equal(ConfigFault.Missing, new ConfigStore(dir).Fault);
+        foreach (var file in Directory.GetFiles(dir)) File.Delete(file);
         new ConfigStore(dir).Update(c => c.Skin = "nova");
         var json = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "config.json")));
         Assert.Equal("nova", json.RootElement.GetProperty("skin").GetString());

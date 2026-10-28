@@ -1,14 +1,15 @@
-// Handheld-style extras: per-game profiles, night mode, Steam downloads, capture actions.
+// Handheld-style extras: per-game profiles, night mode, capture actions.
 
 import { t } from '../core/i18n.js';
 import { iconEl } from '../core/glyph-icons.js';
 import { api } from '../core/api.js';
-import { el, formatSize, keepInView, setFocused } from '../core/dom.js';
+import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
 import { currentView, move, push, render } from '../core/nav.js';
 import { chooseDialog } from '../components/overlay.js';
 import { detailPage } from './detail.js';
 import { sound } from '../sound.js';
+import { state } from '../core/state.js';
 
 // ---------------------------------------------------------------------------
 // Game profiles: applied when the game starts, undone when it ends.
@@ -117,54 +118,12 @@ export function nightModeItems(settings, change) {
 }
 
 // ---------------------------------------------------------------------------
-// Steam downloads
-
-const downloadState = (state) => (state === 'downloading' ? t('deck.stateDownloading') : state === 'paused' ? t('deck.statePaused') : state === 'queued' ? t('deck.stateQueued') : state);
-
-export function downloadsPage() {
-  let data = null;
-  let loading = false;
-  let timer;
-  const load = (self) => {
-    if (loading) return;
-    loading = true;
-    attempt(() => api.getDownloads(), t('deck.downloadsLoadFailed')).then((d) => {
-      loading = false;
-      data = d ?? data ?? [];
-      if (currentView() === self) render();
-    });
-  };
-  return listPage({
-    id: 'downloads',
-    title: t('deck.downloads'),
-    intro: t('deck.downloadsIntro'),
-    rows(self) {
-      if (!data) {
-        load(self);
-        return null;
-      }
-      // Progress moves while the page is open; refresh quietly, keeping the list on screen.
-      clearTimeout(timer);
-      timer = setTimeout(() => currentView() === self && load(self), 3000);
-      if (!data.length) return [{ icon: '✓', label: t('deck.noDownloads'), detail: t('deck.allUpToDate') }];
-      return data.map((d) => ({
-        icon: d.state === 'downloading' ? '⬇' : d.state === 'paused' ? '⏸' : '⋯',
-        label: d.name,
-        detail: d.bytesTotal
-          ? t('deck.downloadDetailSize', { kind: d.isUpdate ? t('deck.update') : t('deck.install'), state: downloadState(d.state), done: formatSize(d.bytesDone) ?? '0 MB', total: formatSize(d.bytesTotal) })
-          : t('deck.downloadDetail', { kind: d.isUpdate ? t('deck.update') : t('deck.install'), state: downloadState(d.state) }),
-        progress: d.bytesTotal ? d.progress : null,
-        highlight: d.state === 'downloading'
-      }));
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Capture from the guide menu (through the Game Bar)
+// Capture from the guide menu: the screenshot through CouchHUD itself (the host reports it with its own toast and picture),
+// clips and recordings through the Game Bar.
 
 export async function capture(kind) {
-  const labels = { screenshot: t('deck.captureScreenshot'), clip: t('deck.captureClip'), record: t('deck.captureRecord') };
+  if (kind === 'screenshot') return attempt(() => api.capture(kind, state.actionSource), t('deck.captureFailed'));
+  const labels = { clip: t('deck.captureClip'), record: t('deck.captureRecord') };
   if ((await attempt(() => api.capture(kind), t('deck.captureFailed'))) !== undefined) toast(labels[kind], 3500);
 }
 

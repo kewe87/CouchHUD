@@ -7,9 +7,10 @@
 //   powerRows()                 Guide menu rows
 //   chooseSleepTimer()          sleep timer picker; sleepTimerDetail() is its status text
 //
-// Ids: standby, pc-mode, restart, restart-pc, shutdown.
+// Ids: standby, pc-mode, restart, restart-pc, shutdown, quit. The mode decides which are offered (see forMode).
 
 import { api } from './api.js';
+import { state } from './state.js';
 import { attempt, toast } from './feedback.js';
 import { t } from './i18n.js';
 import { chooseDialog, confirmDialog, openOverlay } from '../components/overlay.js';
@@ -53,6 +54,16 @@ export const POWER_ACTIONS = [
     run: () => api.power('restart-pc')
   },
   {
+    // App mode: CouchHUD is a program on the desktop, so "PC mode" simply means closing it (the host asks for the couch lock too).
+    id: 'quit',
+    icon: '✕',
+    get label() { return t('power.quit.label'); },
+    get detail() { return t('power.quit.detail'); },
+    get confirm() { return { title: t('power.quit.confirmTitle'), label: t('power.quit.label'), message: t('power.quit.confirmMessage') }; },
+    get unlock() { return t('power.quit.label'); },
+    run: () => api.quit()
+  },
+  {
     id: 'shutdown',
     icon: '⏻',
     get label() { return t('power.shutdown.label'); },
@@ -64,9 +75,19 @@ export const POWER_ACTIONS = [
 
 const byId = (id) => POWER_ACTIONS.find((a) => a.id === id);
 
+/**
+ * The action an id stands for in the current mode. Shell mode: the PC mode (back with the Guide button) and a restart into it; no
+ * quit. App mode: "pc-mode" is closing CouchHUD, and a restart into the PC mode means nothing (Windows starts its desktop anyway).
+ */
+export function forMode(id, isShell = !!state.info?.isShell) {
+  if (isShell) return id === 'quit' ? null : id;
+  if (id === 'pc-mode') return 'quit';
+  return id === 'restart-pc' ? null : id;
+}
+
 /** Asks for confirmation (and the couch lock where needed), then runs the action. */
 export async function requestPower(id) {
-  const action = byId(id);
+  const action = byId(forMode(id));
   if (!action) return false;
   const ok = await confirmDialog(action.confirm.title, action.confirm.label, { danger: true, message: action.confirm.message, icon: action.icon });
   if (!ok) return false;
@@ -76,12 +97,13 @@ export async function requestPower(id) {
 
 /** Entries for a custom menu. */
 export function powerEntries(ids = POWER_ACTIONS.map((a) => a.id), { onCancel } = {}) {
-  return ids.map(byId).filter(Boolean).map((a) => ({
+  const shown = [...new Set(ids.map((id) => forMode(id)).filter(Boolean))];
+  return shown.map(byId).filter(Boolean).map((a) => ({
     id: a.id,
     icon: a.icon,
     label: a.label,
     detail: a.detail,
-    danger: a.id !== 'standby' && a.id !== 'pc-mode',
+    danger: a.id !== 'standby' && a.id !== 'pc-mode' && a.id !== 'quit',
     run: async () => {
       // Cancelling the question goes back to the menu it came from, not out of everything.
       if (!(await requestPower(a.id))) onCancel?.(a.id);
@@ -103,7 +125,8 @@ export function powerMenu({ sleepTimer = true, index = 0 } = {}) {
 /** One row for the Guide menu that opens the shared menu, plus the sleep timer. */
 export function powerRows() {
   return [
-    { kind: 'action', icon: '⏻', label: t('power.title'), detail: t('power.rowDetail'), run: () => openOverlay(powerMenu({ sleepTimer: false })) },
+    // i18n-used: power.rowDetail power.rowDetailApp
+    { kind: 'action', icon: '⏻', label: t('power.title'), detail: t(state.info?.isShell ? 'power.rowDetail' : 'power.rowDetailApp'), run: () => openOverlay(powerMenu({ sleepTimer: false })) },
     { kind: 'action', icon: '⏲', label: t('power.sleepTimer'), detail: sleepTimerDetail(), keepOpen: true, run: chooseSleepTimer }
   ];
 }

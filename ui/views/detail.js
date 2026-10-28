@@ -12,6 +12,7 @@ import { sound } from '../sound.js';
 import { confirmDialog } from '../components/overlay.js';
 import { isLocked } from '../components/passcode.js';
 import { offerBackupBeforeUninstall, saveAction, saveSummary } from '../components/savegames.js';
+import { ageBadge, badgeText, descriptionState, loadTickets, storeRetryDelay } from '../core/item-info-rules.js';
 
 let rescanOnReturn = false;
 
@@ -54,6 +55,9 @@ export function detailPage(item) {
     details: null,
     loading: null,
     saves: null,
+    tickets: loadTickets(),
+    retries: 0,
+    retryTimer: null,
     actions() {
       const it = this.item;
       const list = [
@@ -92,10 +96,17 @@ export function detailPage(item) {
         [t('detail.genres'), d?.genres?.join(', ')],
         [t('detail.size'), formatSize(d?.sizeBytes)],
         [t('detail.saves'), saveSummary(this.saves)],
-        [t('detail.installDir'), d?.installDir]
+        [t('detail.installDir'), d?.installDir],
+        // Own startup options are on: the start differs from what the store would do.
+        [t('detail.launch'), d?.customLaunch ? t('detail.customLaunch') : null]
       ].filter(([, v]) => v);
 
-      const description = d ? (d.description || t('detail.noDescription')) : t('detail.loadingInfo');
+      const shown = descriptionState(d, !!this.retryTimer);
+      const description = shown === 'text' ? d.description : shown === 'none' ? t('detail.noDescription') : t('detail.loadingInfo');
+      // The rating the age limit goes by (a kept stricter one included): shown only, nothing to choose here.
+      // In the rating system that counts now ("USK 12", "PEGI 16", "ESRB T"); Steam's own age or a kept floor as a plain age.
+      // A foreign system (Brazil's ClassInd, Japan's CERO) is named with its country.
+      const badge = badgeText(ageBadge(d?.ageRating, d?.ageLabel), t);
 
       root.append(el('div', { className: 'detail' },
         el('section', { className: 'detail-main' },
@@ -103,18 +114,52 @@ export function detailPage(item) {
           el('div', { className: 'detail-actions' }, this.buttons),
           el('p', { className: 'detail-desc', textContent: description })),
         el('aside', { className: 'detail-info about' },
+          badge ? el('span', { className: 'age-badge', textContent: badge.text, title: badge.title, ariaLabel: badge.title }) : null,
           el('dl', {}, facts.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', { textContent: v })])))));
       setBackground(it);
       scheduleTrailer(it, 700);
       this.update();
     },
     async load() {
+      const ticket = this.tickets.next();
       this.loading = attempt(() => api.getDetails(this.item.id), t('detail.infoFailed'));
       const details = await this.loading;
-      if (!details) return;
+      // A newer read started meanwhile (the store match changed): its answer counts, not this older one.
+      if (!this.tickets.isNewest(ticket)) return;
+      if (!details) {
+        // A failed retry: stop waiting, the line says what is known.
+        if (this.retryTimer) {
+          this.retryTimer = null;
+          if (state.stack.at(-1) === this) render();
+        }
+        return;
+      }
       this.details = details;
+      this.scheduleRetry();
       // Only redraw if this page is still the one on screen.
       if (state.stack.at(-1) === this) render();
+    },
+    /** The entry's texts or store match changed (edit menu): read everything again; an older answer still on its way is dropped. */
+    refresh() {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.retries = 0;
+      this.details = null;
+      this.load();
+    },
+    /** The store has not answered for the entry's match yet (offline, rate limit, a slow answer): ask again a few times, then stop. */
+    scheduleRetry() {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      if (!this.details?.storePending) return;
+      const delay = storeRetryDelay(this.retries);
+      if (delay == null) return;
+      this.retries++;
+      this.retryTimer = setTimeout(() => {
+        // Closed in the meantime: nothing to ask for.
+        if (state.stack.includes(this)) this.load();
+        else this.retryTimer = null;
+      }, delay);
     },
     async loadSaves() {
       if (this.item.type === 'app') return;

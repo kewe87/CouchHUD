@@ -1,3 +1,5 @@
+**Deutsch** | [English](#english)
+
 <p align="center"><img src="docs/banner.png" alt="CouchHUD" width="760"></p>
 
 <p align="center">
@@ -11,19 +13,17 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/kewe87/CouchHUD" alt="License: GPL-3.0"></a>
 </p>
 
-<p align="center">
-  <a href="#deutsch">Deutsch</a> · <a href="#english">English</a>
-</p>
-
 <p align="center"><img src="docs/screenshot-home.png" alt="CouchHUD Home" width="820"></p>
 
 <sub>Die Spiele in den Screenshots sind ausgedacht, ihre Cover von der Vorschau selbst gezeichnet. / The games in the screenshots are made up, their covers drawn by the preview.</sub>
 
 ---
 
+<a id="deutsch"></a>
+
 ## Deutsch
 
-> **Version 0.4.1** – die erste öffentliche Version. Windows 10/11 x64, ein XInput-Controller.
+> Die erste öffentliche Version war 0.4.1, die aktuelle steht unter [Releases](https://github.com/kewe87/CouchHUD/releases/latest). Windows 10/11 x64, ein XInput-Controller.
 > Rückmeldungen von echter Wohnzimmer-Hardware sind sehr willkommen.
 
 ### Was ist CouchHUD?
@@ -44,24 +44,24 @@ Kostenlos, offen (GPL-3.0), ohne Konto, ohne Telemetrie.
   <img src="docs/screenshot-guide.png" alt="Guide-Menü" width="410">
 </p>
 
-### Light oder Voll
+### App oder Shell
 
-Der Einrichtungsassistent fragt beim ersten Start: Light oder Voll, Skin, Ton, Spiele-Clients, Couch-Sperre.
+Der Einrichtungsassistent fragt beim ersten Start: App oder Shell, Skin, Ton, Spiele-Clients, Couch-Sperre.
 Alles bleibt später in den Einstellungen änderbar.
 
-| | **Light** (Standard) | **Voll** |
+| | **App** (Standard) | **Shell** |
 |---|---|---|
 | Start | wie jede andere App | statt des Desktops, bei der Anmeldung |
 | Windows | bleibt, wie es ist | Shell-Ersatz, Autologin, pausierte Dienste |
 | Steam & Co. | unberührt | im Hintergrund bereit |
 | Couch-Sperre | – | Controller-Code |
-| Rückweg | – | *Einstellungen › Konsole › Zurück zum normalen Windows* |
+| Rückweg | – | *Einstellungen › HUD › Modus › Zurück zum normalen Windows* |
 
-<p align="center"><img src="docs/screenshots/setup-assistant-de.webp" alt="Einrichtungsassistent: Light oder Voll" width="640"></p>
+<p align="center"><img src="docs/screenshots/setup-assistant-de.webp" alt="Einrichtungsassistent: App oder Shell" width="640"></p>
 
 ### Installieren
 
-1. Unter [Releases](https://github.com/kewe87/CouchHUD/releases/latest) `CouchHud-Setup-0.4.1.exe` herunterladen und ausführen.
+1. Unter [Releases](https://github.com/kewe87/CouchHUD/releases/latest) das neueste `CouchHud-Setup-<Version>.exe` herunterladen und ausführen.
 2. Controller nehmen, der Assistent führt durch den Rest.
 
 **Was das Setup installiert:**
@@ -77,10 +77,10 @@ Das Setup hat noch keine Authenticode-Signatur, SmartScreen warnt deshalb beim e
 <details>
 <summary><b>Download prüfen</b> (Prüfsumme, Signatur, Herkunft)</summary>
 
-Aus demselben Release `CouchHud-Setup-0.4.1.exe`, `.sha256` und `.sha256.sig` in einen Ordner laden, dort in PowerShell 7:
+Aus demselben Release `CouchHud-Setup-<Version>.exe`, `.sha256` und `.sha256.sig` in einen Ordner laden, dort in PowerShell 7:
 
 ```powershell
-$f = 'CouchHud-Setup-0.4.1.exe'
+$f = 'CouchHud-Setup-<Version>.exe'   # <Version> durch die geladene ersetzen, z. B. aus dem Dateinamen
 
 # 1. Prüfsumme: True
 (Get-FileHash $f -Algorithm SHA256).Hash -eq (Get-Content "$f.sha256").Split(' ')[0]
@@ -157,7 +157,7 @@ Details, Grenzen und Lücken melden: [SECURITY.md](SECURITY.md) · [Haftungsauss
 
 Das Schwesterprojekt CaseHUD (`kewe87/CaseHUD`) zeigt Temperaturen und Last auf den LCDs in Lüftern und Pumpen.
 CouchHUD installiert es auf Wunsch (nur signierte Releases ab 1.0), startet es und steuert es vom Sofa:
-Displays, Designs, Szenen und die Seite **Beleuchtung**. Mehr: [docs/CASEHUD.md](docs/CASEHUD.md)
+Displays, Szenen, Automatik und die Seite **Beleuchtung**; Designs und Effekte baust du in CaseHUD am PC. Mehr: [docs/CASEHUD.md](docs/CASEHUD.md)
 
 ### Selbst bauen
 
@@ -182,14 +182,18 @@ Das Setup (Inno Setup 6) baut die CI, die Schritte stehen in [.github/workflows/
 
 - Issues und Pull Requests auf Deutsch oder Englisch: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Sicherheitslücken nur privat melden: [SECURITY.md](SECURITY.md)
-- Was kommt: [docs/ROADMAP.md](docs/ROADMAP.md) · Was sich geändert hat: [CHANGELOG.md](CHANGELOG.md)
+- Was sich geändert hat: [CHANGELOG.md](CHANGELOG.md)
 - Alles im Detail: **[Handbuch](docs/GUIDE.md)**
 
 ---
 
+<a id="english"></a>
+
 ## English
 
-> **Version 0.4.1** – the first public release. Windows 10/11 x64, an XInput controller.
+[Deutsch](#deutsch) | **English**
+
+> The first public release was 0.4.1; the current one is under [Releases](https://github.com/kewe87/CouchHUD/releases/latest). Windows 10/11 x64, an XInput controller.
 > Feedback from real living-room hardware is very welcome.
 
 ### What is CouchHUD?
@@ -198,31 +202,36 @@ An interface made only for the controller. Switch on, pick up the controller, pl
 
 - **One library:** Steam, Epic, GOG, Ubisoft Connect, Xbox/Game Pass and your own entries, with artwork for non-Steam games too
 - **Guide button over any game:** per-app volume, audio output, Bluetooth, notifications, power; hold it to get back
-- **Instead of the desktop:** CouchHUD starts at sign-in, Steam & co. stay ready quietly in the background
+- **Instead of the desktop:** CouchHUD starts at sign-in, Steam & co. wait quietly in the background
 - **Made for the couch:** browser as a tab, on-screen keyboard, phone as a remote, Wi-Fi, display, updates
 - **5 skins** with their own sounds and mouse pointer, plus plugins and skins from the signed catalog
 - **Couch lock and parental controls**, admin work in a background service: no UAC prompts day to day
 
 Free, open (GPL-3.0), no account, no telemetry.
 
-### Light or Full
+<p align="center">
+  <img src="docs/screenshot-library.png" alt="Library" width="410">
+  <img src="docs/screenshot-guide.png" alt="Guide menu" width="410">
+</p>
 
-The setup assistant asks on first start: Light or Full, skin, sound, game clients, couch lock.
-Everything stays changeable in Settings.
+### App or Shell
 
-| | **Light** (default) | **Full** |
+The setup assistant asks on first start: App or Shell, skin, sound, game clients, couch lock.
+Everything can be changed later in Settings.
+
+| | **App** (default) | **Shell** |
 |---|---|---|
 | Starts | like any other app | instead of the desktop, at sign-in |
 | Windows | stays as it is | shell replacement, auto sign-in, paused services |
 | Steam & co. | untouched | kept ready in the background |
 | Couch lock | – | controller code |
-| Way back | – | *Settings › Console › Back to normal Windows* |
+| Way back | – | *Settings › HUD › Mode › Back to normal Windows* |
 
-<p align="center"><img src="docs/screenshots/setup-assistant-en.webp" alt="Setup assistant: Light or Full" width="640"></p>
+<p align="center"><img src="docs/screenshots/setup-assistant-en.webp" alt="Setup assistant: App or Shell" width="640"></p>
 
 ### Install
 
-1. Download `CouchHud-Setup-0.4.1.exe` from [Releases](https://github.com/kewe87/CouchHUD/releases/latest) and run it.
+1. Download the latest `CouchHud-Setup-<version>.exe` from [Releases](https://github.com/kewe87/CouchHUD/releases/latest) and run it.
 2. Pick up the controller, the assistant does the rest.
 
 **What the setup installs:**
@@ -233,15 +242,15 @@ Everything stays changeable in Settings.
 **Requirements:** Windows 10 (1809 or later) or 11, x64, the WebView2 runtime (the setup brings it), an XInput controller
 (Xbox pad, PlayStation pads via Steam Input or DS4Windows).
 
-The setup has no Authenticode signature yet, so SmartScreen warns on first start. To check it is genuine:
+The setup has no Authenticode signature yet, so SmartScreen warns on first start. To check that it is genuine:
 
 <details>
 <summary><b>Verify the download</b> (checksum, signature, provenance)</summary>
 
-Put `CouchHud-Setup-0.4.1.exe`, `.sha256` and `.sha256.sig` from the same release into one folder, then in PowerShell 7:
+Put `CouchHud-Setup-<version>.exe`, `.sha256` and `.sha256.sig` from the same release into one folder, then run this in PowerShell 7:
 
 ```powershell
-$f = 'CouchHud-Setup-0.4.1.exe'
+$f = 'CouchHud-Setup-<version>.exe'   # replace <version> with the one you downloaded
 
 # 1. Checksum: True
 (Get-FileHash $f -Algorithm SHA256).Hash -eq (Get-Content "$f.sha256").Split(' ')[0]
@@ -261,13 +270,13 @@ $key.VerifyData([byte[]]$data, [Convert]::FromBase64String((Get-Content "$f.sha2
 gh attestation verify $f --repo kewe87/CouchHUD --signer-workflow kewe87/CouchHUD/.github/workflows/build.yml
 ```
 
-- The same key checks self-updates and the catalog. Fingerprint: [SECURITY.md](SECURITY.md).
-- Build provenance only exists for releases built while the repo is public.
+- The same key checks self-updates and the catalog. Fingerprint: [SECURITY.md](SECURITY.md#signatures).
+- Build provenance only exists for releases that were built while the repo was public.
 
 </details>
 
 **Emergency:** hold **Ctrl + Shift** or **LB + RB + View** for about 1.5 seconds during start-up. Windows locks, and after
-you sign in with the Windows password you get the normal desktop. More in the [guide](docs/GUIDE.en.md#emergency-exit).
+you sign in with your Windows password you get the normal desktop. More in the [guide](docs/GUIDE.en.md#emergency-exit).
 
 ### Controls
 
@@ -280,15 +289,17 @@ you sign in with the Windows password you get the normal desktop. More in the [g
 | Y | Y | Favorite, tile menu |
 | LB / RB | Q / E | Switch tab |
 | Start (≡) | M | Power menu |
-| Guide | Home | Guide menu; **hold** to get back from any game |
+| Guide | Home | Guide menu; **hold** it to get back from any game |
 | Back + Start | – | instead of the Guide button |
 
 All buttons: [guide › Controls](docs/GUIDE.en.md#controls).
 
 ### Couch lock and parental controls
 
+<p align="center"><img src="docs/screenshot-lock.png" alt="Couch lock with controller code" width="600"></p>
+
 - **Couch lock:** leaving CouchHUD takes a controller code (6–8 buttons) or your Windows sign-in. While locked, only games start.
-- **Parental controls:** daily play time, time windows, per-game limits, age rating; more time only with the parent code.
+- **Parental controls:** daily play time, time windows, per-game limits, age rating; more time only with the parents' code.
 - If CouchHUD crashes or is closed, Windows locks.
 
 ### Security
@@ -296,36 +307,53 @@ All buttons: [guide › Controls](docs/GUIDE.en.md#controls).
 - **Admin only in the service:** `CouchHud.Service` does admin tasks from a fixed list of operations. CouchHud.exe never runs with admin rights.
 - **The service checks the codes**, with growing wait times after wrong tries. Parent and admin approvals use the Windows credential dialog on the secure desktop.
 - **Fail-closed:** if the service is missing, the lock stays closed and Windows locks. *Repair service* sets it up again (one UAC prompt, Windows programs only).
-- **Signed only:** self-update, catalog and CaseHUD install check an ECDSA signature.
-- **Honest limits:** it protects against kids and guests at the controller, not against admins, foreign code in the same account, boot media or removed drives. A good Windows password and BitLocker or device encryption are recommended.
+- **Signed only:** self-update, catalog and the CaseHUD install check an ECDSA signature.
+- **Honest limits:** it protects against kids and guests at the controller, not against admins, other code in the same account, boot media or removed drives. A good Windows password and BitLocker or device encryption are recommended.
 
-Details, limits and reporting a vulnerability: [SECURITY.md](SECURITY.md) · [disclaimer](docs/DISCLAIMER.md) · [privacy](docs/PRIVACY.md) (German versions prevail)
+Details, limits and reporting a vulnerability: [SECURITY.md](SECURITY.md#english) · [Disclaimer](docs/DISCLAIMER.en.md) · [Privacy](docs/PRIVACY.en.md) (the German versions prevail)
 
 ### Plugins, skins and catalog
 
-- **Skins** are CSS plus optional glyphs, sounds and mouse pointer: [docs/SKINS.md](docs/SKINS.md)
-- **Plugins** (C#) add game sources, pages, settings and Guide menu entries: [docs/PLUGINS.md](docs/PLUGINS.md)
-- **Catalog** [`kewe87/CouchHUD-Catalog`](https://github.com/kewe87/CouchHUD-Catalog): install with A, signed index, mandatory checksums
-- Included: the **Wand** plugin (cheats and mods), also the example for your own plugins
+<p align="center"><img src="docs/skins.png" alt="The five built-in skins" width="820"></p>
+
+- **Skins** are CSS plus optional glyphs, sounds and mouse pointer: [docs/SKINS.en.md](docs/SKINS.en.md)
+- **Plugins** (C#) add game sources, pages, settings and Guide menu entries: [docs/PLUGINS.md](docs/PLUGINS.md) (German)
+- **Catalog** [`kewe87/CouchHUD-Catalog`](https://github.com/kewe87/CouchHUD-Catalog): install with A, signed index, mandatory checksum
+- Included: the **Wand** plugin (cheats and mods), which is also the example for your own plugins
 
 ### CaseHUD
 
+<p align="center"><img src="docs/screenshot-casehud.png" alt="CaseHUD in CouchHUD" width="820"></p>
+
 The sister project CaseHUD (`kewe87/CaseHUD`) shows temperatures and load on the LCDs in fans and pump heads.
-CouchHUD can install it (signed releases from 1.0 only), start it and control it from the couch: displays,
-designs, scenes and the **Lighting** page. More: [docs/CASEHUD.md](docs/CASEHUD.md) (German)
+CouchHUD can install it for you (signed releases from 1.0 only), start it and control it from the couch:
+displays, scenes, automation and the **Lighting** page; designs and effects are built in CaseHUD on the PC. More: [docs/CASEHUD.md](docs/CASEHUD.md) (German)
 
 ### Build from source
 
-.NET 10 SDK and Node.js. The commands are the same as in [Selbst bauen](#selbst-bauen):
-`dotnet build` / `dotnet test` on `CouchHud.slnx`, `node scripts/preview-server.js` runs the UI with mock data in any
-browser, `bash scripts/check.sh` runs everything CI checks. CI builds the setup: [.github/workflows/build.yml](.github/workflows/build.yml).
+.NET 10 SDK and Node.js:
+
+```powershell
+dotnet build CouchHud.slnx
+dotnet test CouchHud.slnx
+dotnet run --project src/CouchHud.Shell -- --dev   # window mode with DevTools
+```
+
+The interface is vanilla JS without a build step and also runs in a browser, without Windows:
+
+```bash
+node scripts/preview-server.js   # http://localhost:5173 with mock data (?lang=en, ?demo)
+bash scripts/check.sh            # everything CI checks
+```
+
+CI builds the setup (Inno Setup 6); the steps are in [.github/workflows/build.yml](.github/workflows/build.yml).
 
 ### Contributing
 
-- Issues and pull requests in English or German: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Report vulnerabilities privately only: [SECURITY.md](SECURITY.md)
-- What's next: [docs/ROADMAP.md](docs/ROADMAP.md) (German) · What changed: [CHANGELOG.md](CHANGELOG.md)
-- Everything in detail: **[English guide](docs/GUIDE.en.md)** (the full reference is the German [GUIDE.md](docs/GUIDE.md))
+- Issues and pull requests in English or German: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
+- Report vulnerabilities privately only: [SECURITY.md](SECURITY.md#english)
+- What changed: [CHANGELOG.md](CHANGELOG.md)
+- Everything in detail: **[Guide](docs/GUIDE.en.md)**
 
 ---
 
@@ -344,10 +372,22 @@ browser, `bash scripts/check.sh` runs everything CI checks. CI builds the setup:
 Copyright © 2026 **kewe87**
 
 Freie Software unter der **GNU General Public License v3.0** ([LICENSE](LICENSE)). Forks und Weiterentwicklungen
-bleiben ebenfalls unter der GPL-3.0 offen und behalten den Copyright-Hinweis. Für Forks bitte ein eigenes Logo verwenden.
+bleiben ebenfalls unter der GPL-3.0 offen und behalten den Copyright-Hinweis.
 
 Free software under the GPL-3.0: forks and derivatives stay open source under the same license and keep the
-copyright notice. Please use your own logo for forks.
+copyright notice.
+
+## Name und Logo / Name and logo
+
+CouchHUD ist freie Software unter der GPL-3.0, und das bleibt so. Die GPL gilt für den Code, nicht für den Namen und das Logo:
+„CouchHUD“ und das Logo stehen für das offizielle Projekt von kewe87. Forks und Weitergaben sind unter der GPL willkommen;
+bitte verwende dafür einen eigenen Namen und ein eigenes Logo und erweck nicht den Eindruck, es sei das offizielle CouchHUD.
+„Basiert auf CouchHUD“ zu schreiben ist in Ordnung und ausdrücklich erwünscht.
+
+CouchHUD is free software under the GPL-3.0, and that stays so. The GPL covers the code, not the name or the logo:
+"CouchHUD" and the logo stand for the official project by kewe87. Forks and redistributions are welcome under the GPL;
+please give yours its own name and logo, and do not suggest that it is the official CouchHUD.
+Saying "based on CouchHUD" is fine, and we'd like you to.
 
 ## Haftungsausschluss / Disclaimer
 

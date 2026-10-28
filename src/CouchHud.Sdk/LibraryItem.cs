@@ -55,4 +55,6 @@ public sealed record LibraryItem
     public bool Hidden { get; init; }
     /// <summary>Total minutes played as tracked by CouchHud.</summary>
     public double PlaytimeMinutes { get; init; }
+    /// <summary>Minutes of the last play session as tracked by CouchHud, 0 if unknown.</summary>
+    public double LastSessionMinutes { get; init; }
 }

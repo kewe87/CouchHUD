@@ -1,4 +1,5 @@
 using CouchHud.Core.Localization;
+using CouchHud.Core.Platform;
 
 namespace CouchHud.Core.Integrations.CaseHud;
 
@@ -19,71 +20,40 @@ public interface ICaseHudApiSwitch
 }
 
 /// <summary>A started <c>CaseHUD.exe --set-api=…</c> (stdout not redirected, stderr read in the background with a cap).</summary>
-public interface ICaseHudCliProcess : IDisposable
+public interface ICaseHudCliProcess : ICliProcess
 {
-    Task WaitForExitAsync(CancellationToken ct);
-    int ExitCode { get; }
-    /// <summary>stderr (capped); it may never finish when a child process inherited the pipe.</summary>
-    Task<string> Stderr { get; }
-    /// <summary>Ends the process and everything it started.</summary>
-    void Kill();
 }
 
+/// <summary>CaseHUD's command line; the shared rules (time limit, trusted path, log line) are <see cref="TrustedCli"/>.</summary>
 public static class CaseHudCli
 {
     public const string ApiOn = "--set-api=on";
     public const string ApiOff = "--set-api=off";
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(20);
-    public const int MaxLogChars = 200;
+    public const int MaxLogChars = TrustedCli.MaxLogChars;
 
     public static string SetApiArguments(bool on) => on ? ApiOn : ApiOff;
 
     /// <summary>How long stderr may still take after the exit (a child holding the pipe open must not keep the call waiting).</summary>
-    public static readonly TimeSpan StderrGrace = TimeSpan.FromSeconds(2);
+    public static readonly TimeSpan StderrGrace = TrustedCli.StderrGrace;
 
     /// <summary>
     /// Waits for the process with a hard limit: on timeout or cancellation the whole process tree is killed (the installer's lock must
     /// never stay taken). After the exit, stderr gets <see cref="StderrGrace"/> at most; the exit code is what counts (0 = set).
     /// Null exit = timed out.
     /// </summary>
-    public static async Task<(int? Exit, string Stderr)> RunAsync(ICaseHudCliProcess process, CancellationToken ct, TimeSpan? timeout = null, TimeSpan? stderrGrace = null)
-    {
-        using (process)
-        {
-            using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            limit.CancelAfter(timeout ?? Timeout);
-            try
-            {
-                await process.WaitForExitAsync(limit.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                process.Kill();
-                ct.ThrowIfCancellationRequested();
-                return (null, "");
-            }
-            string stderr;
-            try { stderr = await process.Stderr.WaitAsync(stderrGrace ?? StderrGrace, ct); }
-            catch (TimeoutException) { stderr = ""; }
-            return (process.ExitCode, stderr);
-        }
-    }
+    public static Task<(int? Exit, string Stderr)> RunAsync(ICliProcess process, CancellationToken ct, TimeSpan? timeout = null, TimeSpan? stderrGrace = null) =>
+        TrustedCli.RunAsync(process, ct, timeout ?? Timeout, stderrGrace);
 
     /// <summary>
     /// The installed exe may be run from the user's session: a full, canonical path to CaseHUD.exe directly or further below one of
     /// <paramref name="trustedRoots"/> (Program Files; only administrators write there). No relative paths, no "..", no UNC.
     /// </summary>
     public static bool IsTrustedInstallPath(string? exe, IEnumerable<string?> trustedRoots) =>
-        Platform.TrustedCli.IsTrustedInstallPath(exe, CaseHudInfo.ExeName, trustedRoots);
+        TrustedCli.IsTrustedInstallPath(exe, CaseHudInfo.ExeName, trustedRoots);
 
     /// <summary>What CaseHUD wrote to stderr, as it may go into the log: one line, control characters removed, at most 200 characters.</summary>
-    public static string LogLine(string? stderr)
-    {
-        if (string.IsNullOrEmpty(stderr)) return "";
-        var clean = new string(stderr.Select(c => char.IsControl(c) || char.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format ? ' ' : c).ToArray()).Trim();
-        while (clean.Contains("  ", StringComparison.Ordinal)) clean = clean.Replace("  ", " ", StringComparison.Ordinal);
-        return clean.Length <= MaxLogChars ? clean : clean[..MaxLogChars] + "…";
-    }
+    public static string LogLine(string? stderr) => TrustedCli.LogLine(stderr);
 }
 
 /// <summary>

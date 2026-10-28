@@ -23,6 +23,7 @@ public static class UninstallCleanup
 
     public static int Run()
     {
+        // Elevated: the file of every class a new step calls goes into ElevatedContractTests.Files (no writing state helpers there).
         Step("processes", StopOtherInstances);
         Step("shell", () =>
         {
@@ -123,7 +124,8 @@ public static class UninstallCleanup
     {
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CouchHud");
         if (!SafeFolder(dir, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))) return false;
-        return File.Exists(Path.Combine(dir, "config.json")) && new CouchHud.Core.Config.ConfigStore(dir).Current.AutoLogonConfigured;
+        // Read only (an administrator in the user's folder): a ConfigStore could restore, clean up and write there.
+        return CouchHud.Core.Config.ConfigStore.Peek(dir)?.AutoLogonConfigured == true;
     }
 
     /// <summary>
@@ -161,6 +163,9 @@ public static class UninstallCleanup
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
 
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool LookupPrivilegeValue(string? system, string name, out long luid);
 
@@ -179,7 +184,9 @@ public static class UninstallCleanup
 
     private static void EnablePrivilege(string name)
     {
-        if (!OpenProcessToken(System.Diagnostics.Process.GetCurrentProcess().Handle, 0x28, out var token)) return;
+        // The pseudo-handle: Process.GetCurrentProcess().Handle belongs to a Process object nothing keeps alive, so a GC could close it
+        // (or let the number be reused for another object) before OpenProcessToken runs.
+        if (!OpenProcessToken(GetCurrentProcess(), 0x28, out var token)) return;
         try
         {
             if (!LookupPrivilegeValue(null, name, out var luid)) return;

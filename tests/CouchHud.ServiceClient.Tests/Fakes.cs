@@ -36,7 +36,10 @@ internal sealed class FakePipeServer : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _loop;
     private readonly List<byte[]> _requests = [];
+    private readonly object _settledLock = new();
+    private TaskCompletionSource _settledSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _connections;
+    private int _settled;
 
     public FakePipeServer(Func<byte[], Stream, Task<byte[]?>> handler)
     {
@@ -72,6 +75,38 @@ internal sealed class FakePipeServer : IAsyncDisposable
         lock (_requests) return _requests[index];
     }
 
+    /// <summary>Connections the server is done with (served to the end, or dropped by the client before the server took them).</summary>
+    public int Settled => Volatile.Read(ref _settled);
+
+    /// <summary>
+    /// Waits until the server is done with <paramref name="count"/> connections. After that, <see cref="RequestCount"/> is final for
+    /// them: a request on a connection is recorded before the connection ends, so no fixed wait is needed to see "nothing arrived".
+    /// </summary>
+    public async Task WaitSettledAsync(int count, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(10));
+        while (Settled < count)
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"{Settled} of {count} connections settled");
+            Task wait;
+            lock (_settledLock) wait = _settledSignal.Task;
+            if (Settled >= count) break;
+            await Task.WhenAny(wait, Task.Delay(TimeSpan.FromMilliseconds(200)));
+        }
+    }
+
+    private void Settle()
+    {
+        Interlocked.Increment(ref _settled);
+        TaskCompletionSource signal;
+        lock (_settledLock)
+        {
+            signal = _settledSignal;
+            _settledSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        signal.TrySetResult();
+    }
+
     public ServiceClientOptions Options(TimeSpan? read = null) =>
         new(Name, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2), read ?? TimeSpan.FromSeconds(5)) { StreamVerifyTimeout = TimeSpan.FromSeconds(5) };
 
@@ -80,10 +115,12 @@ internal sealed class FakePipeServer : IAsyncDisposable
         while (!_stop.IsCancellationRequested)
         {
             var server = new NamedPipeServerStream(Name, PipeDirection.InOut, 8, PipeTransmissionMode.Message, PipeOptions.Asynchronous);
+            // The wait is started before "ready": a client that connects and drops at once (a squatting check) meets a listening instance.
+            var waiting = server.WaitForConnectionAsync(_stop.Token);
             ready.TrySetResult();
             try
             {
-                await server.WaitForConnectionAsync(_stop.Token);
+                await waiting;
                 Interlocked.Increment(ref _connections);
                 _ = Task.Run(() => ServeAsync(server));
             }
@@ -92,10 +129,28 @@ internal sealed class FakePipeServer : IAsyncDisposable
                 await server.DisposeAsync();
                 return;
             }
+            catch (IOException)
+            {
+                // The client was gone before the server took the connection ("the pipe is being closed"): nothing arrived on it.
+                await server.DisposeAsync();
+                Settle();
+            }
         }
     }
 
     private async Task ServeAsync(NamedPipeServerStream server)
+    {
+        try
+        {
+            await ServeOneAsync(server);
+        }
+        finally
+        {
+            Settle();
+        }
+    }
+
+    private async Task ServeOneAsync(NamedPipeServerStream server)
     {
         await using (server)
         {

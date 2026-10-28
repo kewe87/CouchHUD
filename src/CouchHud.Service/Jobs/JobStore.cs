@@ -22,6 +22,8 @@ public sealed class Job
     private bool _rebootRequired;
     private UpdateEntry[]? _updates;
     private bool _restartCaseHud;
+    private long _bytesDone;
+    private long _bytesTotal;
 
     internal Job(string id, string ownerSid, string kind)
     {
@@ -53,6 +55,17 @@ public sealed class Job
             if (_state != Running) return;
             _percent = Math.Clamp(percent, _percent, 100);   // never backwards
             if (message is not null) _message = message;
+        }
+    }
+
+    /// <summary>Byte counters of a running download (done, total); (0, 0) clears them. Kept sane: done within 0..total.</summary>
+    public void Bytes(long done, long total)
+    {
+        lock (_lock)
+        {
+            if (_state != Running) return;
+            _bytesTotal = Math.Max(0, total);
+            _bytesDone = _bytesTotal == 0 ? 0 : Math.Clamp(done, 0, _bytesTotal);
         }
     }
 
@@ -126,7 +139,8 @@ public sealed class Job
 
     public JobData Snapshot()
     {
-        lock (_lock) return new JobData(Id, _state, _percent, _message, _installed, _rebootRequired, _updates, _restartCaseHud);
+        lock (_lock) return new JobData(Id, _state, _percent, _message, _installed, _rebootRequired, _updates, _restartCaseHud,
+            _state == Running ? _bytesDone : 0, _state == Running ? _bytesTotal : 0);
     }
 }
 

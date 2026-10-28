@@ -80,7 +80,12 @@ export function startParental({ detailPage, closeQuickMenu, redrawQuick } = {}) 
     quickHooks.redraw();
   });
   api.onSession?.((session) => {
-    if (!session) closeTimeUp();
+    if (!session) return closeTimeUp();
+    // Frozen now or not (the host freezes only once the HUD is in front, never a game with an anti-cheat): the text follows.
+    if (timeUp && timeUp.paused !== !!session.paused) {
+      timeUp.paused = !!session.paused;
+      render();
+    }
   });
   setInterval(refreshParental, 60_000);
 }
@@ -125,6 +130,8 @@ export function timeUpPage() {
     name: t('parental.timeUp'),
     index: 0,
     closing: false,
+    // Whether the game really is frozen (session.paused): one with an anti-cheat is not, the HUD only covers it; the text says which.
+    paused: !!state.session?.paused,
     // Guide, B and Start must not get out of here.
     captures: () => true,
     entries() {
@@ -157,10 +164,12 @@ export function timeUpPage() {
           : parental.status?.closeFailed
             ? t('parental.timeupCloseFailed')
             : advisory
-              ? (game ? t('parental.timeupAdvisoryGame', { game }) : t('parental.timeupAdvisory'))
-              : (game
-                ? t('parental.timeupGraceGame', { game, count: parental.status?.graceSeconds ?? 60 })
-                : t('parental.timeupGrace', { count: parental.status?.graceSeconds ?? 60 })) }),
+              ? (!game ? t('parental.timeupAdvisory') : this.paused ? t('parental.timeupAdvisoryGame', { game }) : t('parental.timeupAdvisoryGameRunning', { game }))
+              : (!game
+                ? t('parental.timeupGrace', { count: parental.status?.graceSeconds ?? 60 })
+                : this.paused
+                  ? t('parental.timeupGraceGame', { game, count: parental.status?.graceSeconds ?? 60 })
+                  : t('parental.timeupGraceGameRunning', { game, count: parental.status?.graceSeconds ?? 60 })) }),
         // While the game is being closed there is nothing to decide any more (the host also calls the closing off if time is added).
         this.closing || parental.status?.closing ? null : el('ul', { className: 'timeup-list' }, this.buttons)));
       this.update();

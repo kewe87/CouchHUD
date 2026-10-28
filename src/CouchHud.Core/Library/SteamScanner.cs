@@ -3,21 +3,22 @@ using CouchHud.Sdk;
 
 namespace CouchHud.Core.Library;
 
-public sealed class SteamScanner(IRegistry registry, string? steamPath = null) : ILibraryProvider
+public sealed class SteamScanner(IRegistry registry, string? steamPath = null) : ILibraryProvider, IGameStore
 {
     // Things Steam installs that are not games.
-    private static readonly HashSet<string> IgnoredAppIds =
+    internal static readonly HashSet<string> IgnoredAppIds =
     [
         "228980", // Steamworks Common Redistributables
         "1070560", "1391110", "1628350", // Steam Linux Runtime
         "1493710", "1826330", "2180100", "2805730", "3658110" // Proton
     ];
 
-    private static readonly string[] IgnoredNameParts = ["redistributable", "steamvr", "proton"];
+    internal static readonly string[] IgnoredNameParts = ["redistributable", "steamvr", "proton"];
 
     public const string Cdn = "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps";
 
     public string Name => "Steam";
+    public string Source => "steam";
 
     public Task<IReadOnlyList<LibraryItem>> GetItemsAsync(CancellationToken cancellationToken) =>
         Task.Run(() => Scan(cancellationToken), cancellationToken);
@@ -64,29 +65,83 @@ public sealed class SteamScanner(IRegistry registry, string? steamPath = null) :
     }
 
     /// <summary>Games Steam is downloading, updating or has queued, with progress.</summary>
-    public IReadOnlyList<SteamDownload> Downloads()
+    public IReadOnlyList<SteamDownload> Downloads() => DownloadsAndInstalled().Downloads;
+
+    /// <summary>
+    /// One pass over the manifests: what Steam is downloading, and the app ids that are fully installed (the downloads page uses
+    /// those to tell a finished installation from a cancelled one). This runs every few seconds while something loads, so it is
+    /// bounded: folders on network shares (UNC paths and mapped network drives, also Steam's own folder) are left out, at most
+    /// <see cref="MaxPolledManifests"/> manifests, each read only up to <see cref="MaxManifestBytes"/>.
+    /// </summary>
+    public (IReadOnlyList<SteamDownload> Downloads, IReadOnlySet<string> Installed) DownloadsAndInstalled()
     {
+        var installed = new HashSet<string>(StringComparer.Ordinal);
         var root = steamPath ?? FindSteamPath();
-        if (root is null) return [];
+        // Steam itself on a network drive: the poll leaves it alone (the library scan still reads it).
+        if (root is null || OnNetwork(root)) return ([], installed);
         var list = new List<SteamDownload>();
+        var seen = 0;
         foreach (var library in ReadLibraryFolders(root))
         {
+            // A share that hangs would hold up every poll; Steam does not install there anyway.
+            if (OnNetwork(library)) continue;
             var appsDir = Path.Combine(library, "steamapps");
-            if (!Directory.Exists(appsDir)) continue;
-            foreach (var file in Directory.EnumerateFiles(appsDir, "appmanifest_*.acf"))
+            IEnumerator<string>? files = null;
+            try
             {
-                try
+                if (!Directory.Exists(appsDir)) continue;
+                files = Directory.EnumerateFiles(appsDir, "appmanifest_*.acf").GetEnumerator();
+                // MoveNext reads the folder and can fail as well (folder removed or locked while polling).
+                while (files.MoveNext())
                 {
-                    if (ParseDownload(File.ReadAllText(file)) is { } d && !IgnoredAppIds.Contains(d.AppId)) list.Add(d);
-                }
-                catch (Exception ex) when (ex is IOException or FormatException or UnauthorizedAccessException)
-                {
-                    Console.Error.WriteLine($"[steam] {Path.GetFileName(file)}: {ex.Message}");
+                    if (++seen > MaxPolledManifests) break;
+                    var file = files.Current;
+                    try
+                    {
+                        // A manifest is a few KB; anything far bigger is not Steam's. The limit holds for the read itself.
+                        if (BoundedFile.ReadAllText(file, MaxManifestBytes) is not { } text) continue;
+                        if (ParseDownload(text) is { } d && !IgnoredAppIds.Contains(d.AppId)) list.Add(d);
+                        else if (ParseManifest(text) is { } m) installed.Add(m.AppId);
+                    }
+                    catch (Exception ex) when (ex is IOException or FormatException or UnauthorizedAccessException)
+                    {
+                        Console.Error.WriteLine($"[steam] {Path.GetFileName(file)}: {ex.GetType().Name}");
+                    }
                 }
             }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                Console.Error.WriteLine($"[steam] library folder: {ex.GetType().Name}");
+            }
+            finally
+            {
+                files?.Dispose();
+            }
+            if (seen > MaxPolledManifests) break;
         }
-        return list.OrderBy(d => d.State == SteamDownloadState.Downloading ? 0 : d.State == SteamDownloadState.Paused ? 1 : 2).ThenBy(d => d.Name).ToList();
+        return (list.OrderBy(d => d.State == SteamDownloadState.Downloading ? 0 : d.State == SteamDownloadState.Paused ? 1 : 2).ThenBy(d => d.Name).ToList(), installed);
     }
+
+    /// <summary>
+    /// A UNC path or a path on a mapped network drive. When Windows cannot tell, the folder counts as local (the poll then still has
+    /// the size and count limits).
+    /// </summary>
+    internal static bool OnNetwork(string path)
+    {
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)) return true;
+        try
+        {
+            var root = Path.GetPathRoot(path);
+            return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType == DriveType.Network;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    internal const int MaxPolledManifests = 5000;
+    internal const long MaxManifestBytes = 1024 * 1024;
 
     // AppState.StateFlags bits as Steam writes them.
     private const int UpdateRequired = 2, FullyInstalled = 4, UpdateRunning = 256, UpdatePaused = 512, UpdateStarted = 1024, Downloading = 1048576, Staging = 2097152, Committing = 4194304;
@@ -98,6 +153,10 @@ public sealed class SteamScanner(IRegistry registry, string? steamPath = null) :
         var appId = state?.GetString("appid");
         var name = state?.GetString("name");
         if (state is null || string.IsNullOrEmpty(appId) || string.IsNullOrEmpty(name)) return null;
+        // Both end up on the screen and in notifications: a plain app id and a clean, short name.
+        if (!InstallLinks.IsSteamAppId(appId)) return null;
+        name = SteamAppInfo.Clean(name);
+        if (name.Length == 0) return null;
         if (!int.TryParse(state.GetString("StateFlags"), out var flags)) return null;
         long Num(string key) => long.TryParse(state.GetString(key), out var v) ? v : 0;
         var toDownload = Num("BytesToDownload");
@@ -113,7 +172,10 @@ public sealed class SteamScanner(IRegistry registry, string? steamPath = null) :
         return new SteamDownload(appId, name, stateKind, progress, downloaded, toDownload, (flags & FullyInstalled) != 0);
     }
 
-    private string? FindSteamPath()
+    private string? FindSteamPath() => FindSteamRoot(registry);
+
+    /// <summary>Steam's folder: the registry's SteamPath, else the usual install folders; null without Steam.</summary>
+    internal static string? FindSteamRoot(IRegistry registry)
     {
         var candidates = new[]
         {
@@ -170,7 +232,7 @@ public sealed class SteamScanner(IRegistry registry, string? steamPath = null) :
     }
 
     /// <summary>Local library cache first (works offline), CDN as fallback.</summary>
-    private static Artwork ArtworkFor(string steamPath, string appId)
+    internal static Artwork ArtworkFor(string steamPath, string appId)
     {
         var cache = Path.Combine(steamPath, "appcache", "librarycache");
         IReadOnlyList<string> Pick(string file)

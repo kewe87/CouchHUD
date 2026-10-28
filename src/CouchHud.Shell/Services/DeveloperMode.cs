@@ -22,7 +22,10 @@ public static class DeveloperMode
 
     public static DevDecision Decide(IEnumerable<string> args)
     {
-        Current = DevMode.Decide(args.Contains(DevMode.DevSwitch), DebugBuild, ReadMachineSwitch());
+        var machine = ReadMachineSwitch();
+        // One line per start when the switch is ignored for its access list (with or without --dev), names only, never values.
+        if (DevMode.UnsafeSwitchWarning(machine) is { } warning) Console.Error.WriteLine(warning);
+        Current = DevMode.Decide(args.Contains(DevMode.DevSwitch), DebugBuild, machine);
         return Current;
     }
 

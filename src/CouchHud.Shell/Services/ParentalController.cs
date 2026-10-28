@@ -26,14 +26,25 @@ public sealed class GameToast : Window
 
     private static GameToast? _current;
 
-    public static void Show(string title, string body, TimeSpan duration)
+    /// <param name="image">A small picture on the left (the screenshot just taken), optional.</param>
+    public static void Show(string title, string body, TimeSpan duration, ImageSource? image = null)
     {
         _current?.Close();
-        _current = new GameToast(title, body, duration);
+        _current = new GameToast(title, body, duration, image);
         _current.Show();
     }
 
-    private GameToast(string title, string body, TimeSpan duration)
+    /// <summary>Closes the toast on screen, if any. True when one was open (a screenshot waits a moment for it to be gone).</summary>
+    public static bool CloseCurrent()
+    {
+        var open = _current;
+        if (open is null) return false;
+        _current = null;
+        open.Close();
+        return true;
+    }
+
+    private GameToast(string title, string body, TimeSpan duration, ImageSource? image)
     {
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
@@ -44,6 +55,29 @@ public sealed class GameToast : Window
         ShowActivated = false;
         SizeToContent = SizeToContent.WidthAndHeight;
         WindowStartupLocation = WindowStartupLocation.Manual;
+        var text = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new TextBlock { Text = title, Foreground = Brushes.White, FontSize = 26, FontWeight = FontWeights.SemiBold, FontFamily = new FontFamily("Segoe UI") },
+                new TextBlock { Text = body, Foreground = new SolidColorBrush(Color.FromRgb(210, 214, 224)), FontSize = 18, Margin = new Thickness(0, 4, 0, 0), FontFamily = new FontFamily("Segoe UI") }
+            }
+        };
+        UIElement inner = text;
+        if (image is not null)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            row.Children.Add(new Border
+            {
+                CornerRadius = new CornerRadius(6),
+                ClipToBounds = true,
+                Margin = new Thickness(0, 0, 20, 0),
+                Child = new Image { Source = image, Height = 108, Stretch = Stretch.Uniform }
+            });
+            row.Children.Add(text);
+            inner = row;
+        }
         Content = new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(235, 12, 16, 28)),
@@ -51,14 +85,7 @@ public sealed class GameToast : Window
             BorderThickness = new Thickness(2),
             CornerRadius = new CornerRadius(14),
             Padding = new Thickness(28, 16, 28, 16),
-            Child = new StackPanel
-            {
-                Children =
-                {
-                    new TextBlock { Text = title, Foreground = Brushes.White, FontSize = 26, FontWeight = FontWeights.SemiBold, FontFamily = new FontFamily("Segoe UI") },
-                    new TextBlock { Text = body, Foreground = new SolidColorBrush(Color.FromRgb(210, 214, 224)), FontSize = 18, Margin = new Thickness(0, 4, 0, 0), FontFamily = new FontFamily("Segoe UI") }
-                }
-            }
+            Child = inner
         };
         SourceInitialized += (_, _) =>
         {
@@ -103,7 +130,6 @@ public sealed record ParentalHooks(
     /// <summary>Last resort when a game cannot be ended: the Windows lock screen.</summary>
     Action LockWindows,
     Func<Task<DateTimeOffset?>> RemoteTime,
-    Func<string> ZoneId,
     Action<string, object?> Emit);
 
 /// <summary>
@@ -131,17 +157,33 @@ public sealed class ParentalController
     {
         _config = config;
         _hooks = hooks;
-        var file = Path.Combine(dataDir, "playtime.json");
-        var ledger = new PlayLedger(file, key, expectExisting: config.Current.Parental.LedgerStarted);
-        Service = new ParentalService(() => _config.Current.Parental, ledger,
+        // The account of the profile on the couch: playtime.json for the default profile, playtime-<id>.json for the others.
+        // An unknown or broken profile is the default one (ConfigStore/ProfileView), so its rules and its account apply.
+        var profile = config.Current.ActiveProfile;
+        ProfileId = profile.Id;
+        var file = ProfileIds.LedgerFile(dataDir, ProfileId);
+        var ledger = new PlayLedger(file, key, expectExisting: PlayLedger.ShouldExist(file, profile.Rules.LedgerStarted));
+        Service = new ParentalService(() => _config.Current.Profile(ProfileId).Rules, ledger,
             new TrustedClock(() => DateTimeOffset.UtcNow, () => Environment.TickCount64, ZoneOffset, ledger.LastUtc));
         Service.Warning += OnWarning;
         if (ledger.Tampered) Console.Error.WriteLine("[parental] the play time file was changed or removed");
+        else if (!profile.IsDefault && config.Current.ParentalEnabled && !profile.Rules.LedgerStarted)
+        {
+            // A further profile's first account: written now and marked, so from here on a missing file is tampering.
+            Service.Flush();
+            if (File.Exists(file))
+                config.Update(c =>
+                {
+                    var p = c.Profile(ProfileId);
+                    if (p.Id == ProfileId) p.Rules.LedgerStarted = true;
+                });
+        }
     }
 
     private TimeSpan ZoneOffset(DateTimeOffset at)
     {
-        var id = _hooks.ZoneId();
+        // The time zone the day limits go by is part of this profile's rules (set when the parental controls were switched on).
+        var id = _config.Current.Profile(ProfileId).Rules.TimeZoneId;
         try
         {
             return (string.IsNullOrEmpty(id) ? TimeZoneInfo.Local : TimeZoneInfo.FindSystemTimeZoneById(id)).GetUtcOffset(at);
@@ -153,6 +195,9 @@ public sealed class ParentalController
     }
 
     public ParentalService Service { get; }
+
+    /// <summary>The profile whose rules and play time account this controller keeps (a profile switch needs a new controller).</summary>
+    public string ProfileId { get; }
 
     public bool Closing => _closing;
 
@@ -174,7 +219,7 @@ public sealed class ParentalController
     {
         var item = _hooks.Session()?.Item;
         if (item is null) return null;
-        return item.Type == ItemType.Game || _config.Current.Parental.CountApps ? item : null;
+        return item.Type == ItemType.Game || _config.Current.Profile(ProfileId).Rules.CountApps ? item : null;
     }
 
     private void OnWarning(ParentalWarning warning)
@@ -376,19 +421,24 @@ public sealed class ParentalController
 
     public sealed record LaunchCheck(bool Ok, string? Reason, string Message, bool NeedsCode, bool Advisory, bool UsesCode = false);
 
-    private static string CodeText(string reason, int maxAge, bool advisory) => reason switch
+    private static string CodeText(string reason, int maxAge, string system) => reason switch
     {
         "locked" => Strings.Get("parental.codeOnly"),
-        "age" => Strings.Get("parental.ageCode", maxAge),
-        "unknown-age" => Strings.Get("parental.unknownAgeCode", maxAge),
+        "age" or "unknown-age" => AgeLimitText(system, maxAge, reason == "unknown-age"),
         _ => Strings.Get("parental.cannotTrack")
     };
+
+    /// <summary>The age limit in a message: by the system's label ("USK 12", "PEGI 7", "ESRB T") or, for a limit off its steps, by the age.</summary>
+    internal static string AgeLimitText(string system, int limit, bool unknown) =>
+        AgeRatings.LimitLabel(system, limit) is { } label
+            ? Strings.Get(unknown ? "parental.unknownAgeCode" : "parental.ageCode", label)
+            : Strings.Get(unknown ? "parental.unknownAgeCodeYears" : "parental.ageCodeYears", limit);
 
     /// <summary>Time rules, locked games, age and measurability. Without enforcement (no lock, not the shell) it only advises.</summary>
     /// <param name="grant">The parents just entered their code for this one start.</param>
     public LaunchCheck CheckLaunch(LibraryItem item, int? age, bool grant)
     {
-        var cfg = _config.Current.Parental;
+        var cfg = _config.Current.Profile(ProfileId).Rules;
         if (!cfg.Enabled) return new LaunchCheck(true, null, "", false, false);
         var enforced = _hooks.Enforced();
         var problems = new List<string>();
@@ -409,7 +459,11 @@ public sealed class ParentalController
         if (codeReason is not null)
         {
             if (grant) usesCode = true;
-            else problems.Add(CodeText(codeReason, cfg.MaxAge, !enforced));
+            else
+            {
+                var system = AgeRatings.Resolve(_config.Current.AgeRatingSystem, WindowsRegion.Current());
+                problems.Add(CodeText(codeReason, AgeRatings.LimitFor(cfg.AgeLimit, system), system));
+            }
         }
 
         if (problems.Count == 0) return new LaunchCheck(true, null, "", false, false, usesCode);

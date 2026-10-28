@@ -9,14 +9,14 @@ What this setup does
 
 What this setup does NOT do
 • It doesn't change how you sign in to Windows, doesn't replace the desktop and doesn't pause services.
-• CouchHUD starts in "Light" mode: an ordinary full-screen app. Shell replacement, couch lock, automatic sign-in and services only become available once you choose "Integration: Full" inside CouchHUD. Every change is listed there under "What CouchHUD changes in Windows".
+• CouchHUD starts in app mode: an ordinary full-screen app. Shell replacement, couch lock, automatic sign-in and services only become available once you choose shell mode inside CouchHUD. Every change is listed there under "What CouchHUD changes in Windows".
 • CouchHUD runs without administrator rights. Windows asks whenever something needs them.
 
 Uninstall
 Uninstalling restores what CouchHUD changed in Windows (shell entry, Task Manager policy, scheduled tasks, firewall rule) and asks whether your settings should be deleted. Emergency at any time: hold Ctrl + Shift (or LB + RB + View on the controller) for about 1.5 seconds while CouchHUD starts. Windows locks, and after you sign in with the account's Windows password the normal desktop comes back.
 
 Damaged settings
-If %APPDATA%\CouchHud\config.json is damaged, CouchHUD runs locked (no game starts) and writes nothing to the file. The way out: repair or delete config.json (CouchHUD then starts with defaults). The .bad file next to it is only a copy.
+If %APPDATA%\CouchHud\config.json is damaged, CouchHUD runs locked (no game starts) and writes nothing to the file. The way out: repair config.json or put it back. Deleting config.json alone does not start over; for that, remove the whole folder %APPDATA%\CouchHud (play time and profiles go with it). The config.json.broken file next to it is only a copy.
 
 Disclaimer and privacy
 CouchHUD is free software (GPL-3.0) without any warranty; use at your own risk. No telemetry, no account. The full texts are shown at the first start and under Settings › Info (currently in German).

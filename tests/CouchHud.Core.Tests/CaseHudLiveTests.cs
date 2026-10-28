@@ -50,19 +50,15 @@ public class CaseHudLiveTests
             var panel = status.Panels[0];
             Assert.Equal((await client.PanelsAsync()).Count, status.Panels.Count);
 
-            var designs = await client.DesignsAsync();
-            Assert.NotEmpty(designs);
             var sets = await client.SetsAsync();
             Assert.NotEmpty(sets);
-            Assert.True((await client.PreviewAsync("design", designs[0].Id, 200)).Length > 100);
-            Assert.True((await client.PreviewAsync("design", designs[0].Id, 200, "light")).Length > 100);
+            Assert.True((await client.PanelPreviewAsync(panel.Id, 200)).Length > 100);
 
-            var changed = await client.PatchPanelAsync(panel.Id, new CaseHudPanelPatch(Brightness: 33, Rotation: 90, Theme: "light", Design: designs[0].Id));
+            var changed = await client.PatchPanelAsync(panel.Id, new CaseHudPanelPatch(Brightness: 33, Theme: "light"));
             Assert.Equal(33, changed.Brightness);
-            Assert.Equal(90, changed.Rotation);
             Assert.Equal("light", changed.Theme);
-            await client.PatchPanelAsync(panel.Id, new CaseHudPanelPatch(Brightness: panel.Brightness, Rotation: panel.Rotation, Theme: panel.Theme, Design: panel.Design));
-            var bad = await Assert.ThrowsAsync<CaseHudException>(() => client.PatchPanelAsync(panel.Id, new CaseHudPanelPatch(Rotation: 45)));
+            await client.PatchPanelAsync(panel.Id, new CaseHudPanelPatch(Brightness: panel.Brightness, Theme: panel.Theme));
+            var bad = await Assert.ThrowsAsync<CaseHudException>(() => client.PatchPanelAsync(panel.Id, new CaseHudPanelPatch(Mode: "party")));
             Assert.Equal("bad_request", bad.Code);
             var missing = await Assert.ThrowsAsync<CaseHudException>(() => client.PatchPanelAsync("nope", new CaseHudPanelPatch(Brightness: 1)));
             Assert.Equal("not_found", missing.Code);
@@ -78,21 +74,20 @@ public class CaseHudLiveTests
 
             var scenes = await client.ScenesAsync();
             await client.SetRotationAsync(false);
-            if (scenes.Count > 0)
-            {
-                // Rotation off: activation is a 409 conflict.
-                var conflict = await Assert.ThrowsAsync<CaseHudException>(() => client.ActivateSceneAsync(scenes[0].Id));
-                Assert.Equal("conflict", conflict.Code);
-            }
+            // Activation works for every saved scene (409 only while an automation rule holds the displays).
+            if (scenes.Count > 0) await client.ActivateSceneAsync(scenes[0].Id);
+            var unknown = await Assert.ThrowsAsync<CaseHudException>(() => client.ActivateSceneAsync("no-such-scene"));
+            Assert.Equal("not_found", unknown.Code);
             await client.NextSceneAsync();
+            await client.SetAutomationAsync(false);
+            Assert.False((await client.StatusAsync()).Automation?.Enabled);
+            await client.SetAutomationAsync(true);
 
             await client.GamingAsync(true, "Test game", Environment.ProcessId, 30);
             Assert.Equal("external", (await client.StatusAsync()).Gaming.Source);
             await client.GamingAsync(false);
 
             await client.SetAwtrixAsync(false);
-            try { await client.CommunityAsync(); }
-            catch (CaseHudException ex) { Assert.Equal("bad_gateway", ex.Code); }   // offline is allowed
 
             // Event stream: the first event is the full status.
             string? first = null;

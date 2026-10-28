@@ -133,7 +133,7 @@ public class WindowsUpdateJobTests
     {
         public IReadOnlyList<FoundUpdate> Search(CancellationToken cancellation) => throw new System.Runtime.InteropServices.COMException("secret detail", unchecked((int)0x8024402C));
 
-        public UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation) => throw new NotSupportedException();
+        public UpdateInstallOutcome Install(IReadOnlySet<string>? ids, Action<int> progress, CancellationToken cancellation, Action<long, long>? bytes = null) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -157,5 +157,41 @@ public class WindowsUpdateJobTests
         Assert.Null(store.Find(running[0].Id));
         Assert.All(running.Skip(1), j => Assert.NotNull(store.Find(j.Id)));
         Assert.Matches("^[0-9a-f]{32}$", running[1].Id);
+    }
+
+    [Fact]
+    public async Task A_running_installation_reports_the_agent_s_real_byte_counters_and_drops_them_at_the_end()
+    {
+        using var ops = WithPending();
+        using var gate = new ManualResetEventSlim();
+        ops.WindowsUpdate.Gate = gate;
+        ops.WindowsUpdate.Bytes = (12_000_000, 48_000_000);
+        var id = OperationsB.JobId(await OneAsync(ops, Install(null)));
+        JobData? running = null;
+        for (var i = 0; i < 200 && running is not { BytesTotal: > 0 }; i++)
+        {
+            running = (await ops.GetJobAsync(id)).Data;
+            if (running is not { BytesTotal: > 0 }) await Task.Delay(10);
+        }
+        Assert.Equal(12_000_000, running!.BytesDone);
+        Assert.Equal(48_000_000, running.BytesTotal);
+        gate.Set();
+        var done = await ops.WaitForJobAsync(id);
+        Assert.Equal("done", done.State);
+        Assert.Equal(0, done.BytesDone);
+        Assert.Equal(0, done.BytesTotal);
+    }
+
+    [Fact]
+    public void Byte_counters_of_a_job_stay_sane()
+    {
+        var store = new JobStore(new FakeClock());
+        var job = store.Create(Callers.UserSid, "x")!;
+        job.Bytes(500, 100);
+        Assert.Equal((100L, 100L), (job.Snapshot().BytesDone, job.Snapshot().BytesTotal));
+        job.Bytes(-5, 100);
+        Assert.Equal(0, job.Snapshot().BytesDone);
+        job.Bytes(50, -1);
+        Assert.Equal((0L, 0L), (job.Snapshot().BytesDone, job.Snapshot().BytesTotal));
     }
 }

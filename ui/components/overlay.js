@@ -45,12 +45,13 @@ function releaseNextWaiter() {
  * focusCancel starts on "Cancel" (what comes from outside must be confirmed on purpose); tag names the question for closeTagged;
  * cancelLabel replaces "Cancel" where the second answer is not a cancel (e.g. "Later"), cancelIcon its icon.
  */
-export function confirmDialog(title, confirmLabel, { danger = false, message = '', icon = '', focusCancel = false, tag = '', cancelLabel = '', cancelIcon = '' } = {}) {
+export function confirmDialog(title, confirmLabel, { danger = false, message = '', icon = '', focusCancel = false, tag = '', cancelLabel = '', cancelIcon = '', web = false } = {}) {
   return new Promise((resolve) => {
     openOverlay({
       title,
       message,
       tag,
+      web,
       index: danger || focusCancel ? 1 : 0,
       onCancel: () => resolve(false),
       entries: [
@@ -84,6 +85,8 @@ export function renderOverlay() {
   if (!menu) queueMicrotask(releaseNextWaiter);
   overlay.hidden = !menu;
   overlay.classList.toggle('preview', !!menu?.preview);
+  // A web page's question: marked as the web's (globe, own frame), never in the look of CouchHUD's own questions.
+  overlay.classList.toggle('web', !!menu?.web);
   document.body.classList.toggle('overlay-open', !!menu);
   renderHints();
   if (!menu) {

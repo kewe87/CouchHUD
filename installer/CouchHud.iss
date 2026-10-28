@@ -1,8 +1,22 @@
 ; CouchHUD installer (Inno Setup 6)
-; Build: iscc /DAppVersion=0.4.0 /DPublishDir=..\publish /DWebView2Setup=MicrosoftEdgeWebview2Setup.exe CouchHud.iss
+; Build: iscc /DAppVersion=0.5.0 /DPublishDir=..\publish /DWebView2Setup=MicrosoftEdgeWebview2Setup.exe CouchHud.iss
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
+#endif
+; A test or development build carries a suffix (0.5.0-test, 0.5.0-dev+abc): AppVersion and the file name keep it, the file's
+; version resource (VersionInfoVersion) takes only numbers, so it gets the part before the first "-" or "+".
+#define VersionCut Pos("+", AppVersion)
+#if VersionCut > 0
+  #define VersionCore Copy(AppVersion, 1, VersionCut - 1)
+#else
+  #define VersionCore AppVersion
+#endif
+#define VersionCut Pos("-", VersionCore)
+#if VersionCut > 0
+  #define NumericVersion Copy(VersionCore, 1, VersionCut - 1)
+#else
+  #define NumericVersion VersionCore
 #endif
 #ifndef PublishDir
   #define PublishDir "..\publish"
@@ -59,7 +73,7 @@ AppPublisherURL=https://github.com/kewe87/CouchHUD
 AppSupportURL=https://github.com/kewe87/CouchHUD/issues
 AppUpdatesURL=https://github.com/kewe87/CouchHUD/releases
 AppCopyright=Copyright © 2026 kewe87
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#NumericVersion}
 ; Program Files, always: the service runs as SYSTEM from {app}\service, so {app} must be a folder only administrators can
 ; change. No folder page; /DIR= or an earlier install elsewhere is refused in PrepareToInstall (InProgramFiles).
 DefaultDirName={commonpf}\{#AppDir}
@@ -99,8 +113,8 @@ Name: "de"; MessagesFile: "compiler:Languages\German.isl"; InfoBeforeFile: "info
 [CustomMessages]
 de.DesktopIcon=Desktop-Symbol anlegen
 en.DesktopIcon=Create a desktop icon
-de.Autostart=CouchHUD bei der Windows-Anmeldung starten (Light-Modus, ändert nicht die Shell)
-en.Autostart=Start CouchHUD when signing in to Windows (light mode, doesn't replace the shell)
+de.Autostart=CouchHUD bei der Windows-Anmeldung starten (App-Modus, ändert nicht die Shell)
+en.Autostart=Start CouchHUD when signing in to Windows (app mode, doesn't replace the shell)
 de.WebView2=Microsoft WebView2 Runtime wird installiert …
 en.WebView2=Installing the Microsoft WebView2 Runtime …
 de.Launch=CouchHUD jetzt starten
@@ -113,6 +127,8 @@ de.StillRunning=CouchHUD läuft noch. Bitte erst beenden (Menü Beenden oder PC-
 en.StillRunning=CouchHUD is still running. Please quit it first (Quit or PC mode), then run this again.
 de.AutoLogonNote=Hinweis: Falls du die automatische Windows-Anmeldung selbst (z.B. mit netplwiz) eingeschaltet hast, bleibt sie an. Von CouchHUD eingerichtete wurde entfernt. Ausschalten: Windows-Taste + R, „netplwiz“, Haken bei „Benutzer müssen Benutzernamen und Kennwort eingeben“ setzen.
 en.AutoLogonNote=Note: automatic Windows sign-in that you turned on yourself (e.g. with netplwiz) stays on; the one CouchHUD set up was removed. To turn it off: Windows key + R, "netplwiz", tick "Users must enter a user name and password".
+de.SignOutNote=CouchHUD war deine Windows-Oberfläche. Bitte abmelden und neu anmelden, dann startet wieder der normale Windows-Desktop. Fehlt die Taskleiste: Strg+Alt+Entf, dann „Abmelden“.
+en.SignOutNote=CouchHUD was your Windows shell. Please sign out and sign in again to get the normal Windows desktop back. If the taskbar is missing: Ctrl+Alt+Del, then "Sign out".
 de.NotProgramFiles=CouchHUD muss unter „%1“ installiert sein: Der CouchHUD-Dienst läuft mit Systemrechten und darf nur in einem Ordner liegen, den allein Administratoren ändern können. Diese Installation liegt in „%2“. Bitte CouchHUD deinstallieren und neu installieren.
 en.NotProgramFiles=CouchHUD must be installed under "%1": the CouchHUD service runs with system rights and may only live in a folder that only administrators can change. This installation is in "%2". Please uninstall CouchHUD and install it again.
 de.ServiceStuck=Der CouchHUD-Dienst lässt sich nicht beenden. Bitte den PC neu starten und das Setup erneut ausführen.
@@ -125,6 +141,14 @@ en.ServicePipeSquatted=The CouchHUD service was not started: another program alr
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; Flags: unchecked
 Name: "autostart"; Description: "{cm:Autostart}"; Flags: unchecked
+
+[InstallDelete]
+; Only single program files an older version installed and this one no longer has (an update copies over the folder, it does not
+; clean it). Never folders, never wildcards, never anything with user data: InstallerTests keeps this an exact allowlist.
+; 0.5 renamed the built-in skins (deepsea.css, greenlight.css, neoncity.css).
+Type: files; Name: "{app}\ui\skins\ps4.css"
+Type: files; Name: "{app}\ui\skins\xbox.css"
+Type: files; Name: "{app}\ui\skins\cyberpunk.css"
 
 [Files]
 ; Helpers that stop and restart CouchHUD (extracted to {tmp} on demand, never installed).
@@ -788,11 +812,27 @@ end;
 
 { Not while CouchHUD is running. Silent (winget, scripts): end CouchHUD and its guard, which is the same program.
   The marker keeps the guard from locking Windows and restarting CouchHUD in the moment between. }
+{ Read before --uninstall-cleanup resets it: was CouchHUD this person's Windows shell? Then the session has no shell after the
+  uninstall. The uninstaller runs as admin and Inno offers no unelevated start at uninstall time (ExecAsOriginalUser is setup
+  only), and an explorer started from here would run elevated (the whole desktop and everything opened from it as admin).
+  So it does not start one; it asks the person to sign out and in again, and Winlogon starts explorer normally. }
+var
+  WasShell: Boolean;
+
+function CouchHudWasShell: Boolean;
+var
+  Shell: String;
+begin
+  Result := RegQueryStringValue(HKCU, 'Software\Microsoft\Windows NT\CurrentVersion\Winlogon', 'Shell', Shell)
+    and (Pos(Lowercase('{#AppExe}'), Lowercase(Shell)) > 0);
+end;
+
 function InitializeUninstall: Boolean;
 var
   ResultCode: Integer;
 begin
   CleanEnvironment;
+  WasShell := CouchHudWasShell;
   Result := True;
   if CheckForMutexes(CouchMutex) then
   begin
@@ -824,6 +864,8 @@ begin
         DelTree(ExpandConstant('{localappdata}\CouchHud'), True, True, True);
       end;
       MsgBox(CustomMessage('AutoLogonNote'), mbInformation, MB_OK);
-    end;
+      if WasShell then MsgBox(CustomMessage('SignOutNote'), mbInformation, MB_OK);
+    end
+    else if WasShell then Log('CouchHUD was the Windows shell: the session needs a sign-out and sign-in for the Windows desktop.');
   end;
 end;

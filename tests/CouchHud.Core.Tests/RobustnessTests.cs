@@ -23,7 +23,7 @@ public class RobustnessTests
         var store = new ConfigStore(dir);
         store.Update(c => c.Favorites.Add("steam:1"));
 
-        var backup = Assert.Single(Directory.GetFiles(dir, "config.json.*.bad"));
+        var backup = Assert.Single(Directory.GetFiles(dir, "config.json.broken-*"));
         Assert.Contains("Kodi", File.ReadAllText(backup));
         Assert.Empty(Directory.GetFiles(dir, "*.tmp"));
     }

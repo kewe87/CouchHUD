@@ -27,15 +27,30 @@ public static partial class NameMatch
         "digital edition", "director s cut", "directors cut"
     ];
 
+    /// <summary>Latin letters that no decomposition splits into a base letter.</summary>
+    private static readonly Dictionary<char, string> Letters = new()
+    {
+        ['ß'] = "ss", ['æ'] = "ae", ['œ'] = "oe", ['ø'] = "o", ['ł'] = "l", ['đ'] = "d", ['þ'] = "th", ['ð'] = "d", ['ı'] = "i"
+    };
+
+    /// <summary>
+    /// The name reduced to what makes the game: see the class. Empty when the name has letters outside the Latin alphabet (Japanese,
+    /// Cyrillic …): the store search answers in English, so such a name is never compared, rather than compared by what is left of it.
+    /// </summary>
     public static string Canonical(string name)
     {
-        var s = name.Normalize(NormalizationForm.FormD);
+        // Marks first (compatibility decomposition turns ™ into "TM"), then KD: "Ⅱ" becomes "II", full-width letters plain ones.
+        var s = name.Replace("™", " ").Replace("®", " ").Replace("©", " ").Replace("℠", " ").Normalize(NormalizationForm.FormKD);
         var sb = new StringBuilder(s.Length);
-        foreach (var c in s)
+        foreach (var raw in s)
         {
-            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark) sb.Append(c);
+            if (CharUnicodeInfo.GetUnicodeCategory(raw) == UnicodeCategory.NonSpacingMark) continue;
+            var c = char.ToLowerInvariant(raw);
+            if (Letters.TryGetValue(c, out var latin)) sb.Append(latin);
+            else if (char.IsLetter(c) && c is not (>= 'a' and <= 'z')) return "";
+            else sb.Append(c);
         }
-        s = sb.ToString().ToLowerInvariant().Replace("™", "").Replace("®", "").Replace("©", "").Replace("&", " and ");
+        s = sb.ToString().Replace("&", " and ");
         s = Year().Replace(s, " ");
         s = NonAlphaNumeric().Replace(s, " ").Trim();
 
@@ -64,11 +79,26 @@ public static partial class NameMatch
         return string.Join(' ', tokens);
     }
 
+    /// <summary>
+    /// The same game: equal canonical names with at least one letter (a bare "2" says nothing), and not two different years in brackets
+    /// ("Doom (1993)" is not "Doom (2016)"; one year against none still matches).
+    /// </summary>
     public static bool Same(string a, string b)
     {
         var x = Canonical(a);
-        return x.Length > 0 && x == Canonical(b);
+        if (x.Length == 0 || !x.Any(char.IsAsciiLetter) || x != Canonical(b)) return false;
+        return YearOf(a) is not { } ya || YearOf(b) is not { } yb || ya == yb;
     }
+
+    /// <summary>The very same name, only case, trademark signs and spacing apart: decides between several entries that are <see cref="Same"/>.</summary>
+    public static bool Exact(string a, string b)
+    {
+        static string Plain(string s) => string.Join(' ', s.Replace("™", " ").Replace("®", " ").Replace("©", " ").Replace("℠", " ")
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant();
+        return Plain(a).Length > 0 && Plain(a) == Plain(b);
+    }
+
+    private static string? YearOf(string name) => Year().Match(name) is { Success: true } m ? m.Value : null;
 
     [GeneratedRegex(@"\((?:19|20)\d\d\)")]
     private static partial Regex Year();

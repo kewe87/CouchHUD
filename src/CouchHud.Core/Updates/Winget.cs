@@ -3,6 +3,9 @@ using System.Text.RegularExpressions;
 namespace CouchHud.Core.Updates;
 
 /// <summary>An available update, from winget or Windows Update.</summary>
+/// <param name="SizeBytes">What the download will really be, only when it is known well enough (<see cref="UpdateSize.Shown(long?, long?, bool)"/>);
+/// null when unknown, too uncertain or already downloaded.</param>
+/// <param name="Downloaded">Windows Update: already downloaded, only the installation is left.</param>
 public sealed record UpdateItem(
     string Id,
     string Source,
@@ -10,7 +13,8 @@ public sealed record UpdateItem(
     string? Version,
     string? Available,
     long? SizeBytes = null,
-    bool Important = false);
+    bool Important = false,
+    bool Downloaded = false);
 
 /// <summary>
 /// Reads the table that <c>winget upgrade</c> prints. winget has no machine

@@ -60,39 +60,72 @@ public static partial class Strings
 
     private sealed record RefData(string K, long? N, List<JsonElement> A);
 
+    // Strings made by Ref/RefPlural, by identity. Only these become nested references when passed as an argument; any other
+    // string (a game name from a file, a message from outside) is stored and shown as plain text, even if it looks like a reference.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<string, object> Made = new();
+
+    private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
+
     /// <summary>A stored reference to a text; <see cref="Render"/> turns it into the text in the active language.</summary>
     public static string Ref(string key, params object?[] args) => Encode(key, null, args);
 
     /// <summary>Like <see cref="Ref"/> with a count: key.one or key.other; {0} is the count.</summary>
     public static string RefPlural(string key, long count, params object?[] args) => Encode(key, count, args);
 
-    private static string Encode(string key, long? count, object?[] args) =>
-        RefMark + JsonSerializer.Serialize(new { K = key, N = count, A = args });
+    private static string Encode(string key, long? count, object?[] args)
+    {
+        // A nested reference goes in as an object {"R": {...}}; plain strings stay strings and are never read as a reference.
+        var a = args.Select(x => x is string s && Made.TryGetValue(s, out _) ? (object?)new { R = JsonSerializer.Deserialize<JsonElement>(s.AsSpan(1)) } : x).ToArray();
+        var text = RefMark + JsonSerializer.Serialize(new { K = key, N = count, A = a });
+        Made.AddOrUpdate(text, Options);
+        return text;
+    }
 
     /// <summary>The text for a reference from <see cref="Ref"/>; any other text comes back unchanged.</summary>
     public static string Render(string text) => RenderIn(Language, text);
 
     internal static string RenderIn(string language, string text)
     {
-        if (text.Length == 0 || text[0] != RefMark) return text;
+        // Only a string Ref made in this process is a reference; text from outside that merely starts with the mark stays text.
+        if (text.Length == 0 || text[0] != RefMark || !Made.TryGetValue(text, out _)) return text;
         RefData? data;
         try
         {
-            data = JsonSerializer.Deserialize<RefData>(text.AsSpan(1), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            data = JsonSerializer.Deserialize<RefData>(text.AsSpan(1), Options);
         }
         catch (JsonException)
         {
             return text[1..];
         }
-        if (data is null) return text[1..];
+        return data is { K: not null } ? RenderData(language, data, 0) : text[1..];
+    }
+
+    private static string RenderData(string language, RefData data, int depth)
+    {
         var args = (data.A ?? []).Select(a => a.ValueKind switch
         {
-            JsonValueKind.String => RenderIn(language, a.GetString() ?? ""),
+            // Plain text, shown as it is: a string argument is never rendered as a reference.
+            JsonValueKind.String => a.GetString() ?? "",
             JsonValueKind.Number => a.TryGetInt64(out var l) ? (object)l : a.GetDouble(),
             JsonValueKind.True => true,
             JsonValueKind.False => false,
+            JsonValueKind.Object => Nested(language, a, depth),
             _ => ""
         }).ToArray();
         return data.N is { } n ? PluralIn(language, data.K, n, args) : GetIn(language, data.K, args);
+    }
+
+    /// <summary>A nested reference made by <see cref="Ref"/> (an object {"R": ...}), at most a few levels deep.</summary>
+    private static string Nested(string language, JsonElement a, int depth)
+    {
+        if (depth >= 8 || !a.TryGetProperty("R", out var r) || r.ValueKind != JsonValueKind.Object) return "";
+        try
+        {
+            return r.Deserialize<RefData>(Options) is { K: not null } d ? RenderData(language, d, depth + 1) : "";
+        }
+        catch (JsonException)
+        {
+            return "";
+        }
     }
 }

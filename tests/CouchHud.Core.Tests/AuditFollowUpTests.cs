@@ -218,7 +218,7 @@ public class AuditFollowUpTests : IDisposable
     {
         File.WriteAllText(ConfigFile, "{ broken");
         for (var i = 0; i < 4; i++) _ = new ConfigStore(_dir, 1, Quick);
-        Assert.Single(Directory.GetFiles(_dir, "config.json.*.bad"));
+        Assert.Single(Directory.GetFiles(_dir, "config.json.broken-*"));
 
         for (var i = 0; i < 9; i++)
         {
@@ -227,7 +227,7 @@ public class AuditFollowUpTests : IDisposable
             Thread.Sleep(5);
         }
 
-        Assert.Equal(ConfigStore.MaxBadCopies, Directory.GetFiles(_dir, "config.json.*.bad").Length);
+        Assert.Equal(ConfigStore.MaxBadCopies, Directory.GetFiles(_dir, "config.json.broken-*").Length);
     }
 
     [Fact]

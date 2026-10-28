@@ -18,6 +18,9 @@ public sealed record UpdateState(
     string? Busy,
     long? CheckedAt);
 
+/// <summary>The result of one install or upgrade: the line for the toast and whether it worked (each run its own, never shared).</summary>
+public sealed record UpdateRun(string Message, bool Ok);
+
 /// <summary>
 /// Windows Update (searched in-process through the Windows Update Agent, installed
 /// by the CouchHUD service) and app updates through winget.
@@ -60,17 +63,22 @@ public sealed class UpdateService
         }
     }
 
-    /// <summary>Upgrades one winget package, or all with <paramref name="id"/> null; returns a line for the toast.</summary>
-    public async Task<string> UpgradeAppsAsync(string? id)
+    /// <summary>
+    /// Upgrades one winget package, or all with <paramref name="id"/> null; returns a line for the toast and whether it worked.
+    /// <paramref name="started"/> runs only once this run really has the gate: a second call that is turned away as busy never touches
+    /// what the running one shows.
+    /// </summary>
+    public async Task<UpdateRun> UpgradeAppsAsync(string? id, Action? started = null)
     {
         if (!await _gate.WaitAsync(0)) throw new InvalidOperationException(Strings.Get("update.busy"));
         try
         {
+            started?.Invoke();
             var name = id is null ? Strings.Get("update.allApps") : _state.Apps.FirstOrDefault(a => a.Id == id)?.Name ?? id;
             Set(_state with { Busy = Strings.Get("update.updating", name) });
             var (exit, _) = await RunWingetAsync(Winget.UpgradeArguments(id), TimeSpan.FromMinutes(60));
             Console.Error.WriteLine($"[updates] winget upgrade {id ?? "--all"} exited with {exit}");
-            return exit == 0 ? Strings.Get("update.updated", name) : Strings.Get("update.failedNamed", name, exit);
+            return exit == 0 ? new(Strings.Get("update.updated", name), true) : new(Strings.Get("update.failedNamed", name, exit), false);
         }
         finally
         {
@@ -81,24 +89,31 @@ public sealed class UpdateService
 
     /// <summary>
     /// Downloads and installs all pending Windows updates through the CouchHUD service (no UAC prompt): the service searches and
-    /// installs as SYSTEM and reports its progress as a job; no automatic restart.
+    /// installs as SYSTEM and reports its progress as a job; no automatic restart. <paramref name="started"/> as for
+    /// <see cref="UpgradeAppsAsync"/>.
     /// </summary>
-    public async Task<string> InstallWindowsAsync()
+    /// <paramref name="progress"/> gets the share (0..1) and the agent's real byte counters while it downloads (done, total; 0, 0 otherwise).
+    public async Task<UpdateRun> InstallWindowsAsync(Action<double, long, long>? progress = null, Action? started = null)
     {
         if (!await _gate.WaitAsync(0)) throw new InvalidOperationException(Strings.Get("update.busy"));
         try
         {
+            started?.Invoke();
             Set(_state with { Busy = Strings.Get("update.installingWindows") });
-            var progress = new Progress<CouchHud.Service.Contracts.JobData>(job =>
-                Set(_state with { Busy = Strings.Get("update.installingWindowsPercent", Math.Clamp(job.Percent, 0, 100)) }));
-            var result = await AdminService.Ops.InstallWindowsUpdatesAsync(progress);
-            if (!result.Result.Ok) return $"Windows Update: {AdminService.Message(result.Result)}";
-            if (result.Job is not { } job) return Strings.Get("update.noResult");
-            if (job.State != "done") return $"Windows Update: {Strings.Get("update.windowsJobFailed")}";
+            var jobProgress = new Progress<CouchHud.Service.Contracts.JobData>(job =>
+            {
+                Set(_state with { Busy = Strings.Get("update.installingWindowsPercent", Math.Clamp(job.Percent, 0, 100)) });
+                var (done, total) = UpdateSize.Transfer(job.BytesDone, job.BytesTotal);
+                progress?.Invoke(Math.Clamp(job.Percent, 0, 100) / 100.0, done, total);
+            });
+            var result = await AdminService.Ops.InstallWindowsUpdatesAsync(jobProgress);
+            if (!result.Result.Ok) return new($"Windows Update: {AdminService.Message(result.Result)}", false);
+            if (result.Job is not { } job) return new(Strings.Get("update.noResult"), false);
+            if (job.State != "done") return new($"Windows Update: {Strings.Get("update.windowsJobFailed")}", false);
             Set(_state with { RebootRequired = job.RebootRequired || _state.RebootRequired });
-            return job.Installed == 0
+            return new(job.Installed == 0
                 ? Strings.Get("update.noneInstalled")
-                : Strings.Plural("update.installed", job.Installed) + (job.RebootRequired ? Strings.Get("update.rebootNeeded") : "");
+                : Strings.Plural("update.installed", job.Installed) + (job.RebootRequired ? Strings.Get("update.rebootNeeded") : ""), true);
         }
         finally
         {
@@ -177,10 +192,12 @@ public sealed class UpdateService
                 dynamic u = updates.Item(i);
                 string id = u.Identity.UpdateID;
                 string title = u.Title;
-                long? size = null;
-                try { size = Convert.ToInt64(u.MaxDownloadSize); } catch (Exception ex) when (ex is COMException or InvalidCastException or OverflowException) { }
+                // MaxDownloadSize alone is the full package with every variant (gigabytes for a few MB of express or delta download):
+                // a size only when min and max agree, none for what is already downloaded.
+                var downloaded = ComBool(() => u.IsDownloaded);
+                var size = UpdateSize.Shown(ComValue(() => u.MinDownloadSize), ComValue(() => u.MaxDownloadSize), downloaded);
                 bool important = u.AutoSelectOnWebSites;
-                list.Add(new UpdateItem(id, "windows", title, null, null, size, important));
+                list.Add(new UpdateItem(id, "windows", title, null, null, size, important, downloaded));
             }
             return (list, null);
         }
@@ -190,6 +207,15 @@ public sealed class UpdateService
             return ([], Strings.Get("update.windowsUnreachable"));
         }
     }
+
+    /// <summary>A property that may be missing on an older agent (IUpdate2+) or fail: null then.</summary>
+    private static object? ComValue(Func<object?> read)
+    {
+        try { return read(); }
+        catch (Exception ex) when (ex is COMException or InvalidCastException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { return null; }
+    }
+
+    private static bool ComBool(Func<object?> read) => ComValue(read) is true;
 
     private static bool RebootRequired()
     {

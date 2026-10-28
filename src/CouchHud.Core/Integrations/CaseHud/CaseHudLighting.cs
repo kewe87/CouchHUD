@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using CouchHud.Core.Localization;
 
 namespace CouchHud.Core.Integrations.CaseHud;
@@ -8,89 +7,57 @@ namespace CouchHud.Core.Integrations.CaseHud;
 public sealed record CaseHudLightingSummary(bool Enabled, bool Active);
 
 /// <summary>
-/// One parameter of an effect. Type: number, color, bool, enum or text; keys are a frozen contract on CaseHUD's side.
-/// <see cref="Label"/> is English, <see cref="LabelDe"/> German (featured effects); <see cref="Step"/> is the step of a number.
+/// An effect CaseHUD offers. Only <see cref="Featured"/> ones are shown; any name GET returned is accepted. Its parameters are not read:
+/// CaseHUD keeps them per effect and they are set in its window. <see cref="Name"/> stays as CaseHUD sent it (it goes back in a PATCH);
+/// <see cref="Display"/> is the name as the page may show it when there is no label: cleaned and capped like a label.
 /// </summary>
-public sealed record CaseHudEffectParam(
-    string Key, string Type, double? Min = null, double? Max = null, JsonElement? Default = null, IReadOnlyList<string>? Values = null,
-    string? Label = null, string? LabelDe = null, double? Step = null);
-
-/// <summary>An effect CaseHUD offers. Only <see cref="Featured"/> ones are shown; any name GET returned is accepted.</summary>
-public sealed record CaseHudEffect(string Name, string? Label = null, bool Featured = false, IReadOnlyList<CaseHudEffectParam>? Params = null, string? LabelDe = null);
+public sealed record CaseHudEffect(string Name, string? Label = null, bool Featured = false, string? LabelDe = null, string Display = "");
 
 /// <summary>
-/// A lighting device (controller, strip). <see cref="State"/>: ok, conflict, disabled or error, with an optional <see cref="Message"/>; both are only shown.
-/// From the couch only <see cref="Disabled"/> is changed; settings and ignoreConflicts are CaseHUD-window-only (403 gui_only).
+/// GET /api/v1/lighting, and the answer of every PATCH, as far as the couch needs it: on/off, brightness, the effect and the list to choose from.
+/// <see cref="EffectDisplay"/> is the current effect's name cleaned for the page (for an effect that is not in the list).
 /// </summary>
-public sealed record CaseHudLightingDevice(string Id, string Name = "", bool Disabled = false, string Backend = "", string State = "", string? Message = null, bool IgnoreConflicts = false);
-
-/// <summary>GET /api/v1/lighting, and the answer of every PATCH (the full state, the same shape).</summary>
-public sealed record CaseHudLightingState(
-    bool Enabled, int Brightness, string Effect = "", Dictionary<string, JsonElement>? Params = null,
-    IReadOnlyList<CaseHudLightingDevice>? Devices = null, IReadOnlyList<CaseHudEffect>? Effects = null);
+public sealed record CaseHudLightingState(bool Enabled, int Brightness, string Effect = "", IReadOnlyList<CaseHudEffect>? Effects = null, string EffectDisplay = "");
 
 /// <summary>
 /// The rules for lighting between the page and CaseHUD: which build has it, how its refusals read, and what a PATCH may contain.
 /// The page sends JSON through the bridge; only what passes <see cref="BuildPatch"/> goes on to CaseHUD, checked against the last state.
-/// CaseHUD merges a PATCH: unsent fields, params, devices and zones keep their values, so the page sends only what changed.
+/// From the couch: on/off, brightness and the effect. Effect parameters, devices and zones are built in CaseHUD's window (CaseHUD merges a
+/// PATCH, so they keep their values).
 /// </summary>
-public static partial class CaseHudLighting
+public static class CaseHudLighting
 {
-    public const int MaxDevices = 64;
-
-    /// <summary>What is taken from an answer of CaseHUD: at most this many effects, params, values and devices, strings at most this long.</summary>
+    /// <summary>What is taken from an answer of CaseHUD: at most this many effects, strings at most this long.</summary>
     public const int MaxEntries = 128;
     public const int MaxString = 128;
 
     /// <summary>
-    /// GET /lighting (or a PATCH answer) read defensively: entries beyond <see cref="MaxEntries"/> and strings longer than
-    /// <see cref="MaxString"/> are dropped, an effect, param or device without a string name/key/id is skipped, wrong types fall back
-    /// to their default. A broken entry costs that entry, not the page. Null when the answer is no object at all.
+    /// GET /lighting (or a PATCH answer) read defensively: effects beyond <see cref="MaxEntries"/> and strings longer than
+    /// <see cref="MaxString"/> are dropped, an effect without a string name is skipped, wrong types fall back to their default.
+    /// Params, devices and zones are not read. A broken entry costs that entry, not the page. Null when the answer is no object at all.
     /// </summary>
     public static CaseHudLightingState? Parse(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object) return null;
         var effects = Items(root, "effects").Select(ParseEffect).OfType<CaseHudEffect>().ToList();
-        var devices = Items(root, "devices").Select(ParseDevice).OfType<CaseHudLightingDevice>().ToList();
-        var parameters = new Dictionary<string, JsonElement>();
-        if (root.TryGetProperty("params", out var ps) && ps.ValueKind == JsonValueKind.Object)
-            foreach (var p in ps.EnumerateObject())
-            {
-                if (parameters.Count >= MaxEntries) break;
-                if (p.Name.Length > MaxString || !Scalar(p.Value)) continue;
-                parameters[p.Name] = p.Value.Clone();
-            }
         var brightness = Number(root, "brightness") is { } b ? (int)Math.Round(Math.Clamp(b, 0, 100)) : 0;
-        return new CaseHudLightingState(Bool(root, "enabled"), brightness, Text(root, "effect") ?? "", parameters, devices, effects);
+        var effect = Text(root, "effect") ?? "";
+        return new CaseHudLightingState(Bool(root, "enabled"), brightness, effect, effects, SafeMessage(effect, MaxLabel));
     }
 
-    private static CaseHudEffect? ParseEffect(JsonElement e)
-    {
-        if (Text(e, "name") is not { Length: > 0 } name) return null;
-        var parameters = Items(e, "params").Select(ParseParam).OfType<CaseHudEffectParam>().ToList();
-        return new CaseHudEffect(name, Text(e, "label"), Bool(e, "featured"), parameters, Text(e, "labelDe"));
-    }
+    /// <summary>What the page shows of an effect is at most this many text elements long.</summary>
+    public const int MaxLabel = 64;
 
-    private static CaseHudEffectParam? ParseParam(JsonElement p)
-    {
-        if (Text(p, "key") is not { Length: > 0 } key || Text(p, "type") is not { Length: > 0 } type) return null;
-        JsonElement? def = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("default", out var d) && Scalar(d) ? d.Clone() : null;
-        var values = Items(p, "values").Where(v => v.ValueKind == JsonValueKind.String && v.GetString()!.Length <= MaxString)
-            .Select(v => v.GetString()!).ToList();
-        // A step that is no positive number is no step (the page falls back to its own guess).
-        var step = Number(p, "step") is > 0 and var s ? s : (double?)null;
-        return new CaseHudEffectParam(key, type, Number(p, "min"), Number(p, "max"), def, values.Count > 0 ? values : null, Text(p, "label"), Text(p, "labelDe"), step);
-    }
+    /// <summary>
+    /// The labels and the display name are shown on the page: cleaned like a message (no control or bidi characters) and capped at
+    /// <see cref="MaxLabel"/> text elements. The name itself stays raw, it is what a PATCH sends back.
+    /// </summary>
+    private static CaseHudEffect? ParseEffect(JsonElement e) =>
+        Text(e, "name") is { Length: > 0 } name
+            ? new CaseHudEffect(name, Label(e, "label"), Bool(e, "featured"), Label(e, "labelDe"), SafeMessage(name, MaxLabel))
+            : null;
 
-    /// <summary>A device needs a string id; a name that is there but no short string drops the device too. Settings and zones are not read (never sent).</summary>
-    private static CaseHudLightingDevice? ParseDevice(JsonElement d)
-    {
-        if (Text(d, "id") is not { Length: > 0 } id) return null;
-        var name = Text(d, "name");
-        if (name is null && d.TryGetProperty("name", out _)) return null;
-        var state = Text(d, "state") is "ok" or "conflict" or "disabled" or "error" ? Text(d, "state")! : "";
-        return new CaseHudLightingDevice(id, name ?? "", Bool(d, "disabled"), Text(d, "backend") ?? "", state, Text(d, "message"), Bool(d, "ignoreConflicts"));
-    }
+    private static string? Label(JsonElement e, string name) => Text(e, name) is { } raw && SafeMessage(raw, MaxLabel) is { Length: > 0 } clean ? clean : null;
 
     /// <summary>The first <see cref="MaxEntries"/> entries of a list; the rest is dropped.</summary>
     private static IEnumerable<JsonElement> Items(JsonElement e, string name) =>
@@ -104,14 +71,6 @@ public static partial class CaseHudLighting
 
     private static double? Number(JsonElement e, string name) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var n) && double.IsFinite(n) ? n : null;
-
-    /// <summary>A param value or default: a number, a bool or a string of at most <see cref="MaxString"/> characters. Lists and objects are not taken.</summary>
-    private static bool Scalar(JsonElement v) => v.ValueKind switch
-    {
-        JsonValueKind.String => v.GetString()!.Length <= MaxString,
-        JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => true,
-        _ => false
-    };
 
     /// <summary>The build has /lighting when its status carries <c>lighting</c>; older builds lack it and must not be asked.</summary>
     public static bool Supported(CaseHudStatus? status) => status?.Lighting is not null;
@@ -134,7 +93,7 @@ public static partial class CaseHudLighting
 
     /// <summary>
     /// A readable text for the other refusals of /lighting (error format {"error":{"code","message"}}): 400 bad_request (with CaseHUD's
-    /// message, shortened), 413 payload_too_large, 500 internal (device I/O, worth another try), 401/403 forbidden or unauthorized, 405.
+    /// message, shortened), 413 payload_too_large, 500 internal (device I/O, worth another try), 401/403 forbidden or unauthorized, 404, 405.
     /// Codes this version does not know keep CaseHUD's own message.
     /// </summary>
     public static string ErrorText(CaseHudException ex)
@@ -146,7 +105,9 @@ public static partial class CaseHudLighting
             ("bad_request", _) or (_, 400) => Strings.Get("casehud.err.badRequest", message),
             ("payload_too_large", _) or (_, 413) => Strings.Get("casehud.err.tooLarge"),
             ("internal", _) or (_, 500) => Strings.Get("casehud.err.internal"),
-            ("forbidden" or "unauthorized", _) or (_, 401 or 403) => Strings.Get("casehud.err.forbidden"),
+            ("unauthorized", _) => Strings.Get("casehud.err.unauthorized"),
+            ("forbidden", _) or (_, 401 or 403) => Strings.Get("casehud.err.forbidden"),
+            ("not_found", _) or (_, 404) => Strings.Get("casehud.err.notFound"),
             (_, 405) => Strings.Get("casehud.err.notAllowed"),
             _ => message
         };
@@ -156,9 +117,9 @@ public static partial class CaseHudLighting
 
     /// <summary>
     /// CaseHUD's message as it may be shown: control and format characters removed (bidi overrides, zero-width marks), cut after
-    /// <see cref="MaxMessage"/> text elements, so a surrogate pair or a combined character is never split.
+    /// <paramref name="max"/> (default <see cref="MaxMessage"/>) text elements, so a surrogate pair or a combined character is never split.
     /// </summary>
-    public static string SafeMessage(string? message)
+    public static string SafeMessage(string? message, int max = MaxMessage)
     {
         if (string.IsNullOrEmpty(message)) return "";
         var clean = new System.Text.StringBuilder(message.Length);
@@ -171,26 +132,21 @@ public static partial class CaseHudLighting
         }
         var text = clean.ToString().Trim();
         var info = new System.Globalization.StringInfo(text);
-        return info.LengthInTextElements > MaxMessage ? info.SubstringByTextElements(0, MaxMessage) + "…" : text;
+        return info.LengthInTextElements > max ? info.SubstringByTextElements(0, max) + "…" : text;
     }
 
-    [GeneratedRegex("^#[0-9a-fA-F]{6}$")]
-    private static partial Regex ColorPattern();
-
-    private static readonly HashSet<string> Fields = ["enabled", "brightness", "effect", "params", "devices"];
+    private static readonly HashSet<string> Fields = ["enabled", "brightness", "effect"];
 
     /// <summary>
-    /// A PATCH body from what the page sent, against the last state: only known fields, brightness clamped to 0..100, an effect the
-    /// state listed, params of the effect in force (the new one when effect and params come together) by their descriptors, and
-    /// devices as an object keyed by a known id with nothing but <c>disabled</c>. Text params and types this version does not know are
-    /// never sent. Anything else throws <see cref="ArgumentException"/>; nothing of the page's JSON is passed on as it is.
+    /// A PATCH body from what the page sent, against the last state: only enabled, brightness (clamped to 0..100) and an effect the state
+    /// listed. Params, devices and anything else throw <see cref="ArgumentException"/>; nothing of the page's JSON is passed on as it is.
     /// </summary>
     public static Dictionary<string, object> BuildPatch(JsonElement patch, CaseHudLightingState last)
     {
         if (patch.ValueKind != JsonValueKind.Object) throw new ArgumentException("lighting: patch must be an object");
         var body = new Dictionary<string, object>();
         foreach (var field in patch.EnumerateObject())
-            if (!Fields.Contains(field.Name)) throw new ArgumentException($"lighting: unknown field {field.Name}");
+            if (!Fields.Contains(field.Name)) throw new ArgumentException($"lighting: {field.Name} cannot be set here");
 
         if (patch.TryGetProperty("enabled", out var enabled))
             body["enabled"] = enabled.ValueKind switch
@@ -207,97 +163,14 @@ public static partial class CaseHudLighting
             body["brightness"] = (int)Math.Round(Math.Clamp(b, 0, 100));
         }
 
-        var effect = last.Effects?.FirstOrDefault(e => e.Name == last.Effect);
         if (patch.TryGetProperty("effect", out var name))
         {
             if (name.ValueKind != JsonValueKind.String) throw new ArgumentException("lighting: effect must be a string");
             var wanted = name.GetString();
-            effect = last.Effects?.FirstOrDefault(e => e.Name == wanted) ?? throw new ArgumentException("lighting: unknown effect");
-            body["effect"] = effect.Name;
-        }
-
-        if (patch.TryGetProperty("params", out var parameters))
-        {
-            if (parameters.ValueKind != JsonValueKind.Object) throw new ArgumentException("lighting: params must be an object");
-            if (effect is null) throw new ArgumentException("lighting: no effect to set params for");
-            var values = new Dictionary<string, object>();
-            foreach (var p in parameters.EnumerateObject())
-            {
-                var descriptor = effect.Params?.FirstOrDefault(d => d.Key == p.Name) ?? throw new ArgumentException($"lighting: unknown param {p.Name}");
-                values[descriptor.Key] = ParamValue(descriptor, p.Value);
-            }
-            if (values.Count > 0) body["params"] = values;
-        }
-
-        if (patch.TryGetProperty("devices", out var devices))
-        {
-            // CaseHUD merges by id: {"devices":{"<id>":{"disabled":true}}}. Settings and ignoreConflicts are window-only.
-            if (devices.ValueKind != JsonValueKind.Object) throw new ArgumentException("lighting: devices must be an object keyed by id");
-            var map = new Dictionary<string, object>();
-            foreach (var d in devices.EnumerateObject())
-            {
-                if (map.Count >= MaxDevices) throw new ArgumentException("lighting: too many devices");
-                if (last.Devices?.Any(x => x.Id == d.Name) != true || map.ContainsKey(d.Name)) throw new ArgumentException("lighting: unknown device");
-                if (d.Value.ValueKind != JsonValueKind.Object) throw new ArgumentException("lighting: device must be an object");
-                foreach (var f in d.Value.EnumerateObject())
-                    if (f.Name != "disabled") throw new ArgumentException($"lighting: device field {f.Name} cannot be set here");
-                if (!d.Value.TryGetProperty("disabled", out var off) || off.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-                    throw new ArgumentException("lighting: device needs disabled true or false");
-                map[d.Name] = new Dictionary<string, object> { ["disabled"] = off.ValueKind == JsonValueKind.True };
-            }
-            if (map.Count > 0) body["devices"] = map;
+            body["effect"] = last.Effects?.FirstOrDefault(e => e.Name == wanted)?.Name ?? throw new ArgumentException("lighting: unknown effect");
         }
 
         if (body.Count == 0) throw new ArgumentException("lighting: nothing to change");
         return body;
-    }
-
-    private static object ParamValue(CaseHudEffectParam d, JsonElement v)
-    {
-        switch (d.Type)
-        {
-            case "number":
-            {
-                // Without both bounds there is nothing to clamp to: such a param is not set from the couch.
-                if (d.Min is not { } min || d.Max is not { } max || min > max) throw new ArgumentException($"lighting: {d.Key} has no range");
-                if (v.ValueKind != JsonValueKind.Number || !v.TryGetDouble(out var n) || !double.IsFinite(n)) throw new ArgumentException($"lighting: {d.Key} must be a number");
-                n = Math.Clamp(n, min, max);
-                // Whole numbers stay whole; a decimal step keeps two places at most (0.1 + 0.2 is not 0.30000000000000004 on the wire).
-                var rounded = Integral(d) ? Math.Round(n, MidpointRounding.AwayFromZero) : Math.Round(n, 2, MidpointRounding.AwayFromZero);
-                // Rounding may step over a bound that is not on the grid (max 4.5 with whole steps, min 0.333): clamp again.
-                return Math.Clamp(rounded, min, max);
-            }
-            case "color":
-            {
-                var s = v.ValueKind == JsonValueKind.String ? v.GetString()! : "";
-                if (!ColorPattern().IsMatch(s)) throw new ArgumentException($"lighting: {d.Key} must be a color #rrggbb");
-                return s.ToLowerInvariant();
-            }
-            case "bool":
-                return v.ValueKind switch
-                {
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    _ => throw new ArgumentException($"lighting: {d.Key} must be true or false")
-                };
-            case "enum":
-            {
-                var s = v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-                if (s is null || d.Values?.Contains(s) != true) throw new ArgumentException($"lighting: {d.Key} has no such value");
-                return s;
-            }
-            default:
-                // Text has no clean controller input and is never sent; a type this version does not know neither.
-                throw new ArgumentException($"lighting: {d.Key} cannot be set here");
-        }
-    }
-
-    /// <summary>Whole numbers: the step says so when there is one, else integer bounds and default.</summary>
-    private static bool Integral(CaseHudEffectParam d)
-    {
-        static bool Whole(double? x) => x is null || x == Math.Floor(x.Value);
-        if (d.Step is { } step) return Whole(step) && Whole(d.Min);
-        var def = d.Default is { ValueKind: JsonValueKind.Number } e && e.TryGetDouble(out var x) ? x : (double?)null;
-        return Whole(d.Min) && Whole(d.Max) && Whole(def);
     }
 }

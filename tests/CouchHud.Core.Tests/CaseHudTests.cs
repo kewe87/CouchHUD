@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using CouchHud.Core.Integrations.CaseHud;
 using CouchHud.Core.Localization;
 using CouchHud.Core.Plugins;
@@ -312,10 +313,8 @@ public class CaseHudTests : IDisposable
     {
         var (client, handler) = Client((_, _) => Json("[]"));
         await client.PanelsAsync();
-        await client.DesignsAsync();
         await client.SetsAsync();
         await client.ScenesAsync();
-        await client.CommunityAsync();
         await client.ActivateSceneAsync("night");
         await client.NextSceneAsync();
         await client.SetRotationAsync(true);
@@ -323,20 +322,21 @@ public class CaseHudTests : IDisposable
         await client.SetAwtrixAsync(true);
         await client.IdentifyAsync(null);
         await client.IdentifyAsync("p1");
-        await client.ImportCommunityAsync("c 1");
         await client.ApplySetAsync("neon", "dark", ["p1", "p2"]);
+        await client.SetAutomationAsync(false);
         await client.QuitAsync();
         Assert.Equal(
         [
-            "GET /api/v1/panels", "GET /api/v1/designs", "GET /api/v1/sets", "GET /api/v1/scenes", "GET /api/v1/community",
+            "GET /api/v1/panels", "GET /api/v1/sets", "GET /api/v1/scenes",
             "POST /api/v1/scenes/night/activate", "POST /api/v1/rotation/next", "PATCH /api/v1/rotation", "POST /api/v1/power",
-            "PATCH /api/v1/awtrix", "POST /api/v1/identify", "POST /api/v1/panels/p1/identify", "POST /api/v1/community/c%201/import",
-            "POST /api/v1/sets/apply", "POST /api/v1/quit"
+            "PATCH /api/v1/awtrix", "POST /api/v1/identify", "POST /api/v1/panels/p1/identify",
+            "POST /api/v1/sets/apply", "PATCH /api/v1/automation", "POST /api/v1/quit"
         ], handler.Requests.Select(r => $"{r.Method} {r.Url.AbsolutePath}"));
         Assert.All(handler.Requests, r => Assert.Equal(Token, r.Token));
-        Assert.Equal("""{"enabled":true}""", handler.Requests[7].Body);
-        Assert.Equal("""{"on":false}""", handler.Requests[8].Body);
-        Assert.Equal("""{"set":"neon","theme":"dark","panels":["p1","p2"]}""", handler.Requests[13].Body);
+        Assert.Equal("""{"enabled":true}""", handler.Requests[5].Body);
+        Assert.Equal("""{"on":false}""", handler.Requests[6].Body);
+        Assert.Equal("""{"set":"neon","theme":"dark","panels":["p1","p2"]}""", handler.Requests[10].Body);
+        Assert.Equal("""{"enabled":false}""", handler.Requests[11].Body);
     }
 
     [Fact]
@@ -353,6 +353,29 @@ public class CaseHudTests : IDisposable
         Assert.Equal(HttpMethod.Patch, handler.Requests.Single().Method);
     }
 
+    [Theory]
+    [InlineData("""{"mode":"media"}""", "media", null, null)]
+    [InlineData("""{"theme":"light","brightness":40}""", null, 40, "light")]
+    public void Panel_patch_from_the_page_takes_mode_brightness_and_theme(string json, string? mode, int? brightness, string? theme)
+    {
+        var patch = CaseHudPanelPatch.FromJson(System.Text.Json.JsonDocument.Parse(json).RootElement);
+        Assert.Equal(new CaseHudPanelPatch(mode, brightness, theme), patch);
+    }
+
+    [Theory]
+    // Design and mounting (rotation) are set in CaseHUD's window, not from the couch.
+    [InlineData("""{"design":"neon-cpu"}""")]
+    [InlineData("""{"rotation":90}""")]
+    [InlineData("""{"brightness":50,"rotation":180}""")]
+    [InlineData("""{"mode":"party"}""")]
+    [InlineData("""{"theme":7}""")]
+    [InlineData("""{"brightness":"50"}""")]
+    [InlineData("""{"brightness":1.5}""")]
+    [InlineData("""{}""")]
+    [InlineData("""[]""")]
+    public void Panel_patch_from_the_page_refuses_anything_else(string json) =>
+        Assert.Throws<ArgumentException>(() => CaseHudPanelPatch.FromJson(System.Text.Json.JsonDocument.Parse(json).RootElement));
+
     [Fact]
     public async Task Gaming_lease_sends_game_and_seconds_and_ending_only_active_false()
     {
@@ -366,12 +389,123 @@ public class CaseHudTests : IDisposable
     [Fact]
     public async Task Error_format_gives_code_message_and_status()
     {
-        var (client, _) = Client((_, _) => Json("""{"error":{"code":"not_found","message":"no such panel"}}""", HttpStatusCode.NotFound));
-        var ex = await Assert.ThrowsAsync<CaseHudException>(() => client.PatchPanelAsync("zzz", new CaseHudPanelPatch(Mode: "hud")));
-        Assert.Equal("not_found", ex.Code);
-        Assert.Equal("no such panel", ex.Message);
-        Assert.Equal(404, ex.Status);
+        var (client, _) = Client((_, _) => Json("""{"error":{"code":"bad_request","message":"brightness must be 0-100"}}""", HttpStatusCode.BadRequest));
+        var ex = await Assert.ThrowsAsync<CaseHudException>(() => client.PatchPanelAsync("p1", new CaseHudPanelPatch(Mode: "hud")));
+        Assert.Equal("bad_request", ex.Code);
+        Assert.Equal("brightness must be 0-100", ex.Message);
+        Assert.Equal(400, ex.Status);
         Assert.DoesNotContain(Token, ex.Message);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "not_found", "casehud.err.notFound")]
+    [InlineData(HttpStatusCode.Forbidden, "unauthorized", "casehud.err.unauthorized")]
+    [InlineData(HttpStatusCode.Forbidden, "forbidden", "casehud.err.forbidden")]
+    public async Task Refusals_get_our_own_text_not_casehuds_english(HttpStatusCode status, string code, string key)
+    {
+        var (client, _) = Client((_, _) => Json("{\"error\":{\"code\":\"" + code + "\",\"message\":\"no such scene: Night\"}}", status));
+        var ex = await Assert.ThrowsAsync<CaseHudException>(() => client.ActivateSceneAsync("Night"));
+        Assert.Equal(code, ex.Code);
+        Assert.Equal((int)status, ex.Status);
+        Assert.Equal(CouchHud.Core.Localization.Strings.Get(key), ex.Message);
+        Assert.DoesNotContain("no such scene", ex.Message);
+    }
+
+    [Fact]
+    public void Status_reads_automation_and_conflicts_and_cleans_the_names()
+    {
+        var json = StatusJson.Replace("\"updateAvailable\"", """
+            "automation":{"enabled":true,"activeRule":0,"when":"game","scene":"Gaming"},
+            "conflicts":["OpenRGB.exe","\u202Eexe.LCM\u0007",7,null,"","openrgb.exe","a1","a2","a3","a4","a5","a6","a7","a8"],
+            "updateAvailable"
+            """);
+        var s = System.Text.Json.JsonSerializer.Deserialize<CaseHudStatus>(json, CaseHudJson.Options)!;
+        Assert.True(s.Automation!.Enabled);
+        Assert.Equal(0, s.Automation.ActiveRule);
+        Assert.Equal(CaseHudConflictsConverter.MaxCount, s.Conflicts!.Count);
+        Assert.Equal("OpenRGB.exe", s.Conflicts[0]);
+        Assert.Equal("exe.LCM", s.Conflicts[1]);          // bidi override and bell removed
+        Assert.DoesNotContain("openrgb.exe", s.Conflicts); // the same name once
+        Assert.DoesNotContain("", s.Conflicts);
+        var longName = System.Text.Json.JsonSerializer.Deserialize<CaseHudStatus>(StatusJson.Replace("\"updateAvailable\"", "\"conflicts\":[\"" + new string('x', 300) + "\"],\"updateAvailable\""), CaseHudJson.Options)!;
+        Assert.Equal(CaseHudConflictsConverter.MaxLength + 1, longName.Conflicts![0].Length);   // cut, with an ellipsis
+    }
+
+    [Theory]
+    [InlineData("\"scene\":\"Night\",", "Night")]
+    [InlineData("\"scene\":\"\",", "")]                       // no saved scene on screen: "", not "unknown"
+    [InlineData("", null)]                                        // older build: the page falls back to /scenes, then rotation.scene
+    [InlineData("\"scene\":7,", null)]
+    [InlineData("\"scene\":\"\\u202ENight\\u0000\",", "Night")]
+    public void Status_reads_the_scene_on_screen(string field, string? expected)
+    {
+        var s = System.Text.Json.JsonSerializer.Deserialize<CaseHudStatus>(StatusJson.Replace("\"updateAvailable\"", field + "\"updateAvailable\""), CaseHudJson.Options)!;
+        Assert.Equal(expected, s.Scene);
+        Assert.Equal("gaming", s.Rotation.Scene);
+    }
+
+    [Fact]
+    public void Names_are_cleaned_for_the_page_but_ids_stay_raw()
+    {
+        // Scenes are activated by id, displays addressed by id, sets applied by set and theme: those stay as CaseHUD sent them.
+        var scenes = JsonSerializer.Deserialize<List<CaseHudScene>>(
+            "[{\"id\":\"n\\u202Eight\",\"name\":\"\\u202ENight\\u0007\",\"active\":true},{\"id\":\"x\",\"name\":7,\"active\":false},{\"id\":\"y\",\"active\":false}]", CaseHudJson.Options)!;
+        Assert.Equal("n\u202Eight", scenes[0].Id);
+        Assert.Equal("Night", scenes[0].Name);
+        Assert.Equal("", scenes[1].Name);   // no string: empty, never null
+        Assert.Null(scenes[2].Name);        // missing: like any missing field (the page shows it as empty text)
+        var sets = JsonSerializer.Deserialize<List<CaseHudSet>>("[{\"set\":\"neon\",\"theme\":\"dark\",\"name\":\"" + new string('n', 200) + "\"}]", CaseHudJson.Options)!;
+        Assert.Equal("neon", sets[0].Set);
+        Assert.Equal(CaseHudNameConverter.MaxLength + 1, sets[0].Name.Length);   // cut, with an ellipsis
+        var status = JsonSerializer.Deserialize<CaseHudStatus>(StatusJson.Replace("\"Fan 1\"", "\"Fan\\u200B 1\\u202E\""), CaseHudJson.Options)!;
+        Assert.Equal("Fan 1", status.Panels[0].Name);
+        Assert.Equal("p1", status.Panels[0].Id);
+        var panels = JsonSerializer.Deserialize<List<CaseHudPanel>>("[{\"id\":\"p\\u0001\",\"name\":null}]", CaseHudJson.Options)!;
+        Assert.Equal("p\u0001", panels[0].Id);
+        Assert.Equal("", panels[0].Name);
+    }
+
+    private static readonly CaseHudSet[] Sets = [new("neon", "dark", "Neon (dark)"), new("neon", "light", "Neon (light)"), new("mono", "dark", "Mono")];
+    private static JsonElement Ids(string json) => JsonDocument.Parse(json).RootElement;
+
+    [Fact]
+    public void Apply_set_takes_only_listed_styles_known_themes_and_known_displays()
+    {
+        var all = CaseHudSets.Check("neon", "light", default, Sets, null);
+        Assert.Equal(new CaseHudSetApply("neon", "light", null), all);
+        Assert.Null(CaseHudSets.Check("neon", "dark", Ids("[]"), Sets, null).Panels);
+        Assert.Null(CaseHudSets.Check("neon", "dark", Ids("null"), Sets, null).Panels);
+        // Theme outside the documented two, a style /sets does not list, a style only listed in the other theme.
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("neon", "neon", default, Sets, null));
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("neon", "Dark", default, Sets, null));
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("evil", "dark", default, Sets, null));
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("mono", "light", default, Sets, null));
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("neon", "dark", default, [], null));
+        // Displays: only known ids, each once; unknown ones are dropped.
+        var some = CaseHudSets.Check("neon", "dark", Ids("[\"p1\",\"zz\",\"p1\",\"p2\"]"), Sets, ["p1", "p2", "p3"]);
+        Assert.Equal(["p1", "p2"], some.Panels!);
+        // A list without any known display must not become "all displays".
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("neon", "dark", Ids("[\"zz\"]"), Sets, ["p1"]));
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("neon", "dark", Ids("[\"p1\"]"), Sets, null));
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("neon", "dark", Ids("[\"p1\",7]"), Sets, ["p1"]));
+        var many = "[" + string.Join(",", Enumerable.Range(0, CaseHudSets.MaxPanels + 1).Select(i => $"\"p{i}\"")) + "]";
+        var known = Enumerable.Range(0, CaseHudSets.MaxPanels + 1).Select(i => $"p{i}").ToList();
+        Assert.Throws<ArgumentException>(() => CaseHudSets.Check("neon", "dark", Ids(many), Sets, known));
+        var max = "[" + string.Join(",", Enumerable.Range(0, CaseHudSets.MaxPanels).Select(i => $"\"p{i}\"")) + "]";
+        Assert.Equal(CaseHudSets.MaxPanels, CaseHudSets.Check("neon", "dark", Ids(max), Sets, known).Panels!.Count);
+    }
+
+    [Theory]
+    [InlineData("\"conflicts\":\"OpenRGB.exe\",")]
+    [InlineData("\"conflicts\":{\"a\":1},")]
+    [InlineData("\"conflicts\":null,")]
+    [InlineData("")]
+    public void Status_without_a_conflict_list_has_none(string field)
+    {
+        var s = System.Text.Json.JsonSerializer.Deserialize<CaseHudStatus>(StatusJson.Replace("\"updateAvailable\"", field + "\"updateAvailable\""), CaseHudJson.Options)!;
+        Assert.True(s.Conflicts is null || s.Conflicts.Count == 0);
+        Assert.Null(s.Automation);
+        Assert.Equal("1.2.0", s.UpdateAvailable);
     }
 
     [Fact]
@@ -420,13 +554,13 @@ public class CaseHudTests : IDisposable
     public async Task Previews_come_back_as_bytes_with_size()
     {
         var (client, handler) = Client((_, _) => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([1, 2, 3]) });
-        Assert.Equal([1, 2, 3], await client.PreviewAsync("design", "d1", 200));
-        await client.PreviewAsync("panel", "p1");
-        await client.PreviewAsync("community", "c1");
-        Assert.Equal("/api/v1/designs/d1/preview.png?size=200", handler.Requests[0].Url.PathAndQuery);
+        Assert.Equal([1, 2, 3], await client.PanelPreviewAsync("p1", 200));
+        await client.PanelPreviewAsync("p1");
+        await client.PanelPreviewAsync("p1", 9999);
+        Assert.Equal("/api/v1/panels/p1/preview.png?size=200", handler.Requests[0].Url.PathAndQuery);
         Assert.Equal("/api/v1/panels/p1/preview.png", handler.Requests[1].Url.PathAndQuery);
-        Assert.Equal("/api/v1/community/c1/preview.png", handler.Requests[2].Url.PathAndQuery);
-        await Assert.ThrowsAsync<CaseHudException>(() => client.PreviewAsync("secret", "x"));
+        Assert.Equal("/api/v1/panels/p1/preview.png?size=480", handler.Requests[2].Url.PathAndQuery);
+        await Assert.ThrowsAsync<CaseHudException>(() => client.PanelPreviewAsync(".."));
     }
 
     // ---- events
@@ -1009,15 +1143,34 @@ public class CaseHudTests : IDisposable
     [InlineData("caseHudPatchPanel", false)]
     [InlineData("caseHudApplySet", false)]
     [InlineData("caseHudRotation", false)]
+    [InlineData("caseHudAutomation", false)]
     [InlineData("caseHudNextScene", true)]
-    [InlineData("caseHudImport", false)]
     [InlineData("caseHudAwtrix", false)]
     [InlineData("caseHudInstall", false)]
     [InlineData("caseHudUpdate", false)]
     [InlineData("caseHudStart", false)]
     [InlineData("caseHudOpenGui", false)]
-    [InlineData("caseHudDesigns", false)]
-    [InlineData("caseHudCommunity", false)]
+    [InlineData("caseHudPatchLighting", false)]
     public void Couch_lock_allows_only_status_scene_power_and_identify(string method, bool open) =>
         Assert.Equal(open, CaseHudPolicy.OpenWhileLocked.Contains(method));
+
+    [Theory]
+    // Building and importing is done in CaseHUD's window: these calls are gone, so the host refuses them locked or not.
+    [InlineData("caseHudDesigns")]
+    [InlineData("caseHudCommunity")]
+    [InlineData("caseHudImport")]
+    public void Removed_editor_calls_are_unknown(string method)
+    {
+        Assert.DoesNotContain(method, CaseHudPolicy.All);
+        Assert.False(CaseHudPolicy.Allowed(method, locked: false));
+    }
+
+    [Fact]
+    public void Automation_switch_needs_the_unlock_like_the_rotation()
+    {
+        Assert.Contains("caseHudAutomation", CaseHudPolicy.All);
+        Assert.False(CaseHudPolicy.Allowed("caseHudAutomation", locked: true));
+        Assert.True(CaseHudPolicy.Allowed("caseHudAutomation", locked: false));
+        Assert.Equal(CaseHudPolicy.Allowed("caseHudRotation", locked: true), CaseHudPolicy.Allowed("caseHudAutomation", locked: true));
+    }
 }

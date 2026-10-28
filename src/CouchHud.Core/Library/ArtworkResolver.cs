@@ -90,7 +90,26 @@ public sealed partial class ArtworkResolver
         // Clear logos only come from SteamGridDB for entries that already have a cover.
         || (item.Art.Logo.Count == 0 && _apiKey.Length > 0);
 
-    private static string Key(LibraryItem item) => $"{item.Type}:{Normalize(item.Name)}".ToLowerInvariant();
+    /// <summary>The store entry the user picked for an entry (an app id or "none"), by item id; null: automatic. Set by the library.</summary>
+    public Func<string, string?> StoreMatchOf { get; set; } = _ => null;
+
+    /// <summary>A picked store entry has its own cache line, so changing the pick never reuses the art of the old one.</summary>
+    private string Key(LibraryItem item) => StoreMatchOf(item.Id) is { } match && (match == StoreMatches.None || StoreMatches.IsAppId(match))
+        ? $"{item.Type}:store:{match}".ToLowerInvariant()
+        : $"{item.Type}:{Normalize(item.Name)}".ToLowerInvariant();
+
+    /// <summary>
+    /// The Steam app id the art comes from: Steam's own, the picked one, none when "none" was picked, else by name (games only:
+    /// apps of the same name are too often something else).
+    /// </summary>
+    private async Task<string?> StoreAppIdAsync(LibraryItem item, CancellationToken ct)
+    {
+        if (SteamStore.AppIdOf(item) is { } steam) return steam;
+        var match = StoreMatchOf(item.Id);
+        if (match == StoreMatches.None) return null;
+        if (StoreMatches.IsAppId(match)) return match;
+        return item.Type == ItemType.Game ? await _ids.FindAsync(item.Name, ct) : null;
+    }
 
     /// <summary>Entries started from an exe get its icon as the last resort (and as the face of the generated banner).</summary>
     private bool NeedsIcon(LibraryItem item) =>
@@ -187,7 +206,7 @@ public sealed partial class ArtworkResolver
                         try
                         {
                             // Steam's store first (no key, official images), SteamGridDB for what it doesn't have.
-                            var art = item.Type == ItemType.Game ? await FromSteamStore(item, ct) : null;
+                            var art = item.Type == ItemType.Game || StoreMatches.IsAppId(StoreMatchOf(item.Id)) ? await FromSteamStore(item, ct) : null;
                             if (art is null && _apiKey.Length > 0) art = await FromSteamGridDb(item, ct);
                             lock (_cacheLock) _cache[key] = new CacheEntry(art, DateTimeOffset.UtcNow);
                             if (art is not null)
@@ -449,7 +468,7 @@ public sealed partial class ArtworkResolver
 
     private async Task<CachedArt?> FromSteamStore(LibraryItem item, CancellationToken ct)
     {
-        var appId = await _ids.FindAsync(item.Name, ct);
+        var appId = await StoreAppIdAsync(item, ct);
         if (appId is null) return null;
         var found = await _steamAssets.GetAsync(appId, ct);
         // The old fixed names come last: older apps still have them, newer ones only the hashed addresses.

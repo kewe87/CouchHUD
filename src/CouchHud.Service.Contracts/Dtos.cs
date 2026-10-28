@@ -165,12 +165,16 @@ public sealed record JobStartedData(string JobId);
 /// State is "running", "done" or "failed". <see cref="Message"/> is a short code for the client to translate (e.g. "searching",
 /// "installing", "exitCode:5"). <see cref="Updates"/>: what a <see cref="Operation.SearchWindowsUpdates"/> job found.
 /// <see cref="RestartCaseHud"/>: a CaseHUD setup ended, the shell starts CaseHUD again in the user's session (the service never starts
-/// programs in user sessions).
+/// programs in user sessions). <see cref="BytesDone"/> / <see cref="BytesTotal"/>: what a Windows Update download really loads (the
+/// agent's IDownloadProgress), both 0 when unknown or outside the download phase.
 /// </summary>
 public sealed record JobData(string JobId, string State, int Percent, string? Message, int Installed = 0, bool RebootRequired = false,
-    UpdateEntry[]? Updates = null, bool RestartCaseHud = false);
+    UpdateEntry[]? Updates = null, bool RestartCaseHud = false, long BytesDone = 0, long BytesTotal = 0);
 
-/// <summary>One pending Windows update from the service's own search: its UpdateID (a GUID), the title and the largest download.</summary>
+/// <summary>
+/// One pending Windows update from the service's own search: its UpdateID (a GUID), the title and the largest download (the full package
+/// with every variant; not what Windows really loads, never shown as a size).
+/// </summary>
 public sealed record UpdateEntry(string Id, string Title, long MaxDownloadBytes);
 
 /// <summary>

@@ -46,4 +46,11 @@ public static class BrowserUnlock
         if (unlockedUntil - now <= WarnBefore && !warned) return new(unlockedUntil, true, true);
         return new(unlockedUntil, false, warned);
     }
+
+    /// <summary>
+    /// How long the browser has left while the warning is up (null: no warning). The HUD shows it, with a countdown, in the
+    /// full-screen strip the page cannot paint over; it is gone as soon as a person's input extends the unlock (<see cref="Decision.Warned"/> false).
+    /// </summary>
+    public static TimeSpan? WarningLeft(DateTimeOffset now, DateTimeOffset unlockedUntil, bool warned) =>
+        warned && unlockedUntil > now ? unlockedUntil - now : null;
 }

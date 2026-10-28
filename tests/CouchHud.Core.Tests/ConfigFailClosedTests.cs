@@ -32,13 +32,14 @@ public class ConfigFailClosedTests : IDisposable
 
         Assert.Equal(ConfigFault.Invalid, store.Fault);
         Assert.Equal("windows", store.Current.CouchLock);
-        // Changing something while it is broken keeps the file as it is.
-        store.Update(c => c.Sounds = false);
-        store.Update(c => c.Skin = "ps4");
+        // Changing something while it is broken keeps the file as it is, and the stand-in in memory as well.
+        Assert.False(store.Update(c => c.Sounds = false));
+        Assert.False(store.Update(c => c.Skin = "deepsea"));
         Assert.Equal(damaged, File.ReadAllText(File_));
-        Assert.False(store.Current.Sounds);
+        Assert.True(store.Current.Sounds);
+        Assert.NotEqual("deepsea", store.Current.Skin);
         // A copy of the damaged file is kept next to it, as before.
-        Assert.Single(Directory.GetFiles(_dir, "config.json.*.bad"));
+        Assert.Single(Directory.GetFiles(_dir, "config.json.broken-*"));
     }
 
     [Fact]
@@ -61,17 +62,161 @@ public class ConfigFailClosedTests : IDisposable
     }
 
     [Fact]
-    public void A_file_that_was_deleted_while_broken_starts_over_with_defaults()
+    public void A_file_that_was_deleted_while_broken_stays_locked_until_the_folder_goes_as_a_whole()
     {
         File.WriteAllText(File_, "{ broken");
         var store = new ConfigStore(_dir, 1, Quick);
 
+        // Deleting the broken file is no way to an open couch: its copy shows that CouchHUD was set up here.
         File.Delete(File_);
         store.Update(c => c.Sounds = false);
 
+        Assert.Equal(ConfigFault.Missing, store.Fault);
+        Assert.Equal("windows", store.Current.CouchLock);
+        Assert.True(store.Current.Parental.Enabled);
+        Assert.False(File.Exists(File_));
+        Assert.False(new ConfigStore(_dir, 1, Quick).Fault is null);
+
+        // Starting over on purpose: everything of the earlier install gone.
+        foreach (var f in Directory.GetFiles(_dir)) File.Delete(f);
+        store.Update(c => c.Sounds = false);
         Assert.Null(store.Fault);
         Assert.Equal("off", store.Current.CouchLock);
         Assert.True(File.Exists(File_));
+    }
+
+    [Theory]
+    [InlineData("playtime.json")]
+    [InlineData("playtime-kid1.json")]
+    [InlineData("playtime.json.bak")]
+    [InlineData("lockout-profile-kid1.json")]
+    [InlineData("parental.key")]
+    [InlineData("config.json.broken-20261020-123005")]
+    [InlineData("config.json.recovery")]
+    public void Settings_gone_after_an_earlier_install_are_no_first_start(string trace)
+    {
+        File.WriteAllText(Path.Combine(_dir, trace), "{}");
+
+        var store = new ConfigStore(_dir, 1, Quick);
+
+        Assert.Equal(ConfigFault.Missing, store.Fault);
+        Assert.Equal("windows", store.Current.CouchLock);
+        Assert.True(store.Current.Parental.Enabled);
+        // No setup assistant, no notice on the stand-in: it could reset the lock and the parental controls.
+        Assert.True(store.Current.SetupWizardDone > 0);
+        Assert.True(store.Current.AcceptedTerms > 0);
+        // No defaults written over the gap, and nothing saved while it lasts.
+        Assert.False(File.Exists(File_));
+        Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.CouchLock = "off"));
+        Assert.False(File.Exists(File_));
+    }
+
+    [Fact]
+    public void A_refused_change_leaves_the_stand_in_locked_in_memory()
+    {
+        File.WriteAllText(File_, "{ broken");
+        var store = new ConfigStore(_dir, 1, Quick);
+        Assert.Equal(ConfigFault.Invalid, store.Fault);
+
+        // A caller that does not look at the answer (Update, not UpdateOrThrow) must not have opened the couch for this run.
+        Assert.False(store.Update(c =>
+        {
+            c.CouchLock = "off";
+            c.Parental.Enabled = false;
+            c.PasscodeHash = "child";
+        }));
+        Assert.Throws<IOException>(() => store.UpdateOrThrow(c => c.CouchLock = "off"));
+        Assert.Equal("windows", store.Current.CouchLock);
+        Assert.True(store.Current.Parental.Enabled);
+        Assert.Equal("", store.Current.PasscodeHash);
+        Assert.Equal("{ broken", File.ReadAllText(File_));
+
+        // Only the recovery fields go on (into the stand-in and the side file).
+        store.Update(c =>
+        {
+            c.ShellRemovedReason = "watcher";
+            c.PendingShellRestore = true;
+            c.CouchLock = "off";
+        });
+        Assert.Equal("watcher", store.Current.ShellRemovedReason);
+        Assert.True(store.Current.PendingShellRestore);
+        Assert.Equal("windows", store.Current.CouchLock);
+        Assert.True(File.Exists(File_ + ".recovery"));
+    }
+
+    [Fact]
+    public void A_file_in_place_of_the_data_folder_counts_as_an_earlier_install()
+    {
+        var notAFolder = Path.Combine(_dir, "CouchHud");
+        File.WriteAllText(notAFolder, "");
+        Assert.Equal(notAFolder, ConfigStore.EarlierInstallTraces(notAFolder));
+        Assert.Null(ConfigStore.EarlierInstallTraces(Path.Combine(_dir, "missing")));
+        Assert.Null(ConfigStore.EarlierInstallTraces(_dir));
+    }
+
+    [JunctionFact]
+    public void A_data_folder_that_is_a_junction_counts_as_an_earlier_install()
+    {
+        // An empty folder elsewhere, linked in as the data folder: listing it through the link would find nothing.
+        var target = Directory.CreateDirectory(Path.Combine(_dir, "elsewhere")).FullName;
+        var link = Path.Combine(_dir, "CouchHud");
+        Links.Junction(link, target);
+        try
+        {
+            Assert.Equal(link, ConfigStore.EarlierInstallTraces(link));
+            var store = new ConfigStore(link, 1, Quick);
+            Assert.Equal(ConfigFault.Missing, store.Fault);
+            Assert.Equal("windows", store.Current.CouchLock);
+            // Also when its target is gone.
+            foreach (var f in Directory.GetFiles(target)) File.Delete(f);
+            Directory.Delete(target);
+            Assert.Equal(link, ConfigStore.EarlierInstallTraces(link));
+        }
+        finally
+        {
+            // The link itself, not what it points to.
+            Directory.Delete(link);
+        }
+    }
+
+    [Fact]
+    public void Settings_put_back_after_an_earlier_install_are_taken_up_again()
+    {
+        File.WriteAllText(Path.Combine(_dir, "playtime.json"), "{}");
+        var store = new ConfigStore(_dir, 1, Quick);
+        Assert.Equal(ConfigFault.Missing, store.Fault);
+
+        File.WriteAllText(File_, LockedConfig);
+        store.Update(c => c.Sounds = false);
+
+        Assert.Null(store.Fault);
+        Assert.Equal("code", store.Current.CouchLock);
+        Assert.Equal("hash-of-the-parents", store.Current.PasscodeHash);
+    }
+
+    [Fact]
+    public void A_good_copy_still_wins_over_the_traces()
+    {
+        File.WriteAllText(Path.Combine(_dir, "playtime.json"), "{}");
+        File.WriteAllText(File_ + ".bak", LockedConfig);
+
+        var store = new ConfigStore(_dir, 1, Quick);
+
+        Assert.Null(store.Fault);
+        Assert.True(store.RestoredFromBackup);
+        Assert.Equal("code", store.Current.CouchLock);
+    }
+
+    [Fact]
+    public void A_broken_file_without_a_copy_shows_no_setup_assistant()
+    {
+        File.WriteAllText(File_, "{ broken");
+
+        var store = new ConfigStore(_dir, 1, Quick);
+
+        Assert.Equal(ConfigFault.Invalid, store.Fault);
+        Assert.True(store.Current.SetupWizardDone > 0);
+        Assert.True(store.Current.AcceptedTerms > 0);
     }
 
     [Fact]

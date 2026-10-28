@@ -6,6 +6,10 @@ using CouchHud.Sdk;
 
 namespace CouchHud.Core.Library;
 
+/// <summary>One item of Epic's catalog cache.</summary>
+/// <param name="AppName">The app name of the Windows release (what the launcher installs); null without one.</param>
+public sealed record EpicCatalogEntry(string Id, string? Namespace, string? Title, string? AppName, bool IsGame, bool IsAddOn, Artwork Art);
+
 /// <summary>
 /// Artwork the game launchers already keep on this PC, found without any lookup and without a login.
 /// Everything here is read-only and tolerant: a missing or unexpected file simply means no art.
@@ -27,37 +31,55 @@ public static class LauncherArtwork
     public static Dictionary<string, Artwork> ReadEpicCatalog(string? file = null)
     {
         var result = new Dictionary<string, Artwork>(StringComparer.Ordinal);
+        foreach (var e in ReadEpicCatalogEntries(file))
+        {
+            if (e.Art.Cover.Count + e.Art.Hero.Count + e.Art.Logo.Count > 0) result.TryAdd(e.Id, e.Art);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// All items of the launcher's catalog cache: id, namespace, title, the app name of the Windows release, whether it is a game or
+    /// an add-on, and its key images. Somebody else's file in a folder every user may write: size-limited, parsed once per version,
+    /// a broken file gives an empty list, never an exception.
+    /// </summary>
+    public static IReadOnlyList<EpicCatalogEntry> ReadEpicCatalogEntries(string? file = null)
+    {
         try
         {
             file ??= DefaultEpicCatalog;
             var info = new FileInfo(file);
-            if (!info.Exists) return result;
+            if (!info.Exists) return [];
             // Somebody else's file: never read an absurd one, and parse each version of it only once.
             if (info.Length > MaxCatalogBytes)
             {
                 Console.Error.WriteLine($"[epic] catalog cache is {info.Length / (1024 * 1024)} MB, ignored");
-                return result;
+                return [];
             }
             lock (CatalogMemo)
             {
                 if (CatalogMemo.TryGetValue(file, out var memo) && memo.Written == info.LastWriteTimeUtc && memo.Size == info.Length)
-                    return new Dictionary<string, Artwork>(memo.Result, StringComparer.Ordinal);
+                    return memo.Result;
             }
             var text = File.ReadAllText(file).Trim();
             var json = text.StartsWith('[') ? text : Encoding.UTF8.GetString(Convert.FromBase64String(text));
             using var doc = JsonDocument.Parse(json);
+            var result = new List<EpicCatalogEntry>();
             if (doc.RootElement.ValueKind != JsonValueKind.Array) return result;
             foreach (var entry in doc.RootElement.EnumerateArray())
             {
                 if (entry.ValueKind != JsonValueKind.Object) continue;
                 var id = Str(entry, "id");
-                if (id is null || !entry.TryGetProperty("keyImages", out var images) || images.ValueKind != JsonValueKind.Array) continue;
+                if (id is null) continue;
                 var byType = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var image in images.EnumerateArray())
+                if (entry.TryGetProperty("keyImages", out var images) && images.ValueKind == JsonValueKind.Array)
                 {
-                    var type = Str(image, "type");
-                    var url = Str(image, "url");
-                    if (type is not null && url is not null && url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) byType.TryAdd(type, url);
+                    foreach (var image in images.EnumerateArray())
+                    {
+                        var type = Str(image, "type");
+                        var url = Str(image, "url");
+                        if (type is not null && url is not null && url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) byType.TryAdd(type, url);
+                    }
                 }
                 IReadOnlyList<string> First(params string[] types) =>
                     types.Select(t => byType.GetValueOrDefault(t)).OfType<string>().Take(1).ToList();
@@ -67,23 +89,45 @@ public static class LauncherArtwork
                     Hero = First("DieselGameBox", "OfferImageWide", "DieselStoreFrontWide"),
                     Logo = First("DieselGameBoxLogo")
                 };
-                if (art.Cover.Count + art.Hero.Count + art.Logo.Count > 0) result[id] = art;
+                var categories = entry.TryGetProperty("categories", out var cats) && cats.ValueKind == JsonValueKind.Array
+                    ? cats.EnumerateArray().Select(c => Str(c, "path")).OfType<string>().ToList()
+                    : [];
+                // DLCs point to their game; add-ons carry the category "addons".
+                var addOn = entry.TryGetProperty("mainGameItem", out var main) && main.ValueKind == JsonValueKind.Object
+                    || categories.Any(c => c.StartsWith("addons", StringComparison.OrdinalIgnoreCase));
+                result.Add(new EpicCatalogEntry(id, Str(entry, "namespace"), Str(entry, "title"), WindowsAppName(entry),
+                    categories.Contains("games", StringComparer.OrdinalIgnoreCase), addOn, art));
             }
-            lock (CatalogMemo) CatalogMemo[file] = (info.LastWriteTimeUtc, info.Length, new Dictionary<string, Artwork>(result, StringComparer.Ordinal));
+            var frozen = result.ToArray();
+            lock (CatalogMemo) CatalogMemo[file] = (info.LastWriteTimeUtc, info.Length, frozen);
+            return frozen;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            // Truncated, rewritten while we read, odd encoding, deeper than the parser allows: no art from here, never a crash.
+            // Truncated, rewritten while we read, odd encoding, deeper than the parser allows: nothing from here, never a crash.
             Console.Error.WriteLine($"[epic] catalog cache: {ex.GetType().Name}: {ex.Message}");
-            result.Clear();
+            return [];
         }
-        return result;
+    }
+
+    /// <summary>The app name of the release for Windows (releaseInfo[].appId with "Windows" in its platforms).</summary>
+    private static string? WindowsAppName(JsonElement entry)
+    {
+        if (!entry.TryGetProperty("releaseInfo", out var releases) || releases.ValueKind != JsonValueKind.Array) return null;
+        foreach (var r in releases.EnumerateArray())
+        {
+            if (r.ValueKind != JsonValueKind.Object) continue;
+            var windows = r.TryGetProperty("platform", out var p) && p.ValueKind == JsonValueKind.Array
+                && p.EnumerateArray().Any(x => x.ValueKind == JsonValueKind.String && string.Equals(x.GetString(), "Windows", StringComparison.OrdinalIgnoreCase));
+            if (windows && Str(r, "appId") is { } app) return app;
+        }
+        return null;
     }
 
     /// <summary>The launcher's catalog is megabytes; a file beyond this is not the launcher's.</summary>
     internal const long MaxCatalogBytes = 128L * 1024 * 1024;
 
-    private static readonly Dictionary<string, (DateTime Written, long Size, Dictionary<string, Artwork> Result)> CatalogMemo = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, (DateTime Written, long Size, IReadOnlyList<EpicCatalogEntry> Result)> CatalogMemo = new(StringComparer.OrdinalIgnoreCase);
 
     private static string? Str(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

@@ -91,7 +91,10 @@ public class ReviewFixTests
         var scm = new SequenceScm(new ScmInfo(ScmState.Running, Environment.ProcessId), new ScmInfo(ScmState.StopPending, 0));
         var reply = await new ServiceClient(scm, server.Options()).CallAsync(Operation.Ping);
         Assert.Equal(CallOutcome.Squatted, reply.Outcome);
-        await Task.Delay(100);
+        // Both SCM answers were used: the client did connect and match the process, and only then saw the service stopping.
+        Assert.Equal(2, scm.Queries);
+        // No fixed wait: once the server is done with that connection, every request on it would have been recorded.
+        await server.WaitSettledAsync(1);
         Assert.Equal(0, server.RequestCount);
     }
 
@@ -172,6 +175,8 @@ public class ReviewFixTests
     private sealed class SequenceScm(params ScmInfo[] infos) : IServiceControl
     {
         private int _next;
+
+        public int Queries => _next;
 
         public ScmInfo Query() => infos[Math.Min(_next++, infos.Length - 1)];
 

@@ -32,6 +32,11 @@ async function infoFor(id) {
   return storeInfo.get(id);
 }
 
+/** The entry's store match or own texts changed: ask again next time. */
+export function forgetStoreInfo(id) {
+  storeInfo.delete(id);
+}
+
 /** Fades the trailer out; the next one starts from a clean layer. */
 export function stopTrailer() {
   clearTimeout(timer);

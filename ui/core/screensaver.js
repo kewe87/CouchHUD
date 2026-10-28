@@ -9,15 +9,21 @@ import { el } from './dom.js';
 import { hue } from './art.js';
 import { state } from './state.js';
 import { setMotionActive } from './motion.js';
+import { holding } from './browser-logic.js';
 
 const options = { minutes: 5, style: 'art', displayOff: 0, pixelShift: true };
 let lastInput = Date.now();
+// The last time someone really did something (a hold never moves it): a hold ends after HOLD_LIMIT without that.
+let lastRealInput = Date.now();
+let wasHeld = false;
 let focused = true;
 let overlay = null;
 let startedAt = 0;
 let slideTimer = null;
 let moveTimer = null;
 let displayOffDone = false;
+/** Callers that keep the screensaver away while they return true (a web page playing a video: nobody presses a button then). */
+const holds = [];
 
 export const SCREENSAVER_STYLES = [
   { get label() { return t('screensaver.art.label'); }, get detail() { return t('screensaver.art.detail'); }, value: 'art' },
@@ -43,12 +49,30 @@ export function setScreensaverFocus(active) {
   if (!active) stopScreensaver();
 }
 
+/** Keeps the screensaver away while <fn> returns true, at most HOLD_LIMIT after the last input; the idle time starts fresh once it ends. */
+export function holdScreensaver(fn) {
+  holds.push(fn);
+}
+
+const held = () => holds.some((fn) => {
+  try {
+    return !!fn();
+  } catch {
+    return false;
+  }
+});
+
+/** Someone is there, though the HUD saw no button (the controller on a web page): counts as input. */
+export function screensaverActivity() {
+  lastInput = lastRealInput = Date.now();
+}
+
 /**
  * Called for every input. Returns true if the input only woke the screen
  * (it must not also move the focus or launch something).
  */
 export function screensaverInput() {
-  lastInput = Date.now();
+  lastInput = lastRealInput = Date.now();
   if (!overlay) return false;
   stopScreensaver();
   return true;
@@ -67,8 +91,27 @@ export function startScreensaver(style = options.style) {
   requestAnimationFrame(() => overlay?.classList.add('on'));
 }
 
+const stopHooks = [];
+
+/** Runs <fn> each time the screensaver goes away (something waits for the screen to be seen again). */
+export function onScreensaverStop(fn) {
+  stopHooks.push(fn);
+}
+
+/** The screensaver covers the HUD right now. */
+export const screensaverShowing = () => !!overlay;
+
 export function stopScreensaver() {
   if (!overlay) return;
+  setTimeout(() => {
+    for (const fn of stopHooks) {
+      try {
+        fn();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  }, 0);
   // The panel may have been switched off; whatever woke us, it is on again now.
   if (displayOffDone) api.displayOn?.().catch(() => {});
   clearInterval(slideTimer);
@@ -153,8 +196,19 @@ export function startScreensaverWatch() {
   for (const type of ['pointermove', 'pointerdown', 'wheel', 'keydown']) window.addEventListener(type, activity, { passive: false, capture: true });
 
   setInterval(() => {
+    const hold = holding(held(), Date.now(), lastRealInput);
+    if (hold) wasHeld = true;
+    else if (wasHeld) {
+      // The video ended (or the limit passed): the normal idle time from here.
+      wasHeld = false;
+      lastInput = Date.now();
+    }
     const idleMinutes = (Date.now() - lastInput) / 60_000;
-    if (!overlay && options.minutes > 0 && focused && !busy() && idleMinutes >= options.minutes) startScreensaver();
+    if (!overlay && !hold && options.minutes > 0 && focused && !busy() && idleMinutes >= options.minutes) {
+      startScreensaver();
+      // Nobody at the couch: a protected profile goes back to the profile picker (the host decides, a preview of the style does not count).
+      api.profileIdle?.().catch(() => {});
+    }
     if (overlay && options.displayOff > 0 && !displayOffDone && (Date.now() - startedAt) / 60_000 >= options.displayOff) {
       displayOffDone = true;
       api.displayOff?.().catch(() => {});

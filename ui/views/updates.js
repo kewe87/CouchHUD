@@ -9,6 +9,7 @@ import { attempt, toast } from '../core/feedback.js';
 import { currentView, move, render } from '../core/nav.js';
 import { state } from '../core/state.js';
 import { confirmDialog } from '../components/overlay.js';
+import { itemSize, updateSummary } from '../core/update-rules.js';
 import { installFromCatalog } from './plugins.js';
 import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
@@ -18,6 +19,12 @@ state.updates = null;
 state.catalogUpdates = [];
 /** CouchHUD itself: newer release on GitHub (the host checks in the background). */
 state.selfUpdate = null;
+/** When the page last heard of each kind (ms): a download that finished later hides its update until the next news (Downloads tab). */
+state.updatesSeen = { updates: 0, selfUpdate: 0, catalogUpdates: 0 };
+
+function seen(kind) {
+  state.updatesSeen = { ...state.updatesSeen, [kind]: Date.now() };
+}
 
 /** Pending updates, for badges in the settings and the guide menu. */
 export function updateCount() {
@@ -25,32 +32,46 @@ export function updateCount() {
   return (u ? u.windows.length + u.apps.length : 0) + (state.catalogUpdates?.length ?? 0) + (state.selfUpdate?.available ? 1 : 0);
 }
 
+/** The Updates page and the Downloads tab (it offers the pending updates too) show this state. */
+function redrawIfShown() {
+  const id = currentView()?.id;
+  if (id === 'updates' || (id === 'downloads' && !state.overlay)) render();
+}
+
 export async function startUpdates() {
   api.onUpdates?.((u) => {
     state.updates = u;
+    seen('updates');
     // New updates arrive as a notification from the host.
-    if (currentView()?.id === 'updates') render();
+    redrawIfShown();
   });
   api.onCatalogUpdates?.((list) => {
     state.catalogUpdates = list ?? [];
-    if (currentView()?.id === 'updates') render();
+    seen('catalogUpdates');
+    redrawIfShown();
   });
   api.onSelfUpdate?.((s) => {
     state.selfUpdate = s;
-    if (currentView()?.id === 'updates') render();
+    seen('selfUpdate');
+    redrawIfShown();
   });
   state.selfUpdate = (await attempt(() => api.getSelfUpdate?.())) ?? null;
+  seen('selfUpdate');
   state.updates = (await attempt(() => api.getUpdates())) ?? null;
+  seen('updates');
   state.catalogUpdates = (await attempt(() => api.getCatalogUpdates?.())) ?? [];
+  seen('catalogUpdates');
 }
 
-async function start(kind, id, question, label) {
+/** Starts Windows or app updates: the one way for the Updates page and the Downloads tab (same bridge command, same checks). */
+export async function startUpdate(kind, id, question, label) {
   if (state.updates?.busy) return toast(t('updates.alreadyUpdating'));
   if (question && !(await confirmDialog(question, label))) return;
   await attempt(() => api.startUpdate(kind, id), t('updates.notStarted'));
 }
 
-async function installSelf() {
+/** Installs CouchHUD's own update after asking: the one way for the Updates page and the Downloads tab. */
+export async function installSelfUpdate() {
   const s = state.selfUpdate;
   if (!s?.available || s.busy) return toast(t('updates.alreadyBusy'));
   if (!s.ready) return toast(s.problem ?? t('updates.notInstallable'));
@@ -74,11 +95,11 @@ function selfRows() {
       detail: s.busy ?? (s.ready ? t('updates.self.installDetail', { current: s.current }) : (s.problem ?? t('updates.self.notReady'))),
       highlight: s.ready,
       hint: t('updates.install'),
-      run: installSelf
+      run: installSelfUpdate
     });
     // Release notes as plain text, one line per row (the list scrolls).
     for (const line of (s.notes ?? '').split('\n').filter((l) => l.trim())) {
-      list.push({ icon: '·', label: line.replace(/^•\s*/, ''), detail: null, hint: t('updates.install'), run: installSelf });
+      list.push({ icon: '·', label: line.replace(/^•\s*/, ''), detail: null, hint: t('updates.install'), run: installSelfUpdate });
     }
   } else {
     // The host sends a code (noRelease, rateLimit, noAnswer, unreachable) and the UI translates it; other errors come as text.
@@ -121,20 +142,27 @@ function rows() {
   list.push(...selfRows());
 
   if (u.windows.length) {
-    const total = u.windows.reduce((sum, w) => sum + (w.sizeBytes ?? 0), 0);
-    const installAll = () => start('windows', null,
+    // Only sizes the host is sure of; a total only when every update still to load has one.
+    const summary = updateSummary(u.windows);
+    const summaryText = [
+      summary.size ? t('updates.windows.countSize', { count: summary.count, size: formatSize(summary.size) }) : t('updates.windows.count', { count: summary.count }),
+      summary.downloaded ? t('updates.windows.downloadedCount', { count: summary.downloaded }) : null
+    ].filter(Boolean).join(' · ');
+    const installAll = () => startUpdate('windows', null,
       t('updates.windows.confirm', { count: u.windows.length }), t('updates.install'));
     list.push({ section: t('updates.windows.section') });
     list.push({
       icon: '⬇',
       label: t('updates.windows.install'),
-      detail: total ? t('updates.windows.countSize', { count: u.windows.length, size: formatSize(total) }) : t('updates.windows.count', { count: u.windows.length }),
+      detail: summaryText,
       highlight: true,
       hint: t('updates.install'),
       run: installAll
     });
     for (const w of u.windows) {
-      list.push({ icon: w.important ? '★' : '·', label: w.name, detail: [w.important ? t('updates.windows.important') : t('updates.windows.optional'), w.sizeBytes ? formatSize(w.sizeBytes) : null].filter(Boolean).join(' · '), hint: t('updates.install'), run: installAll });
+      const size = itemSize(w);
+      const detail = [w.important ? t('updates.windows.important') : t('updates.windows.optional'), w.downloaded ? t('updates.windows.downloaded') : size ? formatSize(size) : null];
+      list.push({ icon: w.important ? '★' : '·', label: w.name, detail: detail.filter(Boolean).join(' · '), hint: t('updates.install'), run: installAll });
     }
   } else if (u.windowsError) {
     list.push({ section: t('updates.windows.section') }, { icon: '!', label: u.windowsError, detail: t('updates.windows.retry') });
@@ -149,7 +177,7 @@ function rows() {
       detail: appCount,
       highlight: true,
       hint: t('updates.apps.update'),
-      run: () => start('apps', null, t('updates.apps.confirm', { apps: appCount }), t('updates.apps.update'))
+      run: () => startUpdate('apps', null, t('updates.apps.confirm', { apps: appCount }), t('updates.apps.update'))
     });
     for (const a of u.apps) {
       list.push({
@@ -157,7 +185,7 @@ function rows() {
         label: a.name,
         detail: `${a.version ?? '?'} → ${a.available}`,
         hint: t('updates.apps.update'),
-        run: () => start('apps', a.id, null)
+        run: () => startUpdate('apps', a.id, null)
       });
     }
   } else if (u.wingetAvailable === false) {

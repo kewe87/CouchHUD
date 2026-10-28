@@ -37,6 +37,46 @@ public class InstallerTests
 
     private static string Code => Iss[Iss.IndexOf("[Code]", StringComparison.Ordinal)..];
 
+    /// <summary>The entries of [InstallDelete] (none when the section is missing), comments left out.</summary>
+    private static List<string> InstallDeleteEntries()
+    {
+        var start = Iss.IndexOf("\n[InstallDelete]", StringComparison.Ordinal);
+        if (start < 0) return [];
+        var body = Iss[(start + "\n[InstallDelete]".Length)..];
+        var end = Regex.Match(body, @"^\[\w+\]", RegexOptions.Multiline);
+        if (end.Success) body = body[..end.Index];
+        return body.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith(';')).ToList();
+    }
+
+    /// <summary>
+    /// What an update may delete before copying: an exact allowlist of single program files that older versions installed. No
+    /// folders, no wildcards, nothing of the service or of user data. A new entry is added here on purpose, never by pattern.
+    /// </summary>
+    private static readonly string[] AllowedInstallDeletes =
+    [
+        // 0.5 renamed the built-in skins.
+        @"Type: files; Name: ""{app}\ui\skins\ps4.css""",
+        @"Type: files; Name: ""{app}\ui\skins\xbox.css""",
+        @"Type: files; Name: ""{app}\ui\skins\cyberpunk.css""",
+    ];
+
+    [Fact]
+    public void An_update_deletes_only_the_allowed_old_program_files()
+    {
+        Assert.Single(Regex.Matches(Iss, @"^\[InstallDelete\]", RegexOptions.Multiline));
+        var entries = InstallDeleteEntries();
+        Assert.NotEmpty(entries);
+        foreach (var entry in entries)
+        {
+            Assert.Contains(entry, AllowedInstallDeletes);
+            Assert.StartsWith(@"Type: files; Name: ""{app}\", entry);
+            Assert.DoesNotContain("*", entry);
+            Assert.DoesNotContain("..", entry);
+        }
+        // The renamed skins are really gone from the program, so nothing the setup installs is deleted again.
+        foreach (var old in new[] { "ps4.css", "xbox.css", "cyberpunk.css" }) Assert.False(File.Exists(Path.Combine(Root, "ui", "skins", old)));
+    }
+
     [Fact]
     public void The_sc_values_of_the_setup_are_the_services_hardening()
     {
@@ -273,7 +313,9 @@ public class InstallerTests
             foreach (var child in folders.Where(f => f.StartsWith(folder + "\\", StringComparison.Ordinal))) Assert.True(entries.IndexOf(child) < at, $"{child} after {folder}");
         }
         Assert.Equal("", entries[^1]);
-        Assert.DoesNotMatch(new Regex(@"^Type: (filesandordirs|files); Name: ""\{app\}\\ui", RegexOptions.Multiline), Iss);
+        // Only the exact old program files an update deletes (allowlist, checked above) may name files under ui.
+        var rest = string.Join('\n', Iss.Split('\n').Where(l => !AllowedInstallDeletes.Contains(l.Trim())));
+        Assert.DoesNotMatch(new Regex(@"^Type: (filesandordirs|files); Name: ""\{app\}\\ui", RegexOptions.Multiline), rest);
     }
 
     [Fact]
@@ -299,7 +341,7 @@ public class InstallerTests
     {
         Assert.Equal(ServiceInstall.DataFolderName, Defines["ServiceDataFolder"]);
         Assert.Contains(@"Type: filesandordirs; Name: ""{app}\{#ServiceFolder}\{#ServiceDataFolder}""", Iss);
-        Assert.DoesNotMatch(new Regex(@"^\[InstallDelete\]", RegexOptions.Multiline), Iss);
+        Assert.DoesNotContain(InstallDeleteEntries(), e => e.Contains(@"{#ServiceFolder}", StringComparison.Ordinal));
         var harden = Code[Code.IndexOf("function HardenServiceFolder", StringComparison.Ordinal)..];
         harden = harden[..harden.IndexOf("end;", StringComparison.Ordinal)];
         var acl = harden.IndexOf("FolderAclParams", StringComparison.Ordinal);
