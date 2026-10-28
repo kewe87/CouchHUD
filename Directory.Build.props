@@ -3,7 +3,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.6.0</Version>
+    <Version>0.6.1</Version>
     <Authors>kewe87</Authors>
     <Copyright>Copyright © 2026 kewe87</Copyright>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>

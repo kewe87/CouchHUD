@@ -349,6 +349,14 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 config.Update(c => c.ShellRemovedReason = "");
             });
         }
+        // parental.key cannot be decrypted or used: the signed files (play time, approved plugins) cannot be checked. Fails closed (the play
+        // time files are checked against a secret of this process, never skipped); the way back is a deliberate delete.
+        optional.Run("key notice", () =>
+        {
+            if (DataKey.Get(dataDir) is not null) return;
+            if (DataKey.Unreadable) PostNotification("CouchHUD", Strings.Ref("hud.keyUnreadable"), Strings.Ref("hud.keyUnreadable.body"), security: true);
+            else if (DataKey.Failed) PostNotification("CouchHUD", Strings.Ref("hud.keyFailed"), Strings.Ref("hud.keyFailed.body"), security: true);
+        });
         if (config.Fault is { } fault)
         {
             // config.json is unusable (or gone after an earlier install): the couch runs locked and nothing is saved until the file is fixed
@@ -962,10 +970,10 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         CloseGame: CloseGameForParents,
         LockWindows: () => WindowsLock.Lock(),
         RemoteTime: RemoteTimeAsync,
-        Emit: Emit));
+        Emit: Emit), persist: DataKey.Get(dataDir) is not null);
 
     /// <summary>Key for the HMAC over the play time file: random, protected with DPAPI for this Windows user.</summary>
-    private byte[]? ParentalKey() => DataKey.Get(dataDir);
+    private byte[] ParentalKey() => DataKey.Get(dataDir) ?? DataKey.Ephemeral();
 
     private async Task<DateTimeOffset?> RemoteTimeAsync()
     {
@@ -1595,7 +1603,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         {
             var file = ProfileIds.LedgerFile(dataDir, profile.Id);
             // Only a missing account is created: an existing file, even one with a wrong signature, stays as evidence.
-            if (profile.Id != controller.ProfileId && !File.Exists(file) && !PlayLedger.ShouldExist(file, profile.Rules.LedgerStarted)) new PlayLedger(file, key).Save(today);
+            if (profile.Id != controller.ProfileId && !File.Exists(file) && !PlayLedger.ShouldExist(file, profile.Rules.LedgerStarted)) new PlayLedger(file, key, persist: DataKey.Get(dataDir) is not null).Save(today);
             if (File.Exists(file)) written.Add(profile.Id);
         }
         config.Update(c =>

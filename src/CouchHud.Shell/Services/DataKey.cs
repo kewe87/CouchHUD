@@ -1,38 +1,51 @@
+using CouchHud.Core.Files;
+
 namespace CouchHud.Shell.Services;
 
 /// <summary>
 /// The secret for the HMAC over files that must not be changed by a program that only writes files (the play time file,
 /// the list of approved plugins): random, protected with DPAPI for this Windows user, in one file of the data folder.
+/// A key file that cannot be decrypted (after a password reset, say) is never replaced: <see cref="Get"/> returns null,
+/// <see cref="Unreadable"/> is set, and the user starts over on purpose by deleting parental.key.
 /// </summary>
 public static class DataKey
 {
     private static readonly object Gate = new();
     private static byte[]? _cached;
+    private static byte[]? _ephemeral;
 
-    /// <summary>The key, created on first use; null when it cannot be stored (then nothing is signed).</summary>
+    /// <summary>The key file exists but cannot be read: signed files cannot be checked, and nothing is signed with another key.</summary>
+    public static bool Unreadable { get; private set; }
+
+    /// <summary>The key file could not be read or written (a lock, an access error): no key this time, nothing was changed.</summary>
+    public static bool Failed { get; private set; }
+
+    /// <summary>The key, created on first use when the file is absent; null when it cannot be read or stored (then nothing is signed).</summary>
     public static byte[]? Get(string dataDir)
     {
         lock (Gate)
         {
             if (_cached is not null) return _cached;
-            var file = Path.Combine(dataDir, "parental.key");
-            try
+            // Unreadable, or still failing after the retries: final for this session (a restart tries again), so nothing blocks twice.
+            if (Unreadable || Failed) return null;
+            var (key, state) = KeyFile.LoadWithRetry(Path.Combine(dataDir, "parental.key"), Secrets.Protect, Secrets.Unprotect, attempts: 5, delay: TimeSpan.FromMilliseconds(200));
+            if (state == KeyFileState.Unreadable)
             {
-                if (File.Exists(file))
-                {
-                    var stored = Secrets.Unprotect(File.ReadAllText(file));
-                    if (stored.Length > 0) return _cached = Convert.FromBase64String(stored);
-                }
-                var key = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
-                Directory.CreateDirectory(dataDir);
-                File.WriteAllText(file, Secrets.Protect(Convert.ToBase64String(key)));
-                return _cached = key;
+                Unreadable = true;
+                // Once; no key material.
+                Console.Error.WriteLine("[key] parental.key cannot be decrypted (Windows profile or password reset?): it is left untouched, signed files read as damaged until it is deleted on purpose");
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
-            {
-                Console.Error.WriteLine($"[key] no key for signed files: {ex.Message}");
-                return null;
-            }
+            if (state == KeyFileState.Failed) Failed = true;
+            return _cached = key;
         }
+    }
+
+    /// <summary>
+    /// For the play time files while the key is unreadable: a random secret that lives only in this process and is never stored. A file
+    /// signed with the old key then fails the check (tampered, today counts as used up) instead of being read without any check.
+    /// </summary>
+    public static byte[] Ephemeral()
+    {
+        lock (Gate) return _ephemeral ??= System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
     }
 }

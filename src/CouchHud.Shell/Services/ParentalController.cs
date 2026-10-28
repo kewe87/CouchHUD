@@ -153,7 +153,7 @@ public sealed class ParentalController
     private string? _blockedId;
     private string _lastStatus = "";
 
-    public ParentalController(ConfigStore config, string dataDir, byte[]? key, ParentalHooks hooks)
+    public ParentalController(ConfigStore config, string dataDir, byte[]? key, ParentalHooks hooks, bool persist = true)
     {
         _config = config;
         _hooks = hooks;
@@ -162,7 +162,7 @@ public sealed class ParentalController
         var profile = config.Current.ActiveProfile;
         ProfileId = profile.Id;
         var file = ProfileIds.LedgerFile(dataDir, ProfileId);
-        var ledger = new PlayLedger(file, key, expectExisting: PlayLedger.ShouldExist(file, profile.Rules.LedgerStarted));
+        var ledger = new PlayLedger(file, key, expectExisting: PlayLedger.ShouldExist(file, profile.Rules.LedgerStarted), persist: persist);
         Service = new ParentalService(() => _config.Current.Profile(ProfileId).Rules, ledger,
             new TrustedClock(() => DateTimeOffset.UtcNow, () => Environment.TickCount64, ZoneOffset, ledger.LastUtc));
         Service.Warning += OnWarning;

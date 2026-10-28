@@ -2,6 +2,24 @@
 
 Ein Abschnitt je Version, gegliedert nach Bereichen, erst Deutsch, dann Englisch. / One section per version, grouped by area, German first, then English.
 
+## 0.6.1 (2026-10-28)
+
+### Deutsch
+
+**Plugin-Einstellungen auf der gesperrten Couch**
+- Eine Plugin-Einstellung der Stufe *Auch eingeschränkt* lässt sich jetzt auch auf der gesperrten Couch ändern (der Aufruf `setPluginSetting` stand nicht auf der Liste der Aufrufe, die bei gesperrter Couch durchgehen, und wurde mit „erst entsperren“ abgelehnt). Der Host entscheidet weiter je Einstellung: *Nur Admin* (auch ohne Funktion) und *Niemand* bleiben gesperrt, ein Besuch öffnet auf der gesperrten Couch nichts, und der Wert wird wie bisher geprüft.
+
+**Sicherheit: unlesbarer Schlüssel wird nicht mehr still ersetzt**
+- Lässt sich `parental.key` nicht entschlüsseln (z. B. nach einem Zurücksetzen des Windows-Kennworts oder Profils), überschreibt CouchHUD die Datei nicht mehr mit einem neuen Schlüssel. Ein neuer Schlüssel entsteht nur, wenn die Datei fehlt oder leer ist. Signierte Dateien gelten dann als verändert (Spielzeit-Konten: heute aufgebraucht; Plugin-Liste: nichts Unbekanntes lädt), nichts wird mit einem anderen Schlüssel geschrieben, und eine Meldung erklärt den Grund. Der Weg zurück: `parental.key` und `plugin-trust.json` bewusst löschen und CouchHUD neu starten; danach fragen die Plugins neu nach der Freigabe, und die Eltern setzen die Spielzeit-Konten mit ihrem Code zurück.
+
+### English
+
+**Plugin settings on the locked couch**
+- A plugin setting of level *Restricted too* can now be changed on the locked couch as well (the call `setPluginSetting` was missing from the list of calls that pass while the couch is locked and was refused with "unlock first"). The host still decides per setting: *Admin only* (also without a function) and *Nobody* stay refused, a visit opens nothing on the locked couch, and the value is checked as before.
+
+**Security: an unreadable key is no longer replaced silently**
+- If `parental.key` cannot be decrypted (after a Windows password or profile reset, say), CouchHUD no longer overwrites it with a new key. A new key is only created when the file is absent or empty. Signed files then count as changed (play time accounts: today used up; plugin list: nothing unknown loads), nothing is written with another key, and a notice explains why. The way back: delete `parental.key` and `plugin-trust.json` on purpose and restart CouchHUD; the plugins then ask for approval again, and the parents reset the play time accounts with their code.
+
 ## 0.6.0 (2026-10-28)
 
 ### Deutsch

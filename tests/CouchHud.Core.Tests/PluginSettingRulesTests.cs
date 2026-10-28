@@ -52,6 +52,42 @@ public class PluginSettingRulesTests
         Assert.Equal("plugin.fn.off", PluginSettingRules.Refusal(PluginLevel.Off, locked: false, childProfile: false, visitActive: true));
     }
 
+    /// <summary>What Hud.SetPluginSetting decides, in the same order: the level's refusal first, then the value.</summary>
+    private static string? Decide(PluginSetting setting, PluginLevel? level, bool locked, string? value, bool childProfile = false, bool visit = false)
+        => PluginSettingRules.Refusal(level, locked, childProfile, visit) is { } why && why != PluginSettingRules.NeedVisit ? why
+            : PluginSettingRules.Check(setting, value) is null ? "plugin.setting.valueRefused" : null;
+
+    [Fact]
+    public void The_locked_bridge_lets_the_call_through_and_the_rule_decides()
+    {
+        Assert.Contains("setPluginSetting", CouchHud.Core.Guard.LockPolicy.OpenWhileLocked);
+    }
+
+    [Fact]
+    public void On_the_locked_couch_admin_and_nobody_are_refused_and_restricted_is_allowed_with_a_fitting_value()
+    {
+        var url = new PluginSetting { Key = "url", Label = "Url", Kind = SettingKind.Text };
+        Assert.Equal("lock.unlockFirst", Decide(url, PluginLevel.Admin, locked: true, "https://192.0.2.61:8123"));
+        Assert.Equal("lock.unlockFirst", Decide(url, null, locked: true, "https://192.0.2.61:8123"));
+        // A visit (the "$settings" page included) never stands in for the unlock.
+        Assert.Equal("lock.unlockFirst", Decide(url, PluginLevel.Admin, locked: true, "x", childProfile: true, visit: true));
+        Assert.Equal("plugin.fn.off", Decide(url, PluginLevel.Off, locked: true, "https://192.0.2.61:8123"));
+        Assert.Null(Decide(url, PluginLevel.Restricted, locked: true, "https://192.0.2.61:8123"));
+        Assert.Null(Decide(Toggle(), PluginLevel.Restricted, locked: true, "true", childProfile: true));
+    }
+
+    [Fact]
+    public void On_the_locked_couch_a_restricted_setting_still_needs_a_fitting_value()
+    {
+        var text = new PluginSetting { Key = "t", Label = "T", Kind = SettingKind.Text };
+        Assert.Equal("plugin.setting.valueRefused", Decide(Toggle(), PluginLevel.Restricted, locked: true, "yes"));
+        Assert.Equal("plugin.setting.valueRefused", Decide(Choice(), PluginLevel.Restricted, locked: true, "c"));
+        Assert.Equal("plugin.setting.valueRefused", Decide(Number(), PluginLevel.Restricted, locked: true, "99"));
+        Assert.Equal("plugin.setting.valueRefused", Decide(text, PluginLevel.Restricted, locked: true, "a\u0007b"));
+        Assert.Equal("plugin.setting.valueRefused", Decide(text, PluginLevel.Restricted, locked: true, new string('a', PluginSettingRules.MaxText + 1)));
+        Assert.Null(Decide(Number(), PluginLevel.Restricted, locked: true, "5"));
+    }
+
     [Fact]
     public void A_setting_without_any_function_counts_as_admin_only()
     {

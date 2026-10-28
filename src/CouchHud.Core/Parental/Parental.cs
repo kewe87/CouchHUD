@@ -129,14 +129,17 @@ public sealed class PlayLedger
     }
 
     private readonly string? _file;
+    private readonly bool _persist;
     private readonly byte[]? _key;
     private FileData _data = new();
     private readonly object _gate = new();
 
     /// <param name="key">Secret for the HMAC over the file; without it nothing is checked.</param>
     /// <param name="expectExisting">The file was written before: a missing one is tampering.</param>
-    public PlayLedger(string? file = null, byte[]? key = null, bool expectExisting = false)
+    /// <param name="persist">False while the key is only a secret of this process: the time is still counted in memory, but the signed file on disk stays as it is.</param>
+    public PlayLedger(string? file = null, byte[]? key = null, bool expectExisting = false, bool persist = true)
     {
+        _persist = persist;
         _file = file;
         _key = key;
         if (file is null) return;
@@ -263,7 +266,7 @@ public sealed class PlayLedger
 
     public void Save(DateOnly today)
     {
-        if (_file is null) return;
+        if (_file is null || !_persist) return;
         lock (_gate)
         {
             foreach (var old in _data.Days.Keys.Where(k => DateOnly.TryParse(k, out var d) && d < today.AddDays(-21)).ToList()) _data.Days.Remove(old);

@@ -45,6 +45,9 @@ public static class LockPolicy
         // Plugin rows: the bridge lets them through, Hud decides by the row (PluginPolicy.MayPress): only rows of CouchHUD's own plugins that
         // are marked AllowedWhileLocked; a third-party row never. The suggestions answer nothing while locked (they wait).
         "activatePluginRow", "changePluginRow", "getPluginSuggestions",
+        // A plugin's setting: the bridge lets it through, Hud decides by the function level (PluginSettingRules): on the locked couch only
+        // "restricted" settings with a value that fits; admin (also a setting without any function, and the "$settings" visit) needs the unlock, nobody is nobody.
+        "setPluginSetting",
         // The answer to the automatic Bluetooth switch-on's countdown: "now" or "leave it off" (the guest could switch the radio off with
         // the keyboard's airplane key anyway; switching it off in CouchHUD, "setBluetooth", needs the code).
         "answerBluetoothRecovery",
