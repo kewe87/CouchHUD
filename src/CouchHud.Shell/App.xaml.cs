@@ -16,6 +16,38 @@ public partial class App : Application
     private const string InstanceMutexName = @"Local\CouchHud.Instance";
     private const string ActivateEventName = @"Local\CouchHud.Activate";
 
+    /// <summary>
+    /// Started by "Restart CouchHUD": wait (at most RestartPlan.MaxWait) for the old instance to end, so the single-instance lock is free.
+    /// The variable only names a process id to wait for; it is removed at once so nothing started from here inherits it.
+    /// </summary>
+    private static void WaitForRestartedInstance()
+    {
+        var value = Environment.GetEnvironmentVariable(CouchHud.Core.Updates.RestartPlan.WaitVariable);
+        if (value is null) return;
+        Environment.SetEnvironmentVariable(CouchHud.Core.Updates.RestartPlan.WaitVariable, null);
+        if (CouchHud.Core.Updates.RestartPlan.ParseWait(value, Environment.ProcessId) is not { } pid) return;
+        try
+        {
+            using var old = System.Diagnostics.Process.GetProcessById(pid);
+            // Only the old instance of this very program is waited for: a clearly different path is not ours. A path that cannot be
+            // read (access denied, no module) does not skip the wait.
+            string? path = null;
+            try
+            {
+                path = old.MainModule?.FileName;
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException)
+            {
+            }
+            if (path is not null && !string.Equals(path, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase)) return;
+            old.WaitForExit(CouchHud.Core.Updates.RestartPlan.MaxWait);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Already gone.
+        }
+    }
+
     private static string DataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CouchHud");
 
     private Mutex? _instance;
@@ -76,6 +108,28 @@ public partial class App : Application
             {
                 Log.Init();
                 SteamGuardService.ReleaseFromRunEntry(DataDir);
+            }
+            Shutdown();
+            return;
+        }
+        if (e.Args.Length == 1 && e.Args[0] == CouchHud.Core.Guard.GameBarGuard.ReleaseSwitch)
+        {
+            // Run entry while CouchHud held the Game Bar button and did not come back (crash, power loss): put the user's value back.
+            // A running CouchHud manages it itself.
+            // A CouchHud that autostarts at the same sign-in wins: wait a moment, look again right before restoring.
+            var gameBarRunning = Mutex.TryOpenExisting(InstanceMutexName, out var runningGameBar);
+            runningGameBar?.Dispose();
+            if (!gameBarRunning)
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(5));
+                gameBarRunning = Mutex.TryOpenExisting(InstanceMutexName, out runningGameBar);
+                runningGameBar?.Dispose();
+            }
+            if (!gameBarRunning)
+            {
+                Log.Init();
+                foreach (var error in CouchHud.Core.Guard.GameBarGuard.ReleaseFromRunEntry(new CouchHud.Privileged.WindowsRegistry(), DataDir, m => Console.Error.WriteLine($"[guard] {m}")))
+                    Console.Error.WriteLine($"[guard] {error}");
             }
             Shutdown();
             return;
@@ -145,6 +199,7 @@ public partial class App : Application
         // Winlogon starts us in System32; relative paths should mean "next to CouchHUD".
         Environment.CurrentDirectory = AppContext.BaseDirectory;
 
+        WaitForRestartedInstance();
         _instance = new Mutex(initiallyOwned: true, InstanceMutexName, out var first);
         if (!first)
         {
@@ -297,10 +352,15 @@ public partial class App : Application
         // While the picker waits for a protected profile it speaks the household's language, not the waiting person's.
         CouchHud.Core.Localization.Strings.Use(ProfileSwitch.Look(config.Current, ProfileSwitch.HeldAtStart(config.Current)).Language);
         var registry = new WindowsRegistry();
-        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        // Every outbound connection goes through the privacy gate (Settings > Privacy): one policy, read live from the settings.
+        var net = new CouchHud.Core.Net.NetPolicy(() => config.Current);
+        var http = CouchHud.Core.Net.NetGate.CreateClient(CouchHud.Core.Net.NetService.Catalog, net, TimeSpan.FromSeconds(10));
         // Everything that asks Steam or SteamGridDB goes through one polite client (rate limit, Retry-After, circuit breaker).
         // Public addresses only (see SafeNet), redirects are followed by the callers, hop by hop.
-        var polite = new HttpClient(new CouchHud.Core.Net.PoliteHandler(CouchHud.Core.Net.SafeNet.CreateHandler(), CouchHud.Core.Plugins.CatalogRules.AppVersion.ToString())) { Timeout = TimeSpan.FromSeconds(20) };
+        // One leash for the Steam hosts, whichever switch the request belongs to: images (Artwork) and the store's descriptions and ratings (GameInfo).
+        var steamHandler = new CouchHud.Core.Net.PoliteHandler(CouchHud.Core.Net.SafeNet.CreateHandler(), CouchHud.Core.Plugins.CatalogRules.AppVersion.ToString());
+        var polite = CouchHud.Core.Net.NetGate.CreateClient(CouchHud.Core.Net.NetService.Artwork, net, TimeSpan.FromSeconds(20), steamHandler);
+        var politeInfo = CouchHud.Core.Net.NetGate.CreateClient(CouchHud.Core.Net.NetService.GameInfo, net, TimeSpan.FromSeconds(20), steamHandler);
         ArtworkCache? images = null;
         try
         {
@@ -312,14 +372,14 @@ public partial class App : Application
             Console.Error.WriteLine($"[artwork] no image cache: {ex.Message}");
         }
         ArtworkCache.Shared = images;
-        var steamIds = new SteamAppIds(polite, Path.Combine(dataDir, "steam-ids.json"));
+        var steamIds = new SteamAppIds(politeInfo, Path.Combine(dataDir, "steam-ids.json"));
         var steamAssets = new SteamAssets(polite, Path.Combine(dataDir, "steam-assets.json"));
         var artwork = new ArtworkResolver(polite, Path.Combine(dataDir, "artwork-cache.json"), Secrets.Unprotect(config.Current.SteamGridDbApiKey), images, steamIds, steamAssets)
         {
-            Online = config.Current.OnlineArtwork,
+            Online = net.Allows(CouchHud.Core.Net.NetService.Artwork),
             ExeIcons = path => ExeIcons.Render(path)
         };
-        var storeInfo = new StoreInfoService(polite, Path.Combine(dataDir, "store-cache.json"), () => CouchHud.Core.Localization.Strings.Language, steamIds);
+        var storeInfo = new StoreInfoService(politeInfo, Path.Combine(dataDir, "store-cache.json"), () => CouchHud.Core.Localization.Strings.Language, steamIds);
 
         // Plugins the user already had count as approved the first time; from then on only installed or approved ones load.
         PluginTrust.UseKey(() => DataKey.Get(dataDir));
@@ -341,12 +401,19 @@ public partial class App : Application
         // Only the plugins in %APPDATA% (installed from the catalog or approved by the user): nothing is bundled next to the exe any more,
         // Wand comes from the signed catalog like every other plugin.
         var seedsGiven = new System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyDictionary<string, string?>?>(StringComparer.OrdinalIgnoreCase);
+        // Read and verified once (on the first plugin that asks); any failure means no extra ids, the fixed list in the program still applies.
+        var firstPartyIds = new Lazy<IReadOnlyList<string>>(() => new OptionalSteps(Console.Error.WriteLine).Run("first-party plugin ids",
+            () => new CatalogService(http, dataDir, () => [], () => false).FirstPartyIds(), (IReadOnlyList<string>)[]));
         var plugins = new PluginManager(
             [(Path.Combine(dataDir, "plugins"), true)],
             dataDir,
             folder => !config.Current.DisabledPlugins.Contains(folder, StringComparer.OrdinalIgnoreCase))
         {
             Trust = pluginTrust,
+            // Offline mode (Settings > Privacy): plugins that may reach the internet do not start.
+            OfflineNow = () => net.Offline,
+            // The ids of CouchHUD's own plugins from the signed index (cached and verified): reserved for everyone else at load.
+            FirstPartyIds = () => firstPartyIds.Value,
             // Withdrawn plugins as CouchHUD's signed catalog said last time (its cache is verified again before it counts).
             Revocations = new OptionalSteps(Console.Error.WriteLine).Run("plugin revocations",
                 () => new CatalogService(http, dataDir, () => [], () => false).CachedRevocations(), []),
@@ -390,7 +457,7 @@ public partial class App : Application
         library.SkipProvider = p => p is IGameStore store && !FeatureAreas.ReadsStore(config.Current, store.Source);
         library.FetchArtFor = item => FeatureAreas.From(config.Current).Shows(item);
 
-        _hud = new Hud(config, library, artwork, storeInfo, new ShellManager(registry), new XInputPoller(), http, dataDir, dev, plugins);
+        _hud = new Hud(config, library, artwork, storeInfo, new ShellManager(registry), new XInputPoller(), net, dataDir, dev, plugins);
         // Lookups and downloads wait while a game runs.
         artwork.BackgroundAllowed = () => !_hud.GameBusy;
         var window = new MainWindow(_hud, dev);

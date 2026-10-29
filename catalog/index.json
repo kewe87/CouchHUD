@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "serial": 2,
+  "serial": 4,
   "name": "CouchHUD Katalog",
   "entries": [
     {
@@ -36,8 +36,8 @@
       "folder": "CouchHud.Plugin.HomeAssistant",
       "name": "Home Assistant",
       "type": "plugin",
-      "version": "1.0.0",
-      "minCouchHud": "0.6.0",
+      "version": "1.1.1",
+      "minCouchHud": "0.6.3",
       "author": "kewe87",
       "description": {
         "de": "Lichter, Szenen und Sensoren aus Home Assistant am Fernseher schalten, mit Anmeldung über Home Assistant",
@@ -51,23 +51,24 @@
         "assistant",
         "notify",
         "browser.signin",
-        "network:internet"
+        "network:lan"
       ],
       "suggestWhen": {
         "feature": "homeAssistant"
       },
       "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/homeassistant.png",
-      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/homeassistant-1.0.0/CouchHud.Plugin.HomeAssistant-1.0.0.zip",
-      "sha256": "f3e86c508b47d5b01d363776d3e4385cb59d6758584ff50656557ea0567c1dd0",
-      "statement": "eyJpZCI6ImhvbWVhc3Npc3RhbnQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uSG9tZUFzc2lzdGFudCIsInZlcnNpb24iOiIxLjAuMCIsInNoYTI1NiI6ImYzZTg2YzUwOGI0N2Q1YjAxZDM2Mzc3NmQzZTQzODVjYjU5ZDY3NTg1ODRmZjUwNjU2NTU3ZWEwNTY3YzFkZDAiLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC42LjAiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJ0YWJzIiwicXVpY2tBY3Rpb25zIiwiYXNzaXN0YW50Iiwibm90aWZ5IiwiYnJvd3Nlci5zaWduaW4iLCJuZXR3b3JrOmludGVybmV0Il0sInB1Ymxpc2hlcktleSI6IjI0N2JiYTYyODQ5ZGRmZWFiODc0OWEzODQ4ODc5MTgwN2JmZmEzM2M3MjM0N2VhMjA5MzE4NzBkYmJiNzcwOWYiLCJsaWNlbnNlIjoiR1BMLTMuMC1vbmx5IiwiYXV0aG9yIjoia2V3ZTg3IiwibmFtZSI6IkhvbWUgQXNzaXN0YW50Iiwic3VtbWFyeSI6IkxpZ2h0cywgc2NlbmVzIGFuZCBzZW5zb3JzIGZyb20gSG9tZSBBc3Npc3RhbnQgb24gdGhlIFRWLCB3aXRoIHNpZ24taW4gdGhyb3VnaCBIb21lIEFzc2lzdGFudCwgZ3VpZGUgbWVudSBlbnRyaWVzIGFuZCBhc3Npc3RhbnQgdG9vbHMiLCJpY29uIjp7InNoYTI1NiI6Ijc1OGU2YjJjNTM3N2RkZTQ1MjA2OTdlMzNiZDQyNGJjM2Y2ZWJkMjk3MjczMTgyNGU0ZWQyMTEyMDg0MDRlZWIiLCJieXRlcyI6MzkzMjJ9LCJzaXplIjo5OTUzOH0=",
-      "signature": "c+IM4cMKSGsA7MmK9HXd6zyxI7mfoJTfuMNUOc9r6dfPYAmtzmXD2F3ceMu+7qW5OXxkvFMISsoXfx9icZrjZQ=="
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/homeassistant-1.1.1/CouchHud.Plugin.HomeAssistant-1.1.1.zip",
+      "sha256": "73699fe970d345d117de3c50d89f241bb5bb5f1c8fb48a52daa89a5a5356a2ab",
+      "statement": "eyJpZCI6ImhvbWVhc3Npc3RhbnQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uSG9tZUFzc2lzdGFudCIsInZlcnNpb24iOiIxLjEuMSIsInNoYTI1NiI6IjczNjk5ZmU5NzBkMzQ1ZDExN2RlM2M1MGQ4OWYyNDFiYjViYjVmMWM4ZmI0OGE1MmRhYTg5YTVhNTM1NmEyYWIiLCJzZGsiOjQsIm1pbkNvdWNoSHVkIjoiMC42LjMiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJ0YWJzIiwicXVpY2tBY3Rpb25zIiwiYXNzaXN0YW50Iiwibm90aWZ5IiwiYnJvd3Nlci5zaWduaW4iLCJuZXR3b3JrOmxhbiJdLCJwdWJsaXNoZXJLZXkiOiIyNDdiYmE2Mjg0OWRkZmVhYjg3NDlhMzg0ODg3OTE4MDdiZmZhMzNjNzIzNDdlYTIwOTMxODcwZGJiYjc3MDlmIiwibGljZW5zZSI6IkdQTC0zLjAtb25seSIsImF1dGhvciI6Imtld2U4NyIsIm5hbWUiOiJIb21lIEFzc2lzdGFudCIsInN1bW1hcnkiOiJMaWdodHMsIHNjZW5lcyBhbmQgc2Vuc29ycyBmcm9tIEhvbWUgQXNzaXN0YW50IG9uIHRoZSBUViwgd2l0aCBzaWduLWluIHRocm91Z2ggSG9tZSBBc3Npc3RhbnQsIGd1aWRlIG1lbnUgZW50cmllcyBhbmQgYXNzaXN0YW50IHRvb2xzIiwiaWNvbiI6eyJzaGEyNTYiOiI3NThlNmIyYzUzNzdkZGU0NTIwNjk3ZTMzYmQ0MjRiYzNmNmViZDI5NzI3MzE4MjRlNGVkMjExMjA4NDA0ZWViIiwiYnl0ZXMiOjM5MzIyfSwic2l6ZSI6ODUzMzB9",
+      "signature": "/DvNDgXDqBcA/Cli8KpL334Zqqkx0Sz/m22Lal29mG1IGkakdejIWF+qsogww9dpAwbhGe23emtOmw8f58Dvtw==",
+      "sdk": 4
     },
     {
       "id": "casehud",
       "folder": "CouchHud.Plugin.CaseHud",
       "name": "CaseHUD",
       "type": "plugin",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "minCouchHud": "0.6.0",
       "author": "kewe87",
       "description": {
@@ -96,10 +97,11 @@
         "uninstallEntry": "CaseHUD"
       },
       "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/casehud.png",
-      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/casehud-1.0.0/CouchHud.Plugin.CaseHud-1.0.0.zip",
-      "sha256": "c3072c39a89552613c598a0e7de58e01cffcdafc504f744237c747ddba404447",
-      "statement": "eyJpZCI6ImNhc2VodWQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uQ2FzZUh1ZCIsInZlcnNpb24iOiIxLjAuMCIsInNoYTI1NiI6ImMzMDcyYzM5YTg5NTUyNjEzYzU5OGEwZTdkZTU4ZTAxY2ZmY2RhZmM1MDRmNzQ0MjM3Yzc0N2RkYmE0MDQ0NDciLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC42LjAiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJxdWlja0FjdGlvbnMiLCJkb3dubG9hZHMiLCJzZXR1cC5ydW4iLCJsb2NrLnJlc3RyaWN0Iiwic3RhcnR1cC5hcmdzIiwicHJvY2VzcyIsInJlZ2lzdHJ5IiwibmF0aXZlIiwibmV0d29yazpsb29wYmFjayIsIm5ldHdvcms6aW50ZXJuZXQiXSwicHVibGlzaGVyS2V5IjoiMjQ3YmJhNjI4NDlkZGZlYWI4NzQ5YTM4NDg4NzkxODA3YmZmYTMzYzcyMzQ3ZWEyMDkzMTg3MGRiYmI3NzA5ZiIsImxpY2Vuc2UiOiJHUEwtMy4wLW9ubHkiLCJhdXRob3IiOiJrZXdlODciLCJuYW1lIjoiQ2FzZUhVRCIsInN1bW1hcnkiOiJTd2l0Y2ggYW5kIG9wZXJhdGUgdGhlIExDRHMgaW4geW91ciBmYW5zIGFuZCBwdW1wcyB0aHJvdWdoIENhc2VIVUQ6IHNjZW5lcywgYnJpZ2h0bmVzcywgbGlnaHRpbmcsIGF1dG9tYXRpb24sIHdpdGggZ3VpZGUgbWVudSBlbnRyaWVzIiwiaWNvbiI6eyJzaGEyNTYiOiIxYTM1ZDU1MDM0YzE2ZmNmZWJmZDMwODZjOThiMTgxMmQwMmQ3YWE2OTI0MjI3NTI5MTBmNmY3Y2RkNGI2MjNmIiwiYnl0ZXMiOjI3OTk2fSwic2l6ZSI6MTUyNjMxfQ==",
-      "signature": "D8Bag1cZTlEyHY0rhss7wNUoaE8Tq2Vh1mjkmJRMFOmhOGQ6TYLJcipZ0abE5OCatiIR0lqR3QBYeVhuze81tg=="
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/casehud-1.0.1/CouchHud.Plugin.CaseHud-1.0.1.zip",
+      "sha256": "b752a572f2ad8a748bf8dbc055c9fdd62e003be652f9ab596200a1d72b56b423",
+      "statement": "eyJpZCI6ImNhc2VodWQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uQ2FzZUh1ZCIsInZlcnNpb24iOiIxLjAuMSIsInNoYTI1NiI6ImI3NTJhNTcyZjJhZDhhNzQ4YmY4ZGJjMDU1YzlmZGQ2MmUwMDNiZTY1MmY5YWI1OTYyMDBhMWQ3MmI1NmI0MjMiLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC42LjAiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJxdWlja0FjdGlvbnMiLCJkb3dubG9hZHMiLCJzZXR1cC5ydW4iLCJsb2NrLnJlc3RyaWN0Iiwic3RhcnR1cC5hcmdzIiwicHJvY2VzcyIsInJlZ2lzdHJ5IiwibmF0aXZlIiwibmV0d29yazpsb29wYmFjayIsIm5ldHdvcms6aW50ZXJuZXQiXSwicHVibGlzaGVyS2V5IjoiMjQ3YmJhNjI4NDlkZGZlYWI4NzQ5YTM4NDg4NzkxODA3YmZmYTMzYzcyMzQ3ZWEyMDkzMTg3MGRiYmI3NzA5ZiIsImxpY2Vuc2UiOiJHUEwtMy4wLW9ubHkiLCJhdXRob3IiOiJrZXdlODciLCJuYW1lIjoiQ2FzZUhVRCIsInN1bW1hcnkiOiJTd2l0Y2ggYW5kIG9wZXJhdGUgdGhlIExDRHMgaW4geW91ciBmYW5zIGFuZCBwdW1wcyB0aHJvdWdoIENhc2VIVUQ6IHNjZW5lcywgYnJpZ2h0bmVzcywgbGlnaHRpbmcsIGF1dG9tYXRpb24sIHdpdGggZ3VpZGUgbWVudSBlbnRyaWVzIiwiaWNvbiI6eyJzaGEyNTYiOiIxYTM1ZDU1MDM0YzE2ZmNmZWJmZDMwODZjOThiMTgxMmQwMmQ3YWE2OTI0MjI3NTI5MTBmNmY3Y2RkNGI2MjNmIiwiYnl0ZXMiOjI3OTk2fSwic2l6ZSI6MTM2MzQ3fQ==",
+      "signature": "NrSSMx0DchN3JDc4HDGmcMjR9o1gI9H6tM5LplB935hYhpj2nhoaFnpeuXYrjcVTJq6Y31pU8qcXbsD/Jdp9xw==",
+      "sdk": 3
     },
     {
       "id": "vpn",

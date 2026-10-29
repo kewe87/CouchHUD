@@ -3,11 +3,16 @@
 import { api } from '../core/api.js';
 import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
-import { currentView, move, render } from '../core/nav.js';
+import { busyTarget, isBusy, markBusy, runBusy } from '../core/busy.js';
+import { currentView, move, render, renderHints } from '../core/nav.js';
+import { state } from '../core/state.js';
 import { chooseDialog } from '../components/overlay.js';
 import { openKeyboard } from '../components/keyboard.js';
 import { sound } from '../sound.js';
 import { fmtPercent, t } from '../core/i18n.js';
+
+/** The busy key of a connect or disconnect (ui/core/busy.js): its row and hint show it, a second press does nothing (it was a toast). */
+const BUSY = 'network:action';
 
 const bars = (signal) => (signal >= 75 ? '▂▄▆█' : signal >= 50 ? '▂▄▆' : signal >= 25 ? '▂▄' : '▂');
 
@@ -19,7 +24,6 @@ export function networkPage() {
     status: null,
     networks: null,
     scanning: false,
-    busy: false,
     error: '',
     /** One scan at a time: a second call waits for the running one. */
     scan(quiet = false) {
@@ -74,6 +78,7 @@ export function networkPage() {
         el('span', { className: 'check-main' }, el('strong', { textContent: n.ssid }),
           el('small', { textContent: n.connected ? (st?.ip ? t('network.connectedIp', { ip: st.ip }) : t('network.connected')) : !n.supported ? t('network.unsupported') : n.secured ? t('network.secured') : t('network.open') })),
         el('span', { className: 'pill off', textContent: bars(n.signal), title: fmtPercent(n.signal) })));
+      this.items.forEach((li, i) => markBusy(li, isBusy(BUSY) && rows[i].n.ssid === busyTarget(BUSY)));
       this.scroller = el('ul', { className: 'check-list list-scroll' }, this.items);
 
       let meta;
@@ -101,11 +106,13 @@ export function networkPage() {
         case 'down': return this.list.length && move(this, 1, this.list.length, true);
         case 'x': return this.scan();
         case 'y':
-          if (this.status?.ssid && !this.busy) return this.disconnect();
+          if (isBusy(BUSY)) return sound.bump();
+          if (this.status?.ssid) return this.disconnect();
           return;
         case 'a': {
           const row = this.list[this.index];
-          if (!row || this.busy) return this.busy && toast(t('network.busy'));
+          if (!row) return;
+          if (isBusy(BUSY)) return sound.bump();
           sound.select();
           const n = row.n;
           if (!n.supported) return toast(t('network.enterprise'), 4500);
@@ -125,17 +132,20 @@ export function networkPage() {
     askPassword(n, hint = t('network.passwordHint')) {
       return openKeyboard({ title: t('network.passwordFor', { ssid: n.ssid }), secret: true, hint });
     },
+    /** Redraws the page while it is shown (a connect started or ended), else only the hints. */
+    redrawBusy() {
+      if (currentView() === this && !state.overlay) render();
+      else renderHints();
+    },
     async connect(n, password) {
-      this.busy = true;
       let again = false;
-      try {
+      const run = await runBusy(BUSY, async () => {
         toast(t('network.connecting', { ssid: n.ssid }), 15000);
         const result = await attempt(() => api.connectWifi(n.ssid, password || null), t('network.connectFailed'));
         if (result) toast(result.message);
         again = !!result?.needsPassword;
-      } finally {
-        this.busy = false;
-      }
+      }, { onChange: () => this.redrawBusy(), onIgnored: () => sound.bump(), target: n.ssid });
+      if (run.ignored) return;
       if (again) {
         // Windows doesn't know the network: ask for the password right away.
         const typed = await this.askPassword(n, t('network.unknownNetwork'));
@@ -144,14 +154,11 @@ export function networkPage() {
       return this.scan();
     },
     async disconnect() {
-      if (this.busy) return;
-      this.busy = true;
-      try {
+      const run = await runBusy(BUSY, async () => {
         const msg = await attempt(() => api.disconnectWifi(), t('network.disconnectFailed'));
         if (msg) toast(msg);
-      } finally {
-        this.busy = false;
-      }
+      }, { onChange: () => this.redrawBusy(), onIgnored: () => sound.bump(), target: this.status?.ssid ?? null });
+      if (run.ignored) return;
       return this.scan();
     },
     pointer(node, index, dispatch) {
@@ -161,7 +168,8 @@ export function networkPage() {
     },
     hints() {
       if (this.scanning) return [['B', t('network.hint.back')]];
-      return [...(this.list?.length ? [['A', t('network.hint.open')]] : []), ...(this.status?.available === false ? [] : [['X', t('network.hint.search')]]), ...(this.status?.ssid ? [['Y', t('network.disconnect')]] : []), ['B', t('network.hint.back')]];
+      const running = isBusy(BUSY);
+      return [...(this.list?.length ? [['A', t('network.hint.open'), { busy: running }]] : []), ...(this.status?.available === false ? [] : [['X', t('network.hint.search')]]), ...(this.status?.ssid ? [['Y', t('network.disconnect'), { busy: running }]] : []), ['B', t('network.hint.back')]];
     }
   };
 }

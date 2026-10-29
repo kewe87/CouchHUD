@@ -14,6 +14,12 @@ $name = Split-Path $Folder -Leaf
 $zip = Join-Path (Resolve-Path $OutDir) "$name-$Version.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 
+# A skin folder: the lint for the catalog review (a skin must not hide tabs) runs before anything is packed.
+if (Test-Path (Join-Path $Folder 'skin.css')) {
+    node (Join-Path $PSScriptRoot 'skin-check.mjs') $Folder
+    if ($LASTEXITCODE -ne 0) { throw "skin-check.mjs: the skin hides tabs, not packed." }
+}
+
 # Zip the folder itself, so the archive has one top folder named like the plugin.
 Compress-Archive -Path $Folder -DestinationPath $zip
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -1,7 +1,7 @@
 {
   "id": "casehud",
   "folder": "CouchHud.Plugin.CaseHud",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "sha256": "",
   "sdk": 3,
   "minCouchHud": "0.6.0",

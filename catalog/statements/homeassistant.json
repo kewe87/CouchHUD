@@ -1,10 +1,10 @@
 {
   "id": "homeassistant",
   "folder": "CouchHud.Plugin.HomeAssistant",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "sha256": "",
-  "sdk": 3,
-  "minCouchHud": "0.6.0",
+  "sdk": 4,
+  "minCouchHud": "0.6.3",
   "capabilities": [
     "pages",
     "tabs",
@@ -12,7 +12,7 @@
     "assistant",
     "notify",
     "browser.signin",
-    "network:internet"
+    "network:lan"
   ],
   "publisherKey": "",
   "license": "GPL-3.0-only",

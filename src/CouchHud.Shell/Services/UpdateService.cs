@@ -34,6 +34,9 @@ public sealed class UpdateService
 
     public event Action<UpdateState>? Changed;
 
+    /// <summary>Privacy (Settings > Privacy): the reason why CouchHUD must not look for or fetch Windows and app updates now, or null. Search and install both ask.</summary>
+    public Func<string?>? Blocked { get; set; }
+
     public UpdateState State => _state;
 
     private void Set(UpdateState state)
@@ -44,6 +47,11 @@ public sealed class UpdateService
 
     public async Task<UpdateState> CheckAsync()
     {
+        if (Blocked?.Invoke() is { } why)
+        {
+            Set(_state with { WindowsError = why, Busy = null });
+            return _state;
+        }
         if (!await _gate.WaitAsync(0)) return _state;
         try
         {
@@ -68,15 +76,30 @@ public sealed class UpdateService
     /// <paramref name="started"/> runs only once this run really has the gate: a second call that is turned away as busy never touches
     /// what the running one shows.
     /// </summary>
-    public async Task<UpdateRun> UpgradeAppsAsync(string? id, Action? started = null)
+    /// <paramref name="progress"/> hears where winget is (package n of m, phase, bytes or percent when winget says them), throttled.
+    public async Task<UpdateRun> UpgradeAppsAsync(string? id, Action? started = null, Action<AppUpgradeProgress>? progress = null)
     {
+        if (Blocked?.Invoke() is { } why) throw new InvalidOperationException(why);
         if (!await _gate.WaitAsync(0)) throw new InvalidOperationException(Strings.Get("update.busy"));
         try
         {
             started?.Invoke();
             var name = id is null ? Strings.Get("update.allApps") : _state.Apps.FirstOrDefault(a => a.Id == id)?.Name ?? id;
             Set(_state with { Busy = Strings.Get("update.updating", name) });
-            var (exit, _) = await RunWingetAsync(Winget.UpgradeArguments(id), TimeSpan.FromMinutes(60));
+            using var reporter = progress is null ? null
+                : new WingetProgressReporter(id, _state.Apps.GroupBy(a => a.Id, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First().Name, StringComparer.Ordinal),
+                    _state.Apps.Count, progress);
+            int exit;
+            try
+            {
+                (exit, _) = await RunWingetAsync(Winget.UpgradeArguments(id), TimeSpan.FromMinutes(60), reporter is null ? null : chunk => reporter.Feed(chunk.Span), keepOutput: false);
+            }
+            catch (TimeoutException)
+            {
+                // winget was killed: a failed run with its own message (toast and line), not an exception nobody observes.
+                Console.Error.WriteLine($"[updates] winget upgrade {id ?? "--all"} timed out");
+                return new(Strings.Get("update.timeout"), false);
+            }
             Console.Error.WriteLine($"[updates] winget upgrade {id ?? "--all"} exited with {exit}");
             return exit == 0 ? new(Strings.Get("update.updated", name), true) : new(Strings.Get("update.failedNamed", name, exit), false);
         }
@@ -95,6 +118,7 @@ public sealed class UpdateService
     /// <paramref name="progress"/> gets the share (0..1) and the agent's real byte counters while it downloads (done, total; 0, 0 otherwise).
     public async Task<UpdateRun> InstallWindowsAsync(Action<double, long, long>? progress = null, Action? started = null)
     {
+        if (Blocked?.Invoke() is { } why) throw new InvalidOperationException(why);
         if (!await _gate.WaitAsync(0)) throw new InvalidOperationException(Strings.Get("update.busy"));
         try
         {
@@ -145,7 +169,15 @@ public sealed class UpdateService
         }
     }
 
-    private static async Task<(int Exit, string Output)> RunWingetAsync(IReadOnlyList<string> args, TimeSpan timeout)
+    /// <summary>Output kept for the update list (a table of some KB); more is dropped.</summary>
+    private const int MaxKeptOutput = 4 * 1024 * 1024;
+
+    /// <summary>Reads winget's console stream in pieces (it animates with carriage returns), tells <paramref name="onOutput"/> about each (an empty piece at the end) and keeps a capped copy if asked.</summary>
+    private static Task<string> ReadOutputAsync(StreamReader reader, Action<ReadOnlyMemory<char>>? onOutput, bool keep) =>
+        OutputPump.ReadAsync(reader, onOutput, keep, MaxKeptOutput, ex => Console.Error.WriteLine($"[updates] progress callback failed, reading on: {ex.GetType().Name}"));
+
+    private static async Task<(int Exit, string Output)> RunWingetAsync(IReadOnlyList<string> args, TimeSpan timeout,
+        Action<ReadOnlyMemory<char>>? onOutput = null, bool keepOutput = true)
     {
         var info = new ProcessStartInfo("winget")
         {
@@ -157,7 +189,7 @@ public sealed class UpdateService
         };
         foreach (var a in args) info.ArgumentList.Add(a);
         using var process = Process.Start(info) ?? throw new System.ComponentModel.Win32Exception("winget not started");
-        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stdout = ReadOutputAsync(process.StandardOutput, onOutput, keepOutput);
         var stderr = process.StandardError.ReadToEndAsync();
         using var cts = new CancellationTokenSource(timeout);
         try

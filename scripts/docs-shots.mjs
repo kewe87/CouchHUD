@@ -34,7 +34,7 @@ const SCENES = {
   home: ['keys:ArrowLeft*14', 'shot:home'],
   library: ['key:e', 'wait:500', 'shot:library'],
   guide: ['keys:ArrowLeft*14', 'key:Home', 'wait:900', 'shot:guide'],
-  // Settings > Mode > "Back to normal Windows" asks for the couch code; three buttons entered.
+  // Settings > Mode > "Switch to App mode" asks for the couch code; three buttons entered.
   lock: ['keys:e*8', 'key:ArrowRight', 'keys:ArrowDown*1', 'key:Enter', 'wait:500', 'key:ArrowDown', 'key:Enter', 'wait:700', 'key:x', 'key:y', 'key:ArrowUp', 'wait:300', 'shot:lock']
 };
 

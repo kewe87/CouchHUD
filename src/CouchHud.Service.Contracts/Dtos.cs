@@ -148,8 +148,12 @@ public sealed record HelloData(int Protocol, string ServiceVersion, string[] Cap
 /// <param name="ParentCode">Whether the service holds a parents' code for the caller (null: it cannot tell).</param>
 /// <param name="LockMode">The caller's lock mode as the service keeps it ("off", "code", "windows"; null: not set yet or unknown).</param>
 /// <param name="LegacyLock">True while the caller's lock was taken over from 0.4.0 and waits for an administrator's confirmation; else left out.</param>
+/// <param name="CodesDamaged">
+/// True while the service's code file is not valid (no code is checked or stored until an administrator resets it with
+/// <see cref="Operation.ResetCodeStore"/>); else left out. Says nothing about any code or account.
+/// </param>
 public sealed record StatusData(string ServiceVersion, bool UnsafeInstall, string Migration, long UptimeSeconds, string? Release = null,
-    bool? CouchCode = null, bool? ParentCode = null, string? LockMode = null, bool? LegacyLock = null);
+    bool? CouchCode = null, bool? ParentCode = null, string? LockMode = null, bool? LegacyLock = null, bool? CodesDamaged = null);
 
 public sealed record PingData(long ServerTimeMs);
 

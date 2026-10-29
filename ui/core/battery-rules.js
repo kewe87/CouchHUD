@@ -67,21 +67,3 @@ export function batteryEntries(pads, devices) {
   }
   return list;
 }
-
-/**
- * The small controller icon in the top bar: only while a controller's battery is low (an XInput pad at low or empty, a Bluetooth
- * controller at or below the low percent). The lowest one decides; null when every controller is fine.
- */
-export function lowControllerBadge(snapshot) {
-  let lowest = null;
-  for (const p of snapshot?.pads ?? []) {
-    if (!padLow(p?.level)) continue;
-    const steps = padSteps(p.level);
-    if (lowest === null || steps < lowest) lowest = steps;
-  }
-  for (const d of snapshot?.devices ?? []) {
-    if (d?.kind !== 'controller' || !validPercent(d.percent) || d.percent > LOW_PERCENT) continue;
-    lowest = 0;
-  }
-  return lowest === null ? null : { icon: '🎮', value: bars(lowest) };
-}

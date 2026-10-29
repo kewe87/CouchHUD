@@ -49,14 +49,9 @@ export default {
 
   // home.js
   'home.name': 'Favoriten',
-  'home.allGames': 'Alle Spiele',
-  'home.allApps': 'Alle Apps',
-  'home.openBrowser': 'Browser öffnen',
   'home.badge.paused': '❚❚ Pausiert',
   'home.badge.running': '▶ Läuft',
   'home.meta.collection': 'Sammlung · {entries}',
-  'home.library': 'Bibliothek',
-  'home.meta.installed': { one: '1 Spiel installiert', other: '{count} Spiele installiert' },
   'home.meta.pausedSince': 'Pausiert seit {duration} · A: weiterspielen',
   'home.meta.runningSince': 'Läuft seit {duration} · A: weiterspielen',
   'home.resumeFailed': 'Spiel nicht nach vorne geholt',
@@ -71,6 +66,12 @@ export default {
   'home.hint.favorite': 'Favorit',
   'home.hint.power': 'Energie',
   'home.continue.title': 'Weiterspielen',
+  'home.recent.title': 'Zuletzt verwendet',
+  'home.empty.hint': 'Noch keine Favoriten – markiere Einträge im Reiter {tabs} mit {y}',
+  'home.empty.hintMany': 'Noch keine Favoriten – markiere Einträge in den Reitern {tabs} mit {y}',
+  'home.empty.hintPlain': 'Noch keine Favoriten – markiere Einträge mit {y}',
+  'home.empty.title': 'Noch nichts hier',
+  'home.empty.recent': 'Im gewählten Zeitraum wurde nichts verwendet',
   'home.continue.lastSession': 'letzte Sitzung {time}',
   'home.hint.openCollection': 'Sammlung öffnen',
   'home.hint.menu': 'Menü',
@@ -100,6 +101,7 @@ export default {
   'notifications.tip': 'Tipp: Unter Einstellungen › Benachrichtigungen kannst du WhatsApp, Discord & Co. aus Windows hier anzeigen lassen.',
   'notifications.empty': 'Keine Benachrichtigungen.',
   'notifications.hint.clear': 'Alle löschen',
+  'notifications.hint.open': 'Öffnen',
   'notifications.hint.back': 'Zurück',
 
   // phone.js

@@ -7,14 +7,14 @@ import { t } from './i18n.js';
 import { sound } from '../sound.js';
 import { state } from './state.js';
 
-export const favorites = { mode: 'combined', sites: false, entries: [], blocked: new Set(), loaded: false };
+export const favorites = { mode: 'combined', recentDays: 0, sites: false, entries: [], blocked: new Set(), loaded: false };
 
 let sequence = 0;
 
 /** Back to "nothing known": a profile switch, a lock or a failed answer must never leave another person's arrangement on the screen. */
 export function resetFavorites() {
   sequence++;
-  Object.assign(favorites, { mode: 'combined', sites: false, entries: [], blocked: new Set(), loaded: false });
+  Object.assign(favorites, { mode: 'combined', recentDays: 0, sites: false, entries: [], blocked: new Set(), loaded: false });
 }
 
 /** Asks the host for the arrangement again (library, favorites, settings, areas, profile or rules changed). Redraws when it arrived. */
@@ -33,6 +33,7 @@ export async function refreshFavorites() {
   const view = currentView();
   if (view?.list && !state.stack.length) view.focusId = view.list[view.index]?.id;
   favorites.mode = answer.mode ?? 'combined';
+  favorites.recentDays = Number.isFinite(answer.recentDays) ? answer.recentDays : 0;
   favorites.sites = !!answer.sites;
   favorites.entries = Array.isArray(answer.entries) ? answer.entries : [];
   favorites.blocked = new Set(Array.isArray(answer.blocked) ? answer.blocked : []);

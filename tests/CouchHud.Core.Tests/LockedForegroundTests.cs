@@ -224,7 +224,8 @@ public sealed class LockedForegroundTests
     [InlineData(true, false, false, false, true, true)]
     [InlineData(true, false, false, false, false, false)]
     [InlineData(true, true, false, false, true, false)]
-    [InlineData(false, false, false, false, true, false)]
+    [InlineData(false, false, false, false, true, false)] // a lock only exists in shell mode
+    [InlineData(false, false, true, true, false, true)]   // app mode: the options decide
     [InlineData(true, false, true, true, false, true)]
     public void LockedCouchTakesTheXboxButtonWhateverTheOptionsSay(bool full, bool pc, bool suppress, bool tap, bool locked, bool expected) =>
         Assert.Equal(expected, GameBarGuard.ShouldApply(full, pc, suppress, tap, locked));

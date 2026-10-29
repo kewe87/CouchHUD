@@ -72,6 +72,7 @@ export default {
   'passcode.approve.release': 'Windows-Einschränkungen freigeben',
   'passcode.approve.firewall': 'Firewall für die Fernbedienung öffnen',
   'passcode.approve.update': 'Update ohne Abmelden der Sitzung',
+  'passcode.approve.resetCodes': 'beschädigten Code-Speicher zurücksetzen',
   'passcode.approve.legacyCode': 'Einmalig nach dem Update: Die Couch-Sperre stammt aus CouchHUD 0.4.0. Ihr Code lag damals in einer Datei, die jedes Programm dieses Kontos ändern konnte. Ein Administrator bestätigt jetzt: Der eben eingegebene Code wird der Code der Sperre. Alle anderen bisherigen Codes dieses Kontos (auch ein Eltern-Code) gelten danach nicht mehr. Gleich fragt Windows nach einem Administrator (Programm: sc.exe, Dienststeuerung). Steht in der Abfrage etwas anderes als „sc.exe“ oder kennen Sie den eingegebenen Code nicht, abbrechen.',
   'passcode.approve.legacyWindows': 'Einmalig nach dem Update: Die Couch-Sperre stammt aus CouchHUD 0.4.0. Ein Administrator bestätigt jetzt: Die Sperre öffnet sich mit der Windows-Anmeldung dieses Kontos (Windows-Modus). Alle bisherigen Codes dieses Kontos (auch ein Eltern-Code) gelten danach nicht mehr. Gleich fragt Windows nach einem Administrator (Programm: sc.exe, Dienststeuerung). Steht in der Abfrage etwas anderes als „sc.exe“, abbrechen.',
   'passcode.legacyOldCode': 'Der alte Code lag lesbar in der Konfiguration – lege in den Einstellungen einen neuen Code fest.',

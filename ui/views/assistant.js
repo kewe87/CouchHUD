@@ -5,7 +5,8 @@ import { t } from '../core/i18n.js';
 import { iconEl } from '../core/glyph-icons.js';
 import { api } from '../core/api.js';
 import { el, setFocused } from '../core/dom.js';
-import { attempt, toast } from '../core/feedback.js';
+import { attempt } from '../core/feedback.js';
+import { isBusy, markBusy, runBusy } from '../core/busy.js';
 import { setBackground } from '../core/art.js';
 import { currentView, render, renderHints } from '../core/nav.js';
 import { state } from '../core/state.js';
@@ -40,7 +41,9 @@ const toolLabel = (name) => {
 };
 
 const messages = [];
-let busy = false;
+/** The busy key of a running question (ui/core/busy.js). */
+const ASK = 'assistant:ask';
+const isAsking = () => isBusy(ASK);
 let progress = '';
 let info = null;
 
@@ -87,23 +90,23 @@ function plain(text) {
 
 async function ask(text) {
   if (!text?.trim()) return;
-  if (busy) return toast(t('assistant.busy'));
-  busy = true;
+  // A question runs: the chips are greyed (busy) and a press does nothing; the answer is on its way (it was a toast).
+  if (isAsking()) return sound.bump();
   progress = '';
   messages.push({ role: 'user', text: text.trim() });
-  render();
-  try {
-    const answer = await api.askAssistant(text.trim());
-    messages.push({ role: 'assistant', text: plain(answer) || t('assistant.done') });
-    sound.select();
-  } catch (e) {
-    messages.push({ role: 'error', text: e?.message ?? String(e) });
-    sound.bump();
-  } finally {
-    busy = false;
-    progress = '';
-    if (currentView() === assistantView) render();
-  }
+  const redraw = () => (currentView() === assistantView && !state.overlay ? render() : renderHints());
+  await runBusy(ASK, async () => {
+    try {
+      const answer = await api.askAssistant(text.trim());
+      messages.push({ role: 'assistant', text: plain(answer) || t('assistant.done') });
+      sound.select();
+    } catch (e) {
+      messages.push({ role: 'error', text: e?.message ?? String(e) });
+      sound.bump();
+    } finally {
+      progress = '';
+    }
+  }, { onChange: redraw, onIgnored: () => sound.bump() });
 }
 
 export const assistantView = {
@@ -123,7 +126,8 @@ export const assistantView = {
     ];
     this.index = Math.min(this.index, this.chips.length - 1);
     this.transcript = el('div', { className: 'chat list-scroll' });
-    this.chipNodes = this.chips.map((c) => el('li', { className: `chip${c.primary ? ' primary' : ''}` }, c.icon ? iconEl(c.icon) : null, c.label));
+    // While a question runs every chip is busy (greyed, A does nothing); the focus stays where it is.
+    this.chipNodes = this.chips.map((c) => markBusy(el('li', { className: `chip${c.primary ? ' primary' : ''}` }, c.icon ? iconEl(c.icon) : null, c.label), isAsking()));
     this.chipRow = el('ul', { className: 'chips' }, this.chipNodes);
     this.modelTag = el('span', { className: 'chat-model' });
     root.append(el('div', { className: 'assistant-page' },
@@ -145,7 +149,7 @@ export const assistantView = {
         el('strong', { textContent: t('assistant.emptyTitle') }),
         el('p', { textContent: t('assistant.emptyText') })));
     }
-    if (busy) {
+    if (isAsking()) {
       nodes.push(el('div', { className: 'bubble assistant thinking' },
         el('span', { className: 'dots' }, el('i'), el('i'), el('i')),
         progress ? el('small', { textContent: t('assistant.progress', { text: progress }) }) : null));
@@ -179,7 +183,7 @@ export const assistantView = {
     if (text) await ask(text);
   },
   async reset() {
-    if (busy) return toast(t('assistant.busy'));
+    if (isAsking()) return sound.bump();
     messages.length = 0;
     await attempt(() => api.resetAssistant());
     render();
@@ -199,6 +203,7 @@ export const assistantView = {
         this.transcript.scrollBy({ top: action === 'up' ? -240 : 240, behavior: 'smooth' });
         return;
       case 'a':
+        if (isAsking()) return sound.bump();
         sound.select();
         return this.chips[this.index].run();
       case 'y':
@@ -212,6 +217,7 @@ export const assistantView = {
     dispatch('a');
   },
   hints() {
-    return [['A', t('assistant.hintSelect')], ['Y', t('assistant.hintNew')], ['↕', t('assistant.hintHistory')], ['B', t('assistant.hintHome')]];
+    const busy = isAsking();
+    return [['A', t('assistant.hintSelect'), { busy }], ['Y', t('assistant.hintNew'), { busy }], ['↕', t('assistant.hintHistory')], ['B', t('assistant.hintHome')]];
   }
 };

@@ -3,12 +3,19 @@
 import { api } from '../core/api.js';
 import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
-import { currentView, move, render } from '../core/nav.js';
+import { busyTarget, isBusy, markBusy, runBusy } from '../core/busy.js';
+import { currentView, move, render, renderHints } from '../core/nav.js';
 import { chooseDialog, confirmDialog } from '../components/overlay.js';
 import { switchOffWarning } from '../core/input-help.js';
+import { state } from '../core/state.js';
 import { sound } from '../sound.js';
 import { fmtPercent, t } from '../core/i18n.js';
 import { LOW_PERCENT, bars, percentSteps, validPercent } from '../core/battery-rules.js';
+
+/** The busy key of a switch, pair or remove (ui/core/busy.js): its row shows it, a second A does nothing (it was a toast). */
+const BUSY = 'bluetooth:action';
+/** The row a running action belongs to, the same across redraws. */
+const rowKey = (row) => (row?.kind === 'radio' ? 'radio' : `device:${row?.d?.id}`);
 
 const ICON = { controller: '🎮', headphones: '🎧', keyboard: '⌨', mouse: '🖱', speaker: '🔊', phone: '📱', other: '◉' };
 
@@ -20,7 +27,6 @@ export function bluetoothPage() {
     radio: null,
     devices: null,
     scanning: false,
-    busy: false,
     // quiet: called from build(), which is already drawing the page.
     async scan({ quiet = false } = {}) {
       if (this.scanning) return;
@@ -59,6 +65,7 @@ export function bluetoothPage() {
             el('small', { className: low ? 'battery-low' : '', textContent: battery !== null ? t('bluetooth.connectedBattery', { percent: fmtPercent(battery) }) : d.connected ? t('bluetooth.connected') : d.paired ? t('bluetooth.paired') : t('bluetooth.nearby') })),
           battery !== null ? el('span', { className: `battery-bars${low ? ' battery-low' : ''}`, textContent: bars(percentSteps(battery)) }) : null);
       });
+      this.items.forEach((li, i) => markBusy(li, isBusy(BUSY) && busyTarget(BUSY) === rowKey(rows[i])));
       this.scroller = el('ul', { className: 'check-list list-scroll' }, this.items);
       root.append(el('div', { className: 'files' },
         el('div', { className: 'files-head' },
@@ -77,11 +84,11 @@ export function bluetoothPage() {
         case 'down': return move(this, 1, this.list.length, true);
         case 'x': return this.radio?.available === false ? sound.bump() : this.scan();
         case 'a': {
-          if (this.busy) return toast(t('bluetooth.busy'));
+          if (isBusy(BUSY)) return sound.bump();
           const row = this.list[this.index];
           sound.select();
-          this.busy = true;
-          try {
+          const redraw = () => (currentView() === this && !state.overlay ? render() : renderHints());
+          return runBusy(BUSY, async () => {
             if (row.kind === 'radio') {
               if (!this.radio?.available) return;
               // Switching off cuts a Bluetooth controller off: ask first (Cancel is focused), and say whether it comes back by itself.
@@ -105,9 +112,7 @@ export function bluetoothPage() {
             const msg = await attempt(() => api.unpairBluetooth(d.id), t('bluetooth.removeFailed'));
             if (msg) toast(msg);
             return this.scan();
-          } finally {
-            this.busy = false;
-          }
+          }, { onChange: redraw, onIgnored: () => sound.bump(), target: rowKey(row) });
         }
       }
     },
@@ -120,7 +125,7 @@ export function bluetoothPage() {
       if (this.radio?.available === false) return [['B', t('bluetooth.hint.back')]];
       const row = this.list?.[this.index];
       const a = row?.kind === 'radio' ? (this.radio?.on ? t('bluetooth.hint.switchOff') : t('bluetooth.hint.switchOn')) : row?.d?.paired ? t('bluetooth.hint.options') : t('bluetooth.hint.pair');
-      return [['A', a], ['X', t('bluetooth.hint.search')], ['B', t('bluetooth.hint.back')]];
+      return [['A', a, { busy: isBusy(BUSY) }], ['X', t('bluetooth.hint.search'), { busy: this.scanning }], ['B', t('bluetooth.hint.back')]];
     }
   };
 }

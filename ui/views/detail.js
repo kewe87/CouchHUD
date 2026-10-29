@@ -2,7 +2,7 @@ import { iconEl } from '../core/glyph-icons.js';
 import { t } from '../core/i18n.js';
 import { api } from '../core/api.js';
 import { el, formatDuration, formatSize, loadFirst, relativeTime, setFocused } from '../core/dom.js';
-import { setBackground } from '../core/art.js';
+import { setBackground, setDetailHero } from '../core/art.js';
 import { scheduleTrailer } from '../core/media.js';
 import { attempt, toast } from '../core/feedback.js';
 import { SOURCE_LABEL, launchItem, reloadLibrary, toggleFavorite } from '../core/library.js';
@@ -117,6 +117,7 @@ export function detailPage(item) {
           badge ? el('span', { className: 'age-badge', textContent: badge.text, title: badge.title, ariaLabel: badge.title }) : null,
           el('dl', {}, facts.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', { textContent: v })])))));
       setBackground(it);
+      setDetailHero(it);
       scheduleTrailer(it, 700);
       this.update();
     },

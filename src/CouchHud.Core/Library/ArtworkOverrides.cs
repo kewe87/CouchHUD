@@ -16,7 +16,8 @@ public static class ArtworkOverrides
             case "cover": o.Cover = url; break;
             case "hero": o.Hero = url; break;
             case "logo": o.Logo = url; break;
-            default: throw new ArgumentException("slot must be cover, hero or logo", nameof(slot));
+            case "square": o.Square = url; break;
+            default: throw new ArgumentException("slot must be cover, hero, logo or square", nameof(slot));
         }
     }
 
@@ -55,7 +56,8 @@ public static class ArtworkOverrides
         {
             Cover = Front(art.Cover, o.Cover),
             Hero = Front(art.Hero, o.Hero),
-            Logo = Front(art.Logo, o.Logo)
+            Logo = Front(art.Logo, o.Logo),
+            Square = Front(art.Square, o.Square)
         };
     }
 

@@ -1,11 +1,8 @@
-// Battery levels in the top bar: the PC's own battery next to the clock (only where there is one) and a small controller icon while a
-// controller runs low. The host reads the hardware once a minute and pushes changes ("battery"); it also says "battery low" itself.
+// Battery levels for the guide menu (components/quick-menu.js): the PC's own battery (only where there is one) and the controllers.
+// The host reads the hardware once a minute and pushes changes ("battery"); it also says "battery low" itself (a toast).
 
 import { api } from './api.js';
-import { $ } from './dom.js';
-import { fmtPercent, t } from './i18n.js';
 import { state } from './state.js';
-import { lowControllerBadge, systemBadge } from './battery-rules.js';
 
 const hooks = [];
 
@@ -14,28 +11,9 @@ export function onBatteryChanged(hook) {
   hooks.push(hook);
 }
 
-function show() {
-  const node = $('#battery-status');
-  if (node) {
-    const badge = systemBadge(state.battery?.system);
-    node.hidden = !badge;
-    node.classList.toggle('low', !!badge?.low);
-    node.textContent = badge ? `${badge.icon} ${fmtPercent(badge.percent)}` : '';
-    node.title = badge ? (badge.charging ? t('battery.charging') : badge.low ? t('battery.low') : t('battery.system')) : '';
-  }
-  const pad = $('#pad-battery');
-  if (pad) {
-    const low = lowControllerBadge(state.battery);
-    pad.hidden = !low;
-    pad.textContent = low ? `${low.icon} ${low.value}` : '';
-    pad.title = low ? t('battery.padLow') : '';
-  }
-}
-
 function accept(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return;
   state.battery = snapshot;
-  show();
   for (const hook of hooks) hook();
 }
 

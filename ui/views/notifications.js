@@ -5,7 +5,9 @@ import { api } from '../core/api.js';
 import { $, el, keepInView, setFocused } from '../core/dom.js';
 import { attempt } from '../core/feedback.js';
 import { hue } from '../core/art.js';
-import { currentView, move, render } from '../core/nav.js';
+import { currentView, move, render, showChipFocus } from '../core/nav.js';
+import { activateChip } from '../core/bar-chips.js';
+import { notificationTarget } from '../core/notify-rules.js';
 import { state } from '../core/state.js';
 import { sound } from '../sound.js';
 import { timeAgo } from './news.js';
@@ -22,8 +24,23 @@ function bell() {
     $('#status')?.prepend(node);
   }
   const n = state.notifications.unread;
-  node.hidden = n === 0;
+  // Always there (a stable target for LB/RB and the mouse), muted without unread ones.
+  node.hidden = false;
+  node.classList.toggle('none', n === 0);
   node.textContent = `🔔︎ ${n}`;
+  node.title = t('notifications.title');
+  node.onclick = () => activateChip('bell');
+  showChipFocus();
+}
+
+/** Where a notification of CouchHUD itself leads: a fixed whitelist of screens (the host sets it for its own notices only). Anything else is ignored. */
+const GO = { downloads: () => activateChip('downloads') };
+
+/** Opens the notification's target; false when it has none or an unknown one. Showing the screen installs nothing. */
+export function openNotificationTarget(n) {
+  const target = notificationTarget(n);
+  if (!target) return false;
+  return GO[target]() === true;
 }
 
 /** Initials in a colored bubble stand in for app icons. */
@@ -38,7 +55,7 @@ function popup(n) {
     stackEl = el('div', { id: 'notify-stack' });
     document.body.append(stackEl);
   }
-  const card = el('div', { className: `notify-card${n.security ? ' security' : ''}` },
+  const card = el('div', { className: `notify-card${n.security ? ' security' : ''}${n.target ? ' has-target' : ''}`, onclick: () => openNotificationTarget(n) },
     appBadge(n.app),
     el('div', { className: 'notify-text' },
       el('small', { textContent: n.app }),
@@ -91,7 +108,7 @@ export function notificationsPage() {
       }
       const items = state.notifications.items;
       this.index = Math.min(this.index, Math.max(0, items.length - 1));
-      this.rows = items.map((n) => el('li', { className: 'check-row notify-row' },
+      this.rows = items.map((n) => el('li', { className: 'check-row notify-row', onclick: () => openNotificationTarget(n) },
         appBadge(n.app),
         el('span', { className: 'check-main' },
           el('strong', { textContent: n.title }),
@@ -115,6 +132,9 @@ export function notificationsPage() {
       switch (action) {
         case 'up': return move(this, -1, count, true);
         case 'down': return move(this, 1, count, true);
+        case 'a':
+          if (!count || !openNotificationTarget(state.notifications.items[this.index])) return sound.bump();
+          return sound.select();
         case 'y':
           if (!count) return sound.bump();
           await attempt(() => api.clearNotifications());
@@ -124,7 +144,8 @@ export function notificationsPage() {
       }
     },
     hints() {
-      return [['Y', t('notifications.hint.clear')], ['B', t('notifications.hint.back')]];
+      const open = this.rows?.length && state.notifications.items[this.index]?.target;
+      return [...(open ? [['A', t('notifications.hint.open')]] : []), ['Y', t('notifications.hint.clear')], ['B', t('notifications.hint.back')]];
     }
   };
 }

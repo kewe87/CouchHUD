@@ -8,6 +8,7 @@ import { attempt, toast } from './core/feedback.js';
 import { applySkin, onGlyphsChanged, setPadGlyphs } from './core/skins.js';
 import { apps, games, reloadLibrary, setLibrary } from './core/library.js';
 import { currentView, pop, render, renderHints, setTabs, switchTab, push, clearStack } from './core/nav.js';
+import { cycleBar, handleChip } from './core/bar-chips.js';
 import { closeOverlay, handleOverlay, openOverlay } from './components/overlay.js';
 import { Input } from './input.js';
 import { attachMouse, hide as hideMouse, setPointer } from './components/mouse.js';
@@ -25,7 +26,7 @@ import { startFirstRun } from './views/setup-wizard.js';
 import { powerMenu } from './core/power.js';
 import { configureScreensaver, screensaverInput, setScreensaverFocus, startScreensaverWatch } from './core/screensaver.js';
 import { gridView } from './views/grid.js';
-import { settingsView } from './views/settings.js';
+import { checkInterruptedSwitch, settingsView } from './views/settings.js';
 import { newsView } from './views/news.js';
 import { loadPluginTabs } from './views/plugin-tab.js';
 import { arrangeTabs } from './core/plugin-tabs.js';
@@ -86,7 +87,7 @@ const tabList = () => arrangeTabs(
   pluginTabViews.filter((v) => areaOn(v.tabArea)),
   [...(state.info.assistant ? [assistantView] : []), settingsView]);
 
-const tabSignature = () => tabList().map((v) => `${v.id}:${v.name}:${v.tabImage ?? v.tabGlyph ?? ''}`).join('|');
+const tabSignature = () => tabList().map((v) => `${v.id}:${v.name}`).join('|');
 
 /** Asks the host which plugin tabs exist now (at start, when plugins finished loading, after an area, profile or plugin change). */
 let tabsLoading = false;
@@ -113,12 +114,6 @@ export async function refreshPluginTabs() {
 const tabsIndexOf = (view) => tabList().indexOf(view);
 
 updateTabs();
-
-// The end of the Home shelf ("All games", "All apps" or the browser) and other ways to a main tab by its area.
-window.addEventListener('couchhud:open-tab', (e) => {
-  const at = tabsIndexOf({ games: gamesView, apps: appsView, browser: browserView, news: newsView }[e.detail]);
-  if (at >= 0) switchTab(at);
-});
 
 /** The host switched areas on or off: tabs, shelf and library follow at once. */
 function applyAreas(list) {
@@ -172,11 +167,13 @@ function onAction(action) {
   if (state.overlay) return handleOverlay(action);
   if (quick.open) return handleQuick(action);
   const view = currentView();
+  // LB/RB leave the last tab for the chips at the right of the bar (bell, downloads); while one has the focus it takes A and B.
+  if (action !== 'lb' && action !== 'rb' && action !== 'start' && action !== 'guide' && handleChip(action)) return;
   // Pages like the on-screen keyboard claim buttons that are global elsewhere.
   if (!GLOBAL.has(action) || view.captures?.(action)) return view.handle(action);
   switch (action) {
-    case 'lb': return switchTab(state.tab - 1);
-    case 'rb': return switchTab(state.tab + 1);
+    case 'lb': return cycleBar(-1);
+    case 'rb': return cycleBar(1);
     case 'start': return openOverlay(powerMenu());
     case 'guide': return openQuickMenu();
     case 'b':
@@ -249,6 +246,8 @@ async function init() {
   startBattery();
   // First start: the setup assistant, with the disclaimer and privacy notice as its second step (on a locked couch only the notice).
   startFirstRun().catch(console.error);
+  // A mode switch that was cut off by a crash or a power loss: after the unlock the person can undo or finish it.
+  setTimeout(() => checkInterruptedSwitch().catch(console.error), 4000);
   // Settings that add or remove a tab (assistant) ask for a refresh.
   window.addEventListener('couchhud:tabs', () => {
     updateTabs();

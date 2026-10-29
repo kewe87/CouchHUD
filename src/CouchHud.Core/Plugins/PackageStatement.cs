@@ -187,7 +187,7 @@ public static class PackageStatements
         // The statement names its key: a signature by another key (even a valid one) does not make it this publisher's package.
         if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(statement.PublisherKey), Encoding.ASCII.GetBytes(fingerprint)))
             throw new CatalogException(Strings.Get("plugin.statement.keyMismatch"));
-        if (PluginPolicy.CheckDeclared(origin, statement.Capabilities) is { } capProblem) throw new CatalogException(Strings.Get(capProblem));
+        if (PluginPolicy.DeclaredMessage(origin, statement.Capabilities) is { } capProblem) throw new CatalogException(capProblem);
         if (origin == PluginOrigin.ThirdParty && (PluginNames.IsReserved(statement.Id, firstPartyIds) || PluginNames.IsReserved(statement.Folder, firstPartyIds)))
             throw new CatalogException(Strings.Get("plugin.statement.reserved"));
         return new VerifiedStatement(statement, origin, fingerprint);

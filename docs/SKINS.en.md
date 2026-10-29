@@ -27,7 +27,7 @@ A skin is a stylesheet plus optional button glyphs of its own. It changes colors
 
 `name` and `description` are either plain text or an object with `de` and `en`; CouchHUD shows the one for the current language (the other one if it is missing). Names have at most 40 characters, descriptions 300; control characters, invisible format characters (such as text-direction overrides or zero-width characters) and `<` `>` are removed, so a name is always plain text. A skin without a name carries its folder name. `soundSet` is optional: one of the sound sets of the app (`default`, `deepsea`, `greenlight`, `neoncity`, `nova`) that plays while the skin is active; anything else is ignored.
 
-`glyphs` is optional (at most 32 entries, each label at most 12 characters) and only styling. The key `≡` is the label of the menu button (for example `☰` or `MENU`): which symbols appear is decided by the controller (or *Settings › Controller › Button symbols*). An entry such as `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` or `PS` only applies with PlayStation symbols, any other only with Xbox symbols; otherwise CouchHUD shows the default symbol of that kind of controller. The button colors with PlayStation symbols hang on `:root[data-pad="playstation"]`.
+`glyphs` is optional (at most 32 entries, each label at most 12 characters) and only styling. The key `≡` is the label of the menu button (for example `☰` or `MENU`): which symbols appear is decided by the controller (or *Settings › Controller › Button symbols*). An entry such as `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` or `PS` only applies with PlayStation symbols, any other only with Xbox symbols; otherwise CouchHUD shows the default symbol of that kind of controller. The button colors with PlayStation symbols hang on `:root[data-pad="playstation"]`. For own labels for both kinds use the optional lists `glyphsXbox` and `glyphsPlayStation` (same limits, text only); an entry there applies to exactly that kind of controller and wins over the entry in `glyphs`, which stays the fallback. Order: the list of the controller kind, then `glyphs` (filtered by kind), then the default symbol of the kind. A PlayStation pad that Steam Input or DS4Windows passes on as a virtual XInput pad counts as PlayStation as long as its native connection reports the presses first; otherwise CouchHUD shows the Xbox symbols.
 
 `sounds` is optional. Possible events: `move`, `tab`, `select`, `back`, `bump`, `open`, `close`, `notify`, `toggle`, `boot` and `music`. `music` is a background track that loops when the user has chosen "Menu sounds and music"; without it, the skin's built-in music plays. Allowed are `.wav`, `.ogg` and `.mp3` from the skin folder. For missing events CouchHUD plays the built-in sound set.
 
@@ -77,6 +77,25 @@ Put your own fonts and images in the skin folder and reference them relatively (
 | `--tile-radius`, `--shelf-tile`, `--focus-scale` | Corners, tile size on Home, zoom of the focus |
 
 For everything else you can override the selectors from `ui/styles.css`. The skins in the catalog (Deep Sea, Greenlight, Neon City, Nova, Stardust) show how far that goes: Deep Sea, for example, turns the whole Home layout around. Only the CouchHUD skin is part of the app (`ui/skins/`); all others are skins like yours, installed into the skins folder, and their rules begin with `:root[data-skin="user:<folder>"]`.
+
+## The tab bar
+
+A skin may style the tabs (type, colours, gaps, the line under the active tab, a "pill" padding around the list) but must not take a tab away: the plugins' tabs (for example "Smart Home") stand in the same list `#tab-list`, and which tabs exist is decided by CouchHUD and the plugins, not by the skin. The bar fits itself (core/nav.js): when all tabs fit they stay as they are; otherwise the gaps get tighter first, then the wide tabs narrower (never below the minimum width), and when even that is not enough the bar scrolls with arrows at its edges.
+
+- `--tab-min-width` (on `:root[data-skin="…"]`): the smallest width of a tab that has to shrink, as a number with `rem` or `px`, for example `7rem`. 4 to 10 rem is allowed; anything else (invalid values too) is the default of 6.5 rem.
+- At runtime the program sets visibility, opacity, transforms, filters, pointer events and a font size of at least 0.75 rem for the tabs, the arrows and the bar itself inline with `!important`. A skin cannot hide, shrink or cover tabs; the attempt has no effect.
+- `scripts/skin-check.mjs` (in the CouchHUD repository; `scripts/catalog-entry.ps1` calls it when it packs a skin folder) is a **lint for the catalog review**, not a protection: it reports rules that hide the tab bar (`display:none`, `visibility:hidden`, zero width, `nth-child` and the like), also with CSS escapes or `[id=…]` selectors. It finds the honest mistakes and the plain attempts; the visibility is enforced at runtime.
+
+## Square tiles
+
+A skin with square tiles (a PlayStation look, say) sets `--tile-art: square;` (on `:root[data-skin="…"]`; it is only read there). The tiles in the library, favorites and on Home then show the games' **square picture** (from SteamGridDB: square grids, then icons; Steam itself has none). An entry without a square picture shows its cover cropped to a square, centred (`background-size: cover`, class `art-cropped` on `.art.art-square`), the same in every skin. Without the variable (or with any other value) the cover stays, so the default skin does not change. The shape of the tile itself is up to the skin, for example `aspect-ratio: 1 / 1`. Users choose the square picture under *Change artwork* in the "Square" tab.
+
+```css
+:root[data-skin="user:synthwave"] {
+  --tile-art: square;
+}
+:root[data-skin="user:synthwave"] .tile .art.art-square { aspect-ratio: 1 / 1; }
+```
 
 ## Mouse pointer
 

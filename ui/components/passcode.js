@@ -9,7 +9,7 @@ import { state } from '../core/state.js';
 import { sound } from '../sound.js';
 import { t } from '../core/i18n.js';
 import { confirmDialog } from './overlay.js';
-import { CODE_KEYS, padHelp } from '../core/input-help.js';
+import { CODE_KEYS, padHelp, shouldShowCodeKeys, withTimeout } from '../core/input-help.js';
 import { REPORT_REFRESH_MS, changeReporter, codeEntryTracker } from '../core/screenshot-rules.js';
 
 export const PASSCODE_LENGTH = 6;
@@ -59,6 +59,9 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
       codeEntry: true,
       onClose: () => finish(undefined),
       help: { noPad: false, bluetooth: null },
+      // The on-screen buttons are only the fallback for mouse and touch: shown while no controller is connected (or the pad list cannot be
+      // read), hidden while one is. The keyboard and the controller work either way, nothing here changes what is accepted.
+      showKeys: false,
       build(root) {
         this.dots = Array.from({ length: PASSCODE_LENGTH }, () => el('span', { className: 'passcode-dot' }));
         this.errorEl = el('p', { className: 'passcode-error', textContent: error });
@@ -91,6 +94,8 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
         this.legendEl.textContent = t('passcode.keyboard', { a, b, x, y, lb, rb });
       },
       renderHelp() {
+        if (this.keys) this.keys.hidden = !this.showKeys;
+        if (this.legendEl) this.legendEl.hidden = !this.showKeys;
         if (!this.helpEl) return;
         const { noPad, bluetooth } = this.help;
         this.helpEl.hidden = !noPad;
@@ -103,13 +108,17 @@ export function enterPasscode({ title = t('passcode.enter'), hint = '', error = 
       /** Asks quietly (no error toasts over the code prompt): without an answer nothing is said. */
       async refreshHelp() {
         const quiet = (call) => (call ? call().catch(() => null) : Promise.resolve(null));
-        const [pads, bt] = await Promise.all([quiet(api.getPads), quiet(api.getBluetooth)]);
+        // A controller list that does not answer within 2 seconds (or fails) counts as "none": the buttons must be there when they are needed.
+        const [pads, bt] = await Promise.all([withTimeout(quiet(api.getPads), 2000, null), withTimeout(quiet(api.getBluetooth), 2000, null)]);
         if (settled) return;
-        this.help = padHelp(Array.isArray(pads) ? pads.length : null, bt);
+        const count = Array.isArray(pads) ? pads.length : null;
+        this.showKeys = shouldShowCodeKeys(count);
+        this.help = padHelp(count, bt);
         this.renderHelp();
       },
       // Mouse and touch: a click on a key is that button, the same way the controller and keyboard enter it.
       pointer(node, index, dispatch) {
+        if (!this.showKeys) return;
         const code = node.dataset?.code;
         if (code === 'cancel') return dispatch('start');
         if (CODE_BUTTONS.has(code)) dispatch(code);
@@ -284,7 +293,7 @@ async function askForCode(reason) {
 }
 
 // Before Windows' UAC prompt for an administrator's approval: what exactly is approved (the prompt itself only names sc.exe).
-// i18n-used: passcode.approve.autoLogon passcode.approve.lockMode passcode.approve.removeCode passcode.approve.changeCode passcode.approve.release passcode.approve.firewall passcode.approve.update
+// i18n-used: passcode.approve.autoLogon passcode.approve.lockMode passcode.approve.removeCode passcode.approve.changeCode passcode.approve.release passcode.approve.firewall passcode.approve.update passcode.approve.resetCodes
 const LEGACY_TEXT = {
   legacyCode: () => t('passcode.approve.legacyCode'),
   legacyWindows: () => t('passcode.approve.legacyWindows'),
@@ -299,7 +308,8 @@ const APPROVAL_TEXT = {
   ReleaseLockPolicies: 'passcode.approve.release',
   CleanupPolicyKeys: 'passcode.approve.release',
   SetRemoteFirewall: 'passcode.approve.firewall',
-  InstallCouchHudUpdate: 'passcode.approve.update'
+  InstallCouchHudUpdate: 'passcode.approve.update',
+  ResetCodeStore: 'passcode.approve.resetCodes'
 };
 // Pages that wait for an unlock hear when an administrator's approval is coming (UAC), so they say so instead of a status of their own.
 const approvalListeners = new Set();

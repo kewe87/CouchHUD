@@ -22,8 +22,6 @@ public static class PluginTabRules
     /// <summary>What fits the tab bar next to six other tabs.</summary>
     public const int MaxTitle = 14;
     public const int MaxIconSide = 256;
-    /// <summary>More plugin tabs than this: the bar shows no tab icons (the UI applies it).</summary>
-    public const int MaxTabsWithIcons = 3;
 
     /// <summary>The glyph shown when a third party picks one that renders as a built-in icon.</summary>
     public const string GenericGlyph = "◆";
@@ -52,7 +50,7 @@ public static class PluginTabRules
     public static readonly IReadOnlyList<string> BuiltInGlyphs =
     [
         "🔇", "🔉", "🖼", "💾", "🎨", "🗑", "🔑", "🔒", "🔓", "📁", "🔔", "🌐", "📸", "🔍", "⌕", "🖵", "🔊", "🔈", "🎮", "⚠", "⛔", "☾", "⏻", "✎", "▶", "⏺",
-        "⬇", "⤓", "⬆", "↻", "⟳", "↺", "⇄", "★", "☆", "⚙", "⌂", "✦", "▤", "▣", "♪", "ᛒ", "⏲", "▭", "⏸", "+", "◆", "○", "⋯", "🖴", "▦", "📺", "🎧", "🎬", "📜",
+        "⬇", "⤓", "⬆", "↻", "⟳", "⟲", "↺", "⇄", "★", "☆", "⚙", "⌂", "✦", "▤", "▣", "♪", "ᛒ", "⏲", "▭", "⏸", "+", "◆", "○", "⋯", "🖴", "▦", "📺", "🎧", "🎬", "📜",
         "💡", "🔌", "🌀", "🔘", "🪟", "🪄", "🎵", "🌡️", "🌡", "🤖", "🌤️", "🌤", "☀️", "☀", "💧", "⚡", "🔋", "🚪", "🏃", "⛨"
     ];
 
@@ -84,7 +82,9 @@ public static class PluginTabRules
     public static string? CleanTitle(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw) || raw.Length > MaxTitle * 4) return null;
-        var text = raw.Normalize(NormalizationForm.FormC);
+        // Decoration (emoji, symbols, joiners, bidi and invisible characters) is stripped first; what is left must pass the rules below.
+        var text = PluginText.Strip(raw, MaxTitle * 4);
+        if (text.Length == 0) return null;
         var sb = new StringBuilder();
         var lastSpace = true;
         foreach (var c in text.Trim())

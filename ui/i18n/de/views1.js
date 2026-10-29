@@ -43,7 +43,6 @@ export default {
   'assistant.sugWeather': 'Wie wird das Wetter morgen?',
   'assistant.sugSkin': 'Wechsel auf das Neonstadt-Skin',
   'assistant.sugUpdates': 'Gibt es Updates?',
-  'assistant.busy': 'Moment, ich bin noch dran …',
   'assistant.done': 'Erledigt.',
   'assistant.title': 'Assistent',
   'assistant.ask': 'Frage stellen',

@@ -63,6 +63,12 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             Console.WriteLine($"[bridge] {method}: parents' code needed");
             Post(new { id, error = ex.Message, parent = new { action = ex.Action, item = ex.Item, reason = ex.Reason } });
         }
+        catch (CouchHud.Shell.Services.CodeStoreDamagedException ex)
+        {
+            // Expected while the service's code file is damaged: the page says so and offers the administrator's reset.
+            Console.WriteLine($"[bridge] {method}: the service's code store is damaged");
+            Post(new { id, error = ex.Message, codesDamaged = true });
+        }
         catch (LockedException ex)
         {
             // Expected while the couch is locked: one line, no stack trace; the page knows it by the flag.
@@ -204,6 +210,9 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             case "quit":
                 hud.QuitFromUi();
                 return null;
+            case "restartCouchHud":
+                hud.RestartFromUi();
+                return null;
             case "getSettings":
                 return hud.GetSettings();
             case "setFeatureAreas":
@@ -316,8 +325,19 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             }
             case "getArtworkChoices":
                 return ToDto(await hud.GetArtworkChoicesAsync(StringArg(0)));
+            case "reloadArtwork":
+                return await hud.ReloadArtworkAsync(StringArg(0));
             case "setArtwork":
-                return ToDto(hud.SetArtwork(StringArg(0), StringArg(1), Arg(2).ValueKind == JsonValueKind.String ? Arg(2).GetString() : null));
+            {
+                try
+                {
+                    return ToDto(await hud.SetArtworkAsync(StringArg(0), StringArg(1), Arg(2).ValueKind == JsonValueKind.String ? Arg(2).GetString() : null));
+                }
+                catch (CouchHud.Core.Library.PickSupersededException)
+                {
+                    return null; // a later pick for the slot won: the page shows nothing for this one
+                }
+            }
             case "getCollections":
                 return hud.GetCollections();
             case "createCollection":
@@ -438,6 +458,10 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             case "repairService":
                 // Open while locked: Windows' UAC prompt is the gate, and the repair is the way out of a fail-closed lock.
                 return await hud.RepairServiceAsync();
+            case "resetCodeStore":
+                // Open while locked like the repair: Windows' UAC prompt is the gate (the service takes an administrator's approval only),
+                // and with a damaged code file no code can unlock the couch.
+                return await hud.ResetCodeStoreAsync();
             case "getParental":
                 return hud.GetParental();
             case "setParental":
@@ -567,6 +591,8 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
             case "setPluginSetting":
                 hud.SetPluginSetting(StringArg(0), StringArg(1), Arg(2).ValueKind == JsonValueKind.String ? Arg(2).GetString() : null);
                 return hud.GetPlugins();
+            case "openPluginSettingPage":
+                return hud.OpenPluginSettingPage(StringArg(0), StringArg(1));
             case "endPluginVisit":
                 hud.EndPluginVisit(StringArg(0), StringArg(1));
                 return true;
@@ -576,6 +602,8 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                 return await hud.GetPluginPageAsync(StringArg(0), StringArg(1));
             case "activatePluginRow":
                 return await hud.ActivatePluginRowAsync(StringArg(0), StringArg(1), StringArg(2));
+            case "activatePluginAction":
+                return await hud.ActivatePluginActionAsync(StringArg(0), StringArg(1), StringArg(2));
             case "changePluginRow":
                 return await hud.ChangePluginRowAsync(StringArg(0), StringArg(1), StringArg(2), StringArg(3));
             case "getQuickActions":
@@ -710,6 +738,9 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
                 return await hud.CheckUpdatesAsync();
             case "getSelfUpdate":
                 return hud.GetSelfUpdate();
+            case "refreshUpdates":
+                hud.RefreshUpdatesIfStale();
+                return null;
             case "checkSelfUpdate":
                 return await hud.CheckSelfUpdateAsync();
             case "startSelfUpdate":
@@ -742,7 +773,7 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
     public static ArtworkChoices ToDto(ArtworkChoices choices)
     {
         static IReadOnlyList<ArtChoice> Map(IReadOnlyList<ArtChoice> list) => list.Select(c => c with { Thumb = LocalFiles.RewriteThumb(c.Thumb) }).ToList();
-        return choices with { Cover = Map(choices.Cover), Hero = Map(choices.Hero), Logo = Map(choices.Logo) };
+        return choices with { Cover = Map(choices.Cover), Hero = Map(choices.Hero), Logo = Map(choices.Logo), Square = Map(choices.Square) };
     }
 
     public static LibraryItem ToDto(LibraryItem item) => item with { Art = ToDto(item.Art) };
@@ -753,6 +784,7 @@ public sealed class UiBridge(Hud hud, CoreWebView2 web)
         Cover = art.Cover.Select(LocalFiles.RewriteArt).ToList(),
         Hero = art.Hero.Select(LocalFiles.RewriteArt).ToList(),
         Logo = art.Logo.Select(LocalFiles.RewriteArt).ToList(),
+        Square = art.Square.Select(LocalFiles.RewriteArt).ToList(),
         Icon = art.Icon.Select(LocalFiles.RewriteArt).ToList()
     };
 }

@@ -54,7 +54,7 @@ public sealed class ConsoleSetupFaultContractTests
         Assert.DoesNotMatch(new Regex(@"attempt\(\(\) => api\.holdUnlockForSetup\(true\)"), start);
         var begin = start.IndexOf("beginSetupHold(", StringComparison.Ordinal);
         var abort = start.IndexOf("if (!begun.ok)", StringComparison.Ordinal);
-        var firstStep = start.IndexOf("for (const row of rows)", StringComparison.Ordinal);
+        var firstStep = start.IndexOf("await runRows(rows", StringComparison.Ordinal);
         Assert.True(begin >= 0 && abort > begin && firstStep > abort, "the setup must check the hold before its first step");
         Assert.Contains("return;", start[abort..firstStep]);
         Assert.Contains("readSecurity: () => api.getSecurity()", start);

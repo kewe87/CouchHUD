@@ -12,24 +12,29 @@ namespace CouchHud.Shell.Services;
 /// <param name="pads">The connected pads with their level and, where known, a percent (XInputPoller.Pads).</param>
 /// <param name="bluetooth">The connected Bluetooth devices with a battery percent.</param>
 /// <param name="changed">The values changed; raised on a thread pool thread.</param>
+/// <param name="hidAddresses">Per USB vendor and product id the Bluetooth addresses of the gamepad HID nodes (exact pad to device match); null or empty: no non-Microsoft pad gets a Bluetooth percent.</param>
 /// <param name="warn">A localized "battery low" text; raised on a thread pool thread.</param>
 public sealed class BatteryMonitor(
-    Func<IReadOnlyList<(int Index, string Battery, int? Percent)>> pads,
+    Func<IReadOnlyList<(int Index, string Battery, int? Percent, int? Vendor, string? Source, int? Product)>> pads,
     Func<Task<IReadOnlyList<DeviceBattery>>> bluetooth,
     Action<BatterySnapshot> changed,
-    Action<string> warn) : IDisposable
+    Action<string> warn,
+    Func<Task<IReadOnlyDictionary<int, IReadOnlyList<string>>>>? hidAddresses = null) : IDisposable
 {
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(60);
     // Bluetooth reads go through the device broker; a hanging one must not hold the next polls, and no second one starts beside it.
     private static readonly TimeSpan BluetoothTimeout = TimeSpan.FromSeconds(10);
 
     private readonly LowBatteryLatch _latch = new();
+    private readonly BatterySourceLog _sourceLog = new();
     private readonly SingleFlight<IReadOnlyList<DeviceBattery>> _bluetoothRead = new();
     private Timer? _timer;
     private int _busy;
     private volatile bool _disposed;
     private BatterySnapshot _current = BatterySnapshot.Empty;
     private string _signature = "";
+    // The Bluetooth devices as read, before a controller was matched to a pad (kept when a read fails or times out).
+    private IReadOnlyList<DeviceBattery> _rawDevices = [];
     private long _polledAt = long.MinValue / 2;
 
     /// <summary>The last values read (empty before the first poll).</summary>
@@ -66,21 +71,25 @@ public sealed class BatteryMonitor(
         {
             Interlocked.Exchange(ref _polledAt, Environment.TickCount64);
             var system = ReadSystem();
-            var padList = pads().Select(p => new PadBattery(p.Index, p.Battery, p.Percent)).ToList();
+            IReadOnlyList<PadBattery> padList = pads().Select(p => new PadBattery(p.Index, p.Battery, p.Percent, p.Vendor, p.Source, p.Product)).ToList();
             IReadOnlyList<DeviceBattery> devices;
             try
             {
                 // Null: the last read still hangs or this one timed out; keep what was known.
-                devices = await _bluetoothRead.RunAsync(bluetooth, BluetoothTimeout) ?? Current.Devices;
+                devices = await _bluetoothRead.RunAsync(bluetooth, BluetoothTimeout) ?? _rawDevices;
             }
             catch (Exception ex)
             {
                 // Keep what was known: a failed read is no reason to drop a device (and to warn again when it comes back).
                 Console.Error.WriteLine($"[battery] bluetooth: {ex.Message}");
-                devices = Current.Devices;
+                devices = _rawDevices;
             }
             if (_disposed) return;
+            _rawDevices = devices;
+            var addresses = await ReadAddressesAsync();
+            (padList, devices) = BatteryRules.MatchBluetooth(padList, devices, addresses);
             var snapshot = new BatterySnapshot(system, padList, devices);
+            foreach (var line in _sourceLog.Update(padList)) Console.Error.WriteLine(line);
             var low = _latch.Update(LowBatteryLatch.Readings(snapshot));
             var signature = Signature(snapshot);
             Volatile.Write(ref _current, snapshot);
@@ -102,6 +111,23 @@ public sealed class BatteryMonitor(
         {
             Volatile.Write(ref _busy, 0);
         }
+    }
+
+    private IReadOnlyDictionary<int, IReadOnlyList<string>> _addresses = new Dictionary<int, IReadOnlyList<string>>();
+
+    private async Task<IReadOnlyDictionary<int, IReadOnlyList<string>>> ReadAddressesAsync()
+    {
+        if (hidAddresses is null) return _addresses;
+        try
+        {
+            _addresses = await hidAddresses().WaitAsync(BluetoothTimeout);
+        }
+        catch (Exception ex)
+        {
+            // Keep the last answer; without any, nothing matches.
+            Console.Error.WriteLine($"[battery] hid addresses: {ex.GetType().Name}");
+        }
+        return _addresses;
     }
 
     /// <summary>The PC's battery, or null on a desktop (or when Windows does not answer).</summary>

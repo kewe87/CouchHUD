@@ -27,7 +27,7 @@ Ein Skin ist ein Stylesheet plus optional eigene Button-Symbole. Er ändert Farb
 
 `name` und `description` sind entweder einfacher Text oder ein Objekt mit `de` und `en`; CouchHUD zeigt den Text der aktuellen Sprache (fehlt er, den anderen). Namen haben höchstens 40 Zeichen, Beschreibungen 300; Steuerzeichen, unsichtbare Formatzeichen (etwa Umkehr der Schreibrichtung oder Zeichen ohne Breite) und `<` `>` werden entfernt, ein Name ist also immer einfacher Text. Ein Skin ohne Namen trägt seinen Ordnernamen. `soundSet` ist optional: eines der Klangsets der App (`default`, `deepsea`, `greenlight`, `neoncity`, `nova`), das spielt, solange der Skin aktiv ist; alles andere wird ignoriert.
 
-`glyphs` ist optional (höchstens 32 Einträge, jede Beschriftung höchstens 12 Zeichen) und nur Gestaltung. Der Schlüssel `≡` ist die Beschriftung der Menütaste (zum Beispiel `☰` oder `MENU`): Welche Symbole erscheinen, bestimmt der Controller (bzw. *Einstellungen › Controller › Tastensymbole*). Ein Eintrag wie `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` oder `PS` gilt nur mit PlayStation-Symbolen, jeder andere nur mit Xbox-Symbolen; sonst zeigt CouchHUD das Standardsymbol der Controller-Art. Die Farben der Tasten bei PlayStation-Symbolen hängen an `:root[data-pad="playstation"]`.
+`glyphs` ist optional (höchstens 32 Einträge, jede Beschriftung höchstens 12 Zeichen) und nur Gestaltung. Der Schlüssel `≡` ist die Beschriftung der Menütaste (zum Beispiel `☰` oder `MENU`): Welche Symbole erscheinen, bestimmt der Controller (bzw. *Einstellungen › Controller › Tastensymbole*). Ein Eintrag wie `✕`, `○`, `□`, `△`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `OPTIONS`, `CREATE`, `SHARE` oder `PS` gilt nur mit PlayStation-Symbolen, jeder andere nur mit Xbox-Symbolen; sonst zeigt CouchHUD das Standardsymbol der Controller-Art. Die Farben der Tasten bei PlayStation-Symbolen hängen an `:root[data-pad="playstation"]`. Wer für beide Arten eigene Beschriftungen will, nimmt die optionalen Listen `glyphsXbox` und `glyphsPlayStation` (gleiche Grenzen, nur Text); ein Eintrag dort gilt genau für diese Art von Controller und geht dem Eintrag in `glyphs` vor, `glyphs` bleibt die Rückfallebene. Rangfolge: Liste der Controller-Art, dann `glyphs` (nach Art gefiltert), dann das Standardsymbol der Art. Ein PlayStation-Controller, den Steam Input oder DS4Windows als virtuellen XInput-Controller weiterreicht, zählt als PlayStation, solange sein nativer Anschluss die Tasten zuerst meldet; sonst zeigt CouchHUD die Xbox-Symbole.
 
 `sounds` ist optional. Mögliche Ereignisse: `move`, `tab`, `select`, `back`, `bump`, `open`, `close`, `notify`, `toggle`, `boot` und `music`. `music` ist ein Hintergrund-Track, der in Schleife läuft, wenn der Nutzer „UI-Sounds und Musik“ gewählt hat; ohne ihn spielt die eingebaute Musik des Skins. Erlaubt sind `.wav`, `.ogg` und `.mp3` aus dem Skin-Ordner. Für fehlende Ereignisse spielt CouchHUD das eingebaute Klangset.
 
@@ -77,6 +77,25 @@ Eigene Schriften und Bilder legst du in den Skin-Ordner und bindest sie relativ 
 | `--tile-radius`, `--shelf-tile`, `--focus-scale` | Ecken, Kachelgröße auf Home, Zoom des Fokus |
 
 Für alles andere kannst du die Selektoren aus `ui/styles.css` überschreiben. Die Skins im Katalog (Tiefsee, Grünlicht, Neonstadt, Nova, Sternenstaub) zeigen, wie weit das geht: Tiefsee dreht z.B. das ganze Home-Layout um. Nur der CouchHUD-Skin gehört zum Programm (`ui/skins/`); alle anderen sind Skins wie deiner, im Skin-Ordner installiert, und ihre Regeln beginnen mit `:root[data-skin="user:<Ordner>"]`.
+
+## Die Tab-Leiste
+
+Ein Skin darf die Tabs gestalten (Schrift, Farben, Abstände, den Strich unter dem aktiven Tab, ein „Pill“-Polster um die Liste), aber keinen Tab wegnehmen: Die Tabs der Plugins (zum Beispiel „Smart Home“) stehen in derselben Liste `#tab-list`, und welche Tabs es gibt, bestimmen CouchHUD und die Plugins, nicht der Skin. Die Leiste passt sich selbst an (core/nav.js): Passen alle Tabs, bleiben sie, wie sie sind; sonst werden zuerst die Abstände enger, dann die breiten Tabs schmaler (nie unter die Mindestbreite), und reicht auch das nicht, scrollt die Leiste mit Pfeilen an den Rändern.
+
+- `--tab-min-width` (auf `:root[data-skin="…"]`): die kleinste Breite eines Tabs, der schrumpfen muss, als Zahl mit `rem` oder `px`, zum Beispiel `7rem`. Erlaubt sind 4 bis 10 rem; alles andere (auch ungültige Werte) ist der Standard 6,5 rem.
+- Das Programm setzt Sichtbarkeit, Deckkraft, Transformationen, Filter, Zeigerereignisse und eine Schriftgröße von mindestens 0,75 rem für Tabs, Pfeile und die Leiste selbst zur Laufzeit mit `!important` am Element. Ein Skin kann Tabs also nicht ausblenden, verkleinern oder überdecken; der Versuch bleibt wirkungslos.
+- `scripts/skin-check.mjs` (im CouchHUD-Repository; `scripts/catalog-entry.ps1` ruft es beim Packen eines Skin-Ordners auf) ist eine **Prüfhilfe für die Katalog-Durchsicht**, kein Schutz: Es meldet Regeln, die die Tab-Leiste ausblenden (`display:none`, `visibility:hidden`, Breite 0, `nth-child` und Ähnliches), auch mit CSS-Escapes oder `[id=…]`-Selektoren. Es findet die ehrlichen Fehler und die plumpen Versuche; durchgesetzt wird die Sichtbarkeit zur Laufzeit.
+
+## Quadratische Kacheln
+
+Ein Skin mit quadratischen Kacheln (zum Beispiel für ein PlayStation-Aussehen) setzt `--tile-art: square;` (auf `:root[data-skin="…"]`, nur dort wird sie gelesen). Dann zeigen die Kacheln in Bibliothek, Favoriten und auf Home das **Quadrat-Bild** der Spiele (von SteamGridDB: quadratische Grids, danach Icons; Steam selbst hat keins). Hat ein Eintrag kein Quadrat-Bild, zeigt die Kachel das Cover mittig auf ein Quadrat zugeschnitten (`background-size: cover`, Klasse `art-cropped` an `.art.art-square`), in jedem Skin gleich. Ohne die Variable (oder mit jedem anderen Wert) bleibt es beim Cover, der Standard-Skin ändert sich nicht. Die Form der Kachel selbst bestimmt der Skin, zum Beispiel mit `aspect-ratio: 1 / 1`. Das Quadrat-Bild wählt der Nutzer unter *Artwork ändern* im Reiter „Quadrat“.
+
+```css
+:root[data-skin="user:synthwave"] {
+  --tile-art: square;
+}
+:root[data-skin="user:synthwave"] .tile .art.art-square { aspect-ratio: 1 / 1; }
+```
 
 ## Mauszeiger
 

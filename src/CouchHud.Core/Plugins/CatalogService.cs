@@ -362,6 +362,8 @@ public sealed class CatalogService(HttpClient http, string dataDir, Func<IReadOn
         }
         var verified = PackageStatements.Verify(signed, publicKeyPem, FirstPartyIds(), allowFirstParty: !entry.Extra);
         PackageStatements.CheckMatches(verified, entry.Sha256 ?? "", entry);
+        // The signed statement says which SDK the package was built for: a newer one than this CouchHUD implements is not installed at all.
+        if (CatalogRules.NeedsNewerSdk(verified.Statement.Sdk)) throw new CatalogException(Strings.Get("catalog.needsSdk", verified.Statement.Sdk));
         PackageStatements.CheckAgainstInstalled(verified, trust);
         if (revoked.Any(r => r.Matches(verified.Statement.Id, verified.Statement.Version, verified.KeyFingerprint)))
             throw new CatalogException(Strings.Get("plugin.revoked", entry.Name));
@@ -501,8 +503,10 @@ public sealed class CatalogService(HttpClient http, string dataDir, Func<IReadOn
     /// The host's gate, asked after the statement checked out and before anything is downloaded; it throws (or returns false) to stop. Without
     /// it only CouchHUD's own packages and packages without a statement go ahead: a third-party package is refused (fail closed).
     /// </param>
+    /// <param name="updateOnly">Only replaces what is installed and not being removed (the automatic update); a first install or a removed plugin is refused.</param>
+    /// <param name="checkPackage">Looks at the downloaded package once its hash matched; it throws to stop. Nothing is written before it passes.</param>
     public async Task<InstallOutcome> InstallAsync(CatalogEntry entry, SemVer app, IEnumerable<PluginInfo>? plugins = null, CancellationToken ct = default,
-        Func<PluginInstallRequest, bool>? approve = null)
+        Func<PluginInstallRequest, bool>? approve = null, Action<Stream>? checkPackage = null, bool updateOnly = false)
     {
         var reason = CatalogRules.Reason(entry, app);
         if (reason is not null) throw new CatalogException(reason);
@@ -527,7 +531,7 @@ public sealed class CatalogService(HttpClient http, string dataDir, Func<IReadOn
         if (entry.Kind == CatalogKind.Plugin)
         {
             var before = new PluginTrust(dataDir).Entry(entry.Folder);
-            var adds = statement is not null && installed && statement.Statement.Capabilities.Except(before?.Capabilities ?? (IEnumerable<string>)PluginPolicy.Legacy).Any();
+            var adds = statement is not null && installed && CouchHud.Core.Updates.CapabilityCompare.Added(before?.Capabilities ?? (IEnumerable<string>)PluginPolicy.Legacy, statement.Statement.Capabilities).Count > 0;
             var request = new PluginInstallRequest(entry, statement, installed, adds);
             var ok = approve is null ? request.Origin != PluginOrigin.ThirdParty : approve(request);
             if (!ok) throw new CatalogException(Strings.Get("plugin.gate.thirdParty"));
@@ -558,7 +562,7 @@ public sealed class CatalogService(HttpClient http, string dataDir, Func<IReadOn
             try
             {
                 // Hash, lint and unpack happen on one open handle that keeps writers out (the folder is writable by every program of the user).
-                return Install(entry, zip, statement, entry.Sha256);
+                return Install(entry, zip, statement, entry.Sha256, checkPackage, updateOnly);
             }
             catch (InvalidDataException ex)
             {
@@ -572,7 +576,7 @@ public sealed class CatalogService(HttpClient http, string dataDir, Func<IReadOn
     }
 
     /// <summary>Installs an already verified package (its statement, if it has one, verified by <see cref="VerifyEntry"/>).</summary>
-    internal InstallOutcome Install(CatalogEntry entry, string verifiedZip, VerifiedStatement? statement = null, string? expectedSha256 = null)
+    internal InstallOutcome Install(CatalogEntry entry, string verifiedZip, VerifiedStatement? statement = null, string? expectedSha256 = null, Action<Stream>? checkPackage = null, bool updateOnly = false)
     {
         var registry = new CatalogRegistry(dataDir);
         // One handle for everything below: the package is hashed, looked at and unpacked from the same bytes, with no gap to swap the file in.
@@ -580,6 +584,17 @@ public sealed class CatalogService(HttpClient http, string dataDir, Func<IReadOn
         var sha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(held));
         if (expectedSha256 is not null && !PendingPackages.CryptographicEquals(sha, expectedSha256)) throw new CatalogException(Strings.Get("catalog.checksumMismatch"));
         held.Position = 0;
+        // The caller's own look at the package (the automatic update compares plugin.json with the statement), on the same bytes that were hashed.
+        checkPackage?.Invoke(held);
+        held.Position = 0;
+        // An update only (the automatic one): what is to be updated must still be there and not be on its way out (it may have been removed
+        // while the package downloaded); otherwise nothing is installed or staged.
+        if (updateOnly)
+        {
+            var folder = Path.Combine(dataDir, entry.Kind == CatalogKind.Skin ? "skins" : "plugins", entry.Folder);
+            if (!Directory.Exists(folder) || (entry.Kind == CatalogKind.Plugin && new PluginTrust(dataDir).IsRemoved(entry.Folder)))
+                throw new CatalogException(Strings.Get("autoupdate.gone"));
+        }
         if (entry.Kind == CatalogKind.Skin)
         {
             PackageInstaller.Install(held, entry.Folder, Path.Combine(dataDir, "skins"), PackageInstaller.Kind.Skin, entry.Folder, out _);
@@ -588,7 +603,7 @@ public sealed class CatalogService(HttpClient http, string dataDir, Func<IReadOn
         }
 
         // What the code references must be covered by what the statement declares; a package without a statement only gets its file types checked.
-        PluginLint.CheckZip(held, statement?.Origin ?? PluginOrigin.Local, statement?.Statement.Capabilities ?? [], legacy: statement is null);
+        PluginLint.CheckZip(held, statement?.Origin ?? PluginOrigin.Local, statement?.Statement.Capabilities ?? [], legacy: statement is null, sdk: statement?.Statement.Sdk ?? int.MaxValue);
         held.Position = 0;
         var trust = new PluginTrust(dataDir);
         var pluginRoot = Path.Combine(dataDir, "plugins");

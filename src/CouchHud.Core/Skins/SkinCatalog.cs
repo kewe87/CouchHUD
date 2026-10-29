@@ -14,6 +14,11 @@ public sealed record SkinInfo(string Id, string Name, string Description, IReadO
 
     /// <summary>One of the sound sets of the app (<see cref="SkinCatalog.SoundSetIds"/>) the skin asks for, or null.</summary>
     public string? SoundSet { get; init; }
+
+    /// <summary>Optional labels per controller family (skin.json "glyphsXbox" / "glyphsPlayStation"); "glyphs" stays the fallback.</summary>
+    public IReadOnlyDictionary<string, string> GlyphsXbox { get; init; } = new Dictionary<string, string>();
+
+    public IReadOnlyDictionary<string, string> GlyphsPlayStation { get; init; } = new Dictionary<string, string>();
 }
 
 /// <summary>
@@ -34,7 +39,8 @@ public static class SkinCatalog
     public const int MaxGlyphLength = 12;
 
     internal sealed record Manifest(IReadOnlyDictionary<string, string> Names, IReadOnlyDictionary<string, string> Descriptions,
-        Dictionary<string, string> Glyphs, Dictionary<string, string> Sounds, string? SoundSet);
+        Dictionary<string, string> Glyphs, Dictionary<string, string> Sounds, string? SoundSet,
+        Dictionary<string, string> GlyphsXbox, Dictionary<string, string> GlyphsPlayStation);
 
     /// <summary>The skins the app itself brings. Since 0.6 that is the Couch skin only.</summary>
     public static readonly string[] BuiltinIds = ["default"];
@@ -152,7 +158,9 @@ public static class SkinCatalog
                 {
                     Sounds = SoundsOf(dir, meta.Sounds),
                     Aliases = meta.Names.Values.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                    SoundSet = meta.SoundSet
+                    SoundSet = meta.SoundSet,
+                    GlyphsXbox = meta.GlyphsXbox,
+                    GlyphsPlayStation = meta.GlyphsPlayStation
                 });
             }
             catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException)
@@ -179,17 +187,9 @@ public static class SkinCatalog
         var root = doc.RootElement;
         if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("skin.json is not an object");
 
-        var glyphs = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (Property(root, "glyphs") is { ValueKind: JsonValueKind.Object } g)
-        {
-            foreach (var p in g.EnumerateObject())
-            {
-                if (glyphs.Count >= MaxGlyphs) break;
-                var key = CleanText(p.Name, MaxGlyphKeyLength);
-                var value = p.Value.ValueKind == JsonValueKind.String ? CleanText(p.Value.GetString(), MaxGlyphLength) : null;
-                if (key is not null && value is not null) glyphs[key] = value;
-            }
-        }
+        var glyphs = ReadGlyphs(root, "glyphs");
+        var glyphsXbox = ReadGlyphs(root, "glyphsXbox");
+        var glyphsPlayStation = ReadGlyphs(root, "glyphsPlayStation");
 
         var sounds = new Dictionary<string, string>();
         if (Property(root, "sounds") is { ValueKind: JsonValueKind.Object } snd)
@@ -203,7 +203,22 @@ public static class SkinCatalog
         string? soundSet = null;
         if (Property(root, "soundSet") is { ValueKind: JsonValueKind.String } ss && ss.GetString() is { } set && SoundSetIds.Contains(set, StringComparer.Ordinal)) soundSet = set;
 
-        return new Manifest(Localized(root, "name", MaxNameLength), Localized(root, "description", MaxDescriptionLength), glyphs, sounds, soundSet);
+        return new Manifest(Localized(root, "name", MaxNameLength), Localized(root, "description", MaxDescriptionLength), glyphs, sounds, soundSet, glyphsXbox, glyphsPlayStation);
+    }
+
+    // One glyph list of skin.json: text only, cleaned, at most MaxGlyphs entries.
+    private static Dictionary<string, string> ReadGlyphs(JsonElement root, string name)
+    {
+        var glyphs = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (Property(root, name) is not { ValueKind: JsonValueKind.Object } g) return glyphs;
+        foreach (var p in g.EnumerateObject())
+        {
+            if (glyphs.Count >= MaxGlyphs) break;
+            var key = CleanText(p.Name, MaxGlyphKeyLength);
+            var value = p.Value.ValueKind == JsonValueKind.String ? CleanText(p.Value.GetString(), MaxGlyphLength) : null;
+            if (key is not null && value is not null) glyphs[key] = value;
+        }
+        return glyphs;
     }
 
     // Names of properties are matched ignoring case, as before.

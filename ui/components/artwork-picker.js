@@ -1,4 +1,4 @@
-// "Artwork ändern": all known images per slot (cover, banner, logo) to choose from, or an own file.
+// "Artwork ändern": all known images per slot (cover, banner, logo, square) to choose from, or an own file.
 
 import { iconEl } from '../core/glyph-icons.js';
 import { api } from '../core/api.js';
@@ -13,7 +13,8 @@ import { t } from '../core/i18n.js';
 const SLOTS = [
   { id: 'cover', get label() { return t('artworkPicker.slot.cover'); }, cols: 6 },
   { id: 'hero', get label() { return t('artworkPicker.slot.hero'); }, cols: 3 },
-  { id: 'logo', get label() { return t('artworkPicker.slot.logo'); }, cols: 4 }
+  { id: 'logo', get label() { return t('artworkPicker.slot.logo'); }, cols: 4 },
+  { id: 'square', get label() { return t('artworkPicker.slot.square'); }, cols: 6 }
 ];
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
 
@@ -27,8 +28,8 @@ export function artworkPickerPage(item) {
     choices: null,
     failed: false,
     /** Cursor position per slot, so switching back and forth keeps your place. */
-    positions: [0, 0, 0],
-    // LB / RB switch between cover, banner and logo instead of the tabs.
+    positions: [0, 0, 0, 0],
+    // LB / RB switch between cover, banner, logo and square instead of the tabs.
     captures: (action) => action === 'lb' || action === 'rb',
     entries() {
       const slot = SLOTS[this.slot];
@@ -71,7 +72,13 @@ export function artworkPickerPage(item) {
         const tile = el('div', { className: `tile pick-tile${entry.current ? ' current' : ''}`, dataset: { index: i } });
         if (entry.kind === 'choice') {
           const img = el('img', { src: entry.choice.thumb, alt: '', decoding: 'async' });
-          img.onerror = () => tile.classList.add('broken');
+          // A picture that is still on its way to the disk gets one more try before the tile counts as broken.
+          let retried = false;
+          img.onerror = () => {
+            if (retried || !entry.current) return tile.classList.add('broken');
+            retried = true;
+            setTimeout(() => { img.src = `${entry.choice.thumb}${entry.choice.thumb.includes('?') ? '&' : '?'}r=1`; }, 800);
+          };
           tile.append(el('div', { className: 'pick-img' }, img),
             el('span', { className: 'pick-source', textContent: entry.current ? t('artworkPicker.current') : entry.choice.source }));
         } else {
@@ -117,17 +124,41 @@ export function artworkPickerPage(item) {
       render();
     },
     async apply(value, message) {
-      const slot = SLOTS[this.slot];
-      const updated = await attempt(() => api.setArtwork(this.item.id, slot.id, value), t('artworkPicker.applyFailed'));
-      if (!updated) return;
-      Object.assign(this.item, updated);
-      refreshBackground();
-      toast(message);
-      render();
+      // A pick can wait for the download: one at a time, and the slot of the pick is the one used afterwards, whatever the page shows then.
+      if (this.busy) return;
+      const slotIndex = this.slot;
+      const slot = SLOTS[slotIndex];
+      this.busy = true;
+      if (value) toast(t('artworkPicker.busy'), 30000);
+      try {
+        const updated = await attempt(() => api.setArtwork(this.item.id, slot.id, value), t('artworkPicker.applyFailed'));
+        if (!updated) return;
+        Object.assign(this.item, updated);
+        refreshBackground();
+        toast(message);
+        // The list of choices is read again: which one is "current" is decided on the host from the new pick, and the pick's
+        // picture is on disk by now (the stale list would still mark the old image and show its thumbnail).
+        try {
+          this.choices = await api.getArtworkChoices(this.item.id);
+        } catch (err) {
+          console.error(err);
+        }
+        // The picked image moves to the front of the list as "current": the cursor follows it.
+        const saved = this.slot;
+        this.slot = slotIndex;
+        const at = this.entries().findIndex((e) => e.kind === 'choice' && e.current);
+        this.slot = saved;
+        this.positions[slotIndex] = at >= 0 ? at : this.positions[slotIndex];
+        if (saved === slotIndex && at >= 0) this.index = at;
+      } finally {
+        this.busy = false;
+        render();
+      }
     },
     async activate() {
       const entry = this.list[this.index];
       if (!entry) return;
+      if (this.busy) return sound.bump();
       const slot = SLOTS[this.slot];
       if (entry.kind === 'auto') return this.apply(null, t('artworkPicker.autoAgain', { slot: slot.label }));
       if (entry.kind === 'own') {
@@ -139,6 +170,8 @@ export function artworkPickerPage(item) {
       return this.apply(entry.choice.url, t('artworkPicker.changed', { slot: slot.label }));
     },
     handle(action) {
+      // While a pick runs nothing but moving the cursor and going back counts.
+      if (this.busy && ['a', 'y', 'lb', 'rb'].includes(action)) return sound.bump();
       const cols = SLOTS[this.slot].cols;
       const n = this.list?.length ?? 0;
       switch (action) {
@@ -154,6 +187,7 @@ export function artworkPickerPage(item) {
     },
     pointer(node, index, dispatch) {
       if (node.matches('.chip')) {
+        if (this.busy) return sound.bump();
         const target = index;
         if (target !== this.slot) this.switchSlot(target - this.slot);
         return;

@@ -9,3 +9,5 @@ node_modules/
 installer/output/
 installer/MicrosoftEdgeWebview2Setup.exe
 docs/ROADMAP.md
+TestResults/
+tabs-shots/

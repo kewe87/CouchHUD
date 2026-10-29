@@ -104,6 +104,7 @@ public sealed class ServiceRuntime
             ? (codes.Has(sid, CodeKind.Couch), codes.Has(sid, CodeKind.Parent), codes.StoredMode(sid))
             : (null, null, null);
         state.LegacyLookup = operations.IsLegacyLocked;
+        state.CodesDamagedLookup = () => codes.IsDamaged;
         // The old SYSTEM tasks of 0.4.0 restricted to administrators before the pipe exists (review M-1): a squatted pipe name stops the
         // service, but not before this. Bounded so the SCM's start does not time out; what is not done by then goes on without the stop's token.
         RestrictLegacyTasks(operations);

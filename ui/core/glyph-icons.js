@@ -30,6 +30,8 @@ const PATHS = {
   download: 'M12 3v12M7 11l5 5 5-5M4 20h16',
   upload: 'M12 17V5M7 9l5-5 5 5M4 20h16',
   refresh: 'M20 11a8 8 0 1 0-2 6M20 5v6h-6',
+  // Restarting CouchHUD (the app), not the PC: the turning arrow inside a screen frame, a different outline than the PC's arrow.
+  appRestart: 'M3 4h18v16H3zM16.4 12.5a4.4 4.4 0 1 0-1.1 3.3M16.4 9.2v3.3h-3.3',
   swap: 'M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4',
   star: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z',
   gear: 'M12 9a3 3 0 1 0 .01 0M5 12l-2 1.3 2 3.4 2.3-.8 1.7 1 .4 2.4h4l.4-2.4 1.7-1 2.3.8 2-3.4-2-1.3.1-2-.1 0 2-1.3-2-3.4-2.3.8-1.7-1-.4-2.4h-4l-.4 2.4-1.7 1-2.3-.8-2 3.4z',
@@ -71,13 +73,16 @@ const GLYPHS = {
   '🖼': 'image', '💾': 'save', '🎨': 'palette', '🗑': 'trash', '🔑': 'key', '🔒': 'lock', '🔓': 'unlock', '📁': 'folder',
   '🔔': 'bell', '🌐': 'globe', '📸': 'camera', '🔍': 'search', '⌕': 'search', '🖵': 'monitor', '🔊': 'volume', '🔈': 'volume',
   '🎮': 'gamepad', '⚠': 'warn', '⛔': 'block', '☾': 'moon', '⏻': 'power', '✎': 'pencil', '▶': 'play', '⏺': 'record',
-  '⬇': 'download', '⤓': 'download', '⬆': 'upload', '↻': 'refresh', '⟳': 'refresh', '↺': 'refresh', '⇄': 'swap',
+  '⬇': 'download', '⤓': 'download', '⬆': 'upload', '↻': 'refresh', '⟳': 'refresh', '⟲': 'appRestart', '↺': 'refresh', '⇄': 'swap',
   '★': 'star', '☆': 'star', '⚙': 'gear', '⌂': 'home', '✦': 'spark', '▤': 'list', '▣': 'window', '♪': 'music',
   'ᛒ': 'bluetooth', '⏲': 'timer', '▭': 'desktop', '⏸': 'pause', '+': 'plus', '◆': 'dot', '○': 'circle', '⋯': 'dots', '🖴': 'drive', '▦': 'grid', '📺': 'tv', '🎧': 'headphones', '🎬': 'clapper', '📜': 'list', '💡': 'bulb', '🔌': 'plug', '🌀': 'refresh', '🔘': 'circle', '🪟': 'window', '🪄': 'spark', '🎵': 'music', '🌡️': 'thermometer', '🌡': 'thermometer', '🤖': 'robot', '🌤️': 'sun', '🌤': 'sun', '☀️': 'sun', '☀': 'sun', '💧': 'drop', '⚡': 'bolt', '🔋': 'battery', '🚪': 'door', '🏃': 'person', '⛨': 'shield'
 };
 
 /** Every glyph that is drawn as one of the HUD's own icons (a third party's plugin tab never carries one; see core/plugin-tabs.js). */
 export const BUILTIN_GLYPHS = Object.keys(GLYPHS);
+
+/** The icon a glyph is drawn as (undefined: shown as text). */
+export const glyphName = (glyph) => GLYPHS[glyph];
 
 const FILLED = new Set(['★', '▶', '⏺', '◆']);
 

@@ -86,6 +86,18 @@ public class SkinManifestTests : IDisposable
     }
 
     [Fact]
+    public void Glyph_lists_per_family_are_read_cleaned_and_limited()
+    {
+        var many = string.Join(",", Enumerable.Range(0, 200).Select(i => $"\"k{i}\": \"v\""));
+        var skin = Skin("{ \"glyphs\": { \"A\": \"a\" }, \"glyphsXbox\": { \"A\": \"<b>x\", \"B\": 5 }, \"glyphsPlayStation\": { " + many + " } }");
+        Assert.Equal("a", skin.Glyphs["A"]);
+        Assert.DoesNotContain('<', skin.GlyphsXbox["A"]);
+        Assert.False(skin.GlyphsXbox.ContainsKey("B"));
+        Assert.Equal(SkinCatalog.MaxGlyphs, skin.GlyphsPlayStation.Count);
+        Assert.Empty(Skin("{ \"glyphs\": { \"A\": \"a\" } }").GlyphsXbox);
+    }
+
+    [Fact]
     public void No_more_glyph_labels_than_the_limit()
     {
         var many = string.Join(",", Enumerable.Range(0, 200).Select(i => $"\"k{i}\": \"v\""));

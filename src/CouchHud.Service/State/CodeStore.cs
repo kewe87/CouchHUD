@@ -71,6 +71,20 @@ public sealed class CodeData
     public long BootTimeMs { get; set; }
 
     public Dictionary<string, AccountCodes> Accounts { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Legacy: a field an earlier released service wrote next to the accounts (an hourly count of administrator attempts). It means nothing
+    /// now (an administrator's approval goes through UAC, there is no administrator credential whose tries the service could count), so it
+    /// is accepted only as a plain non-negative whole number, dropped on load and never written again (null is left out). Besides
+    /// <see cref="AdminHourFailures"/> the only member the strict reader lets through; every other unknown one still makes the file invalid.
+    /// </summary>
+    public long? AdminHourStartMs { get; set; }
+
+    /// <summary>Legacy, like <see cref="AdminHourStartMs"/>.</summary>
+    public long? AdminHourFailures { get; set; }
+
+    [JsonIgnore]
+    public bool HasLegacyFields => AdminHourStartMs is not null || AdminHourFailures is not null;
 }
 
 [JsonSourceGenerationOptions(
@@ -111,6 +125,35 @@ public enum CodeSet
     Unavailable
 }
 
+/// <summary>How the reset of a damaged code store went (<see cref="CodeStore.ResetDamaged"/>).</summary>
+public enum CodeReset
+{
+    /// <summary>The damaged file was set aside and the store starts empty.</summary>
+    Done,
+    /// <summary>
+    /// The store is not damaged (it works, its folder was refused, the file cannot be read for the moment, or the name is a folder or a
+    /// link): nothing was touched.
+    /// </summary>
+    NotDamaged,
+    /// <summary>The file could not be set aside or the empty store not be written: the store stays unavailable.</summary>
+    Failed,
+    /// <summary>Read again right before the reset, the file was valid (or gone): it was loaded and not set aside; the store works.</summary>
+    Recovered
+}
+
+/// <summary>What reading the code file found (<see cref="CodeStore"/>).</summary>
+public enum LoadOutcome
+{
+    /// <summary>Read and valid, or missing (an empty store).</summary>
+    Ok,
+    /// <summary>A regular file whose content is not valid: damaged, an administrator may reset it.</summary>
+    Invalid,
+    /// <summary>The name is a folder or a link: never followed, read or moved; an administrator removes it by hand.</summary>
+    NotAFile,
+    /// <summary>Could not be read for the moment (held by another program, access denied): tried again, never reset.</summary>
+    ReadError
+}
+
 /// <summary>
 /// The codes of every account, kept by the service (P9) in <c>codes.json</c> in its protected data folder (<c>{app}\service\data</c>,
 /// SYSTEM and Administrators only). The service checks the buttons itself; the shell only ever learns "granted" (with a grant), "wrong" or
@@ -144,6 +187,8 @@ public sealed class CodeStore : ICodeState
     private readonly Func<IReadOnlyList<string>, string, bool> _verify;
     private readonly Lock _lock = new();
     private CodeData? _current;
+    private LoadOutcome _state;
+    private TimeSpan _lastReadTry;
 
     private CodeStore(string? file, CodeData? current, IEventSink log, IMonotonicClock clock, Func<long> bootTimeMs, Func<IReadOnlyList<string>, string, bool>? verify)
     {
@@ -168,15 +213,175 @@ public sealed class CodeStore : ICodeState
             return new CodeStore(null, null, log, clock, bootTimeMs, verify);
         }
         var file = Path.Combine(folder, FileName);
-        var data = Load(file, log);
-        var store = new CodeStore(file, data, log, clock, bootTimeMs, verify);
-        if (data is not null) store.CarryLockoutsOverRestart();
+        // A file held for a moment (antivirus, backup, indexer) is tried again a few times before the store gives up for now.
+        var outcome = Load(file, log, out var data, out var legacy);
+        foreach (var delay in ReadRetryDelays)
+        {
+            if (outcome != LoadOutcome.ReadError) break;
+            Thread.Sleep(delay);
+            outcome = Load(file, log, out data, out legacy);
+        }
+        var store = new CodeStore(file, data, log, clock, bootTimeMs, verify) { _state = outcome, _lastReadTry = clock.Now };
+        if (outcome == LoadOutcome.ReadError)
+            log.Error("[codes] the code file cannot be read right now: codes are not checked and every account counts as having one until it can be read again (tried again on the next request)");
+        if (data is null) return store;
+        // The lockouts first: they compare the boot time the file was written in (the migration's write would hide it).
+        store.Adopt(legacy);
         return store;
     }
 
     public bool IsAvailable
     {
-        get { lock (_lock) return _current is not null; }
+        get
+        {
+            Recover();
+            lock (_lock) return _current is not null;
+        }
+    }
+
+    /// <summary>
+    /// Unavailable because the content of the code file is not valid (a regular file in the trusted folder): the only case an administrator
+    /// may reset (<see cref="ResetDamaged"/>). False while the store works, while the file cannot be read for the moment (<see cref="IsReadError"/>:
+    /// an antivirus, a backup or the indexer holding it), when the name is taken by a folder or a link (<see cref="LoadOutcome.NotAFile"/>:
+    /// never followed or moved, an administrator removes it by hand) and when the data folder itself was refused.
+    /// </summary>
+    public bool IsDamaged
+    {
+        get
+        {
+            Recover();
+            lock (_lock) return _current is null && _file is not null && _state == LoadOutcome.Invalid;
+        }
+    }
+
+    /// <summary>
+    /// Unavailable because the file could not be read (sharing violation, access denied) even after a few tries: not damaged, nothing to reset.
+    /// The store reads it again on the next operation (at most every <see cref="ReadRetryEvery"/>) and works again without a restart.
+    /// </summary>
+    public bool IsReadError
+    {
+        get
+        {
+            Recover();
+            lock (_lock) return _current is null && _state == LoadOutcome.ReadError;
+        }
+    }
+
+    /// <summary>A read that failed for the moment is tried again by the next operation, but at most this often.</summary>
+    public static readonly TimeSpan ReadRetryEvery = TimeSpan.FromSeconds(5);
+
+    /// <summary>The waits between the tries of the first read at the start (a file held for a moment by an antivirus or a backup).</summary>
+    internal static readonly TimeSpan[] ReadRetryDelays = [TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(150), TimeSpan.FromMilliseconds(400)];
+
+    /// <summary>
+    /// After a read error, or while the name is taken by a folder or a link: the file is read again (one try, at most every
+    /// <see cref="ReadRetryEvery"/>), so an administrator who removes the folder or link needs no restart. Valid (or confirmed missing): the
+    /// store works again (with the lockouts carried over and an older file migrated, as at the start); not valid now: damaged.
+    /// </summary>
+    private void Recover()
+    {
+        lock (_lock)
+        {
+            if (_current is not null || _file is null || _state is not (LoadOutcome.ReadError or LoadOutcome.NotAFile)) return;
+            var now = _clock.Now;
+            if (now - _lastReadTry < ReadRetryEvery) return;
+            _lastReadTry = now;
+            // Still a folder or a link: said once when it was found, not every few seconds.
+            var outcome = Load(_file, _log, out var data, out var legacy, logNotAFile: _state != LoadOutcome.NotAFile);
+            if (outcome == LoadOutcome.ReadError || outcome == _state) return;
+            _state = outcome;
+            if (data is null) return;
+            _current = data;
+            _log.Info("[codes] the code file can be read again: codes are checked again");
+            Adopt(legacy);
+        }
+    }
+
+    /// <summary>A file just read: the lockouts first (they compare the boot time the file was written in), then the migration of an older file.</summary>
+    private void Adopt(bool legacy)
+    {
+        var written = CarryLockoutsOverRestart();
+        if (legacy) MigrateLegacy(written);
+    }
+
+    /// <summary>
+    /// The way out of a damaged code file, for an administrator (the dispatcher checked who asks): the file is set aside as
+    /// <c>codes.json.broken-&lt;UTC time&gt;</c> next to it (never deleted, never read again) and the store starts empty. Only while
+    /// <see cref="IsDamaged"/>; a working store is never reset this way.
+    /// </summary>
+    public CodeReset ResetDamaged(DateTimeOffset now)
+    {
+        lock (_lock)
+        {
+            if (_current is not null || _file is null || _state != LoadOutcome.Invalid) return CodeReset.NotDamaged;
+            // Read and checked again right before: a file that is valid now (or gone) is loaded, never set aside.
+            var outcome = Load(_file, _log, out var data, out var legacy);
+            switch (outcome)
+            {
+                case LoadOutcome.Ok:
+                    _state = outcome;
+                    _current = data;
+                    _log.Info("[codes] the code file is valid now: loaded, not set aside");
+                    Adopt(legacy);
+                    return CodeReset.Recovered;
+                case LoadOutcome.ReadError:
+                    _state = outcome;
+                    _lastReadTry = _clock.Now;
+                    _log.Error("[codes] the code file cannot be read right now: not set aside");
+                    return CodeReset.Failed;
+                case LoadOutcome.NotAFile:
+                    _state = outcome;
+                    _lastReadTry = _clock.Now;
+                    return CodeReset.NotDamaged;
+            }
+            if (FreeAsideName(_file, now) is not { } aside)
+            {
+                _log.Error("[codes] the damaged code file could not be set aside: no free name");
+                return CodeReset.Failed;
+            }
+            try
+            {
+                // A regular file only (Load refuses folders and links), never overwriting anything.
+                File.Move(_file, aside, overwrite: false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _log.Error($"[codes] the damaged code file could not be set aside: {ex.GetType().Name}");
+                return CodeReset.Failed;
+            }
+            var fresh = new CodeData { BootTimeMs = _bootTimeMs() };
+            if (!Write(_file, fresh)) return CodeReset.Failed;
+            _current = fresh;
+            _state = LoadOutcome.Ok;
+            _log.Info($"[codes] the damaged code file was set aside as {Path.GetFileName(aside)}: the service starts with no codes");
+            return CodeReset.Done;
+        }
+    }
+
+    /// <summary><c>codes.json.broken-&lt;UTC time&gt;</c>, with a number after it when that name is taken (by anything); null when none is free.</summary>
+    private static string? FreeAsideName(string file, DateTimeOffset now)
+    {
+        var name = $"{file}.broken-{now.UtcDateTime:yyyyMMdd-HHmmss-fff}";
+        for (var i = 0; i < 100; i++)
+        {
+            var candidate = i == 0 ? name : $"{name}-{i}";
+            if (!File.Exists(candidate) && !Directory.Exists(candidate) && new FileInfo(candidate).Attributes == (FileAttributes)(-1)) return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A file of an earlier version (<see cref="CodeData.HasLegacyFields"/>) was read: it is written again at once in today's form, so the
+    /// legacy fields are gone from the disk on the first start after the update, not only at the next change of a code.
+    /// </summary>
+    private void MigrateLegacy(bool written)
+    {
+        lock (_lock)
+        {
+            if (_current is null) return;
+            if (written || Save(Clone(_current))) _log.Info("[codes] code file of an older version migrated");
+            else _log.Error("[codes] code file of an older version read, but not written again yet: the next change writes it");
+        }
     }
 
     /// <summary>
@@ -188,6 +393,7 @@ public sealed class CodeStore : ICodeState
     /// <summary>Whether the account has a code of either kind (an unavailable store says yes).</summary>
     public bool HasAnyCode(string sid)
     {
+        Recover();
         lock (_lock)
         {
             if (_current is null) return true;
@@ -201,6 +407,7 @@ public sealed class CodeStore : ICodeState
     /// </summary>
     public LockView View(string sid)
     {
+        Recover();
         lock (_lock)
         {
             if (_current is null) return LockView.Closed;
@@ -227,6 +434,7 @@ public sealed class CodeStore : ICodeState
     public CodeSet SetMode(string sid, string mode, bool removeCouch = false, bool clearOpen = false, IReadOnlyCollection<CodeKind>? kinds = null, string? hash = null)
     {
         if (LockModes.Rank(mode) < 0 || !ServiceStateStore.IsUserSid(sid)) return CodeSet.Unavailable;
+        Recover();
         lock (_lock)
         {
             if (_current is null || _file is null) return CodeSet.Unavailable;
@@ -262,6 +470,7 @@ public sealed class CodeStore : ICodeState
     {
         if (!ServiceStateStore.IsUserSid(sid) || (mode is not null && LockModes.Rank(mode) < 0)) return CodeSet.Unavailable;
         if (hash is not null && !RequestValidator.IsPasscodeHash(hash)) return CodeSet.BadHash;
+        Recover();
         lock (_lock)
         {
             if (_current is null || _file is null) return CodeSet.Unavailable;
@@ -282,6 +491,7 @@ public sealed class CodeStore : ICodeState
     /// <summary>Whether the account has a code of this kind; true when the store is unavailable (fail-closed: "exists" closes more).</summary>
     public bool Has(string sid, CodeKind kind)
     {
+        Recover();
         lock (_lock)
         {
             if (_current is null) return true;
@@ -307,6 +517,7 @@ public sealed class CodeStore : ICodeState
             right = false;
         }
 
+        Recover();
         lock (_lock)
         {
             if (_current is null) return new CodeVerdict(CodeCheck.Unavailable);
@@ -339,6 +550,7 @@ public sealed class CodeStore : ICodeState
     public CodeVerdict CountRefused(string sid, CodeKind kind)
     {
         if (CountTry(sid, kind, out _) is { } early) return early;
+        Recover();
         lock (_lock)
         {
             var wait = _current is not null && _current.Accounts.TryGetValue(sid, out var account) && account.Get(kind) is { } entry && entry.LockedUntilMs > NowMs()
@@ -383,6 +595,7 @@ public sealed class CodeStore : ICodeState
     {
         if (!RequestValidator.IsPasscodeHash(hash)) return CodeSet.BadHash;
         if (!ServiceStateStore.IsUserSid(sid) || kinds.Count == 0) return CodeSet.Unavailable;
+        Recover();
         lock (_lock)
         {
             if (_current is null || _file is null) return CodeSet.Unavailable;
@@ -412,6 +625,7 @@ public sealed class CodeStore : ICodeState
     /// <summary>Whether the account has a code of <paramref name="kind"/> that somebody approved (not one enrolled freely at an open couch).</summary>
     public bool HasApproved(string sid, CodeKind kind)
     {
+        Recover();
         lock (_lock)
         {
             if (_current is null) return true;
@@ -425,6 +639,7 @@ public sealed class CodeStore : ICodeState
     /// </summary>
     public CodeSet Remove(string sid, CodeKind kind)
     {
+        Recover();
         lock (_lock)
         {
             if (_current is null || _file is null) return CodeSet.Unavailable;
@@ -452,13 +667,14 @@ public sealed class CodeStore : ICodeState
     /// A lockout written in an earlier boot: its monotonic time means nothing now, so it starts again in full (a restart never shortens a
     /// wait). Within the same boot (a restart of the service only) the times stay as they are.
     /// </summary>
-    private void CarryLockoutsOverRestart()
+    /// <returns>Whether the file was written (false: nothing to write, or the write failed).</returns>
+    private bool CarryLockoutsOverRestart()
     {
         lock (_lock)
         {
-            if (_current is null) return;
+            if (_current is null) return false;
             var boot = _bootTimeMs();
-            if (boot != 0 && Math.Abs(_current.BootTimeMs - boot) <= BootTolerance.TotalMilliseconds) return;
+            if (boot != 0 && Math.Abs(_current.BootTimeMs - boot) <= BootTolerance.TotalMilliseconds) return false;
             var next = Clone(_current);
             var changed = false;
             foreach (var account in next.Accounts.Values)
@@ -470,7 +686,13 @@ public sealed class CodeStore : ICodeState
                     changed = true;
                 }
             }
-            if (changed || _current.BootTimeMs != boot) Save(next);
+            if (!changed && _current.BootTimeMs == boot) return false;
+            if (Save(next)) return true;
+            // Not written: the carried lockouts hold in memory anyway, so no later write (the migration's or a change's) stamps this boot's
+            // time on a lockout of the earlier boot. The file keeps the earlier boot's time and is carried again at the next start.
+            next.BootTimeMs = boot;
+            _current = next;
+            return false;
         }
     }
 
@@ -487,48 +709,91 @@ public sealed class CodeStore : ICodeState
         return true;
     }
 
-    private static CodeData? Load(string file, IEventSink log)
+    /// <param name="legacy">The file came from an earlier version (its legacy fields were dropped here): it is written again at once (<see cref="Adopt"/>).</param>
+    /// <returns>
+    /// <see cref="LoadOutcome.Ok"/> with the data (a missing file: an empty store); <see cref="LoadOutcome.Invalid"/>: the content is wrong;
+    /// <see cref="LoadOutcome.NotAFile"/>: the name is a folder or a link; <see cref="LoadOutcome.ReadError"/>: the file could not be read for
+    /// now (not logged here: the caller tries again).
+    /// </returns>
+    /// <param name="logNotAFile">False while the name was a folder or a link already (said once, not on every retry).</param>
+    private static LoadOutcome Load(string file, IEventSink log, out CodeData? data, out bool legacy, bool logNotAFile = true)
     {
+        legacy = false;
+        data = null;
         try
         {
-            var info = new FileInfo(file);
-            if (!info.Exists)
+            FileAttributes attributes;
+            try
             {
-                if (info.Attributes != (FileAttributes)(-1)) return Corrupt(log, "not a file");
-                return new CodeData();
+                // Throws instead of answering "not there" when the check itself fails (access denied, sharing violation): a read error then.
+                attributes = File.GetAttributes(file);
             }
-            if (info.Attributes.HasFlag(FileAttributes.ReparsePoint)) return Corrupt(log, "reparse point");
+            catch (FileNotFoundException)
+            {
+                // Only a confirmed absence is an empty store: the folder lists and has nothing under the name. Anything else (the folder
+                // missing or not listable, an entry the attributes did not see) is a read error, so no write ever replaces a real file.
+                var folder = Path.GetDirectoryName(file);
+                if (folder is null || Directory.GetFileSystemEntries(folder, Path.GetFileName(file)).Length != 0) return LoadOutcome.ReadError;
+                data = new CodeData();
+                return LoadOutcome.Ok;
+            }
+            if (attributes.HasFlag(FileAttributes.ReparsePoint)) return logNotAFile ? NotAFile(log, "a link") : LoadOutcome.NotAFile;
+            if (attributes.HasFlag(FileAttributes.Directory)) return logNotAFile ? NotAFile(log, "a folder") : LoadOutcome.NotAFile;
+            var info = new FileInfo(file);
             if (info.Length > MaxFileBytes) return Corrupt(log, "too large");
             var bytes = File.ReadAllBytes(file);
             if (bytes.Length > MaxFileBytes) return Corrupt(log, "too large");
-            var data = JsonSerializer.Deserialize(bytes, CodeJsonContext.Default.CodeData);
-            if (data is null) return Corrupt(log, "empty");
-            if (data.Accounts is null) return Corrupt(log, "accounts missing");
+            var read = JsonSerializer.Deserialize(bytes, CodeJsonContext.Default.CodeData);
+            if (read is null) return Corrupt(log, "empty");
+            if (read.Accounts is null) return Corrupt(log, "accounts missing");
             var accounts = new Dictionary<string, AccountCodes>(StringComparer.Ordinal);
-            foreach (var (sid, account) in data.Accounts)
+            foreach (var (sid, account) in read.Accounts)
             {
                 if (!accounts.TryAdd(sid, account)) return Corrupt(log, "account twice");
             }
-            data.Accounts = accounts;
-            if (Validate(data) is { } problem) return Corrupt(log, problem);
-            return data;
+            read.Accounts = accounts;
+            if (read.AdminHourStartMs < 0 || read.AdminHourFailures < 0) return Corrupt(log, "legacy admin hour");
+            var old = read.HasLegacyFields;
+            if (old)
+            {
+                // Read, checked and dropped: they mean nothing today (see CodeData.AdminHourStartMs); the per-code lockouts are kept as they are.
+                read.AdminHourStartMs = null;
+                read.AdminHourFailures = null;
+            }
+            if (Validate(read) is { } problem) return Corrupt(log, problem);
+            data = read;
+            legacy = old;
+            return LoadOutcome.Ok;
         }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Held by another program (antivirus, backup, indexer) or not readable for the moment: not damaged (the caller says so once).
+            return LoadOutcome.ReadError;
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException or ArgumentException)
         {
             return Corrupt(log, ex.GetType().Name);
         }
     }
 
-    private static CodeData? Corrupt(IEventSink log, string problem)
+    private static LoadOutcome Corrupt(IEventSink log, string problem)
     {
-        log.Error($"[codes] the code file is not valid ({problem}): codes are not checked and every account counts as having one until an administrator removes it");
-        return null;
+        log.Error($"[codes] the code file is not valid ({problem}): codes are not checked and every account counts as having one until an administrator resets it (CouchHUD settings) or removes it");
+        return LoadOutcome.Invalid;
+    }
+
+    private static LoadOutcome NotAFile(IEventSink log, string what)
+    {
+        log.Error($"[codes] the name of the code file is taken by {what}: it is neither followed nor moved; codes are not checked and every account counts as having one until an administrator removes it");
+        return LoadOutcome.NotAFile;
     }
 
     /// <summary>Why the data is not acceptable, or null.</summary>
     internal static string? Validate(CodeData data)
     {
         if (data.Version != CodeData.CurrentVersion) return "version";
+        // Dropped on load: never written again.
+        if (data.HasLegacyFields) return "legacy fields";
         if (data.Accounts is null) return "accounts missing";
         if (data.Accounts.Count > MaxAccounts) return "too many accounts";
         foreach (var (sid, account) in data.Accounts)

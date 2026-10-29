@@ -19,13 +19,19 @@ import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
 import { currentView, pop, renderHints } from '../core/nav.js';
 import { state } from '../core/state.js';
-import { confirmDialog } from '../components/overlay.js';
+import { chooseDialog, confirmDialog } from '../components/overlay.js';
 import { ensureUnlocked, isLocked, onApprovalAnnounced } from '../components/passcode.js';
-import { beginSetupHold, lockStepStatus, setupCouchLock } from '../core/lock-rules.js';
+import { beginSetupHold, codeLockPlan, lockStepStatus, setupCouchLock } from '../core/lock-rules.js';
 import { filterSetupSteps, isConsoleReady } from '../core/wizard-rules.js';
+import { createUndoTables } from '../core/mode-undo.js';
+import { afterRun, closeAction, recoveryChoices, createModeTransaction, describeRollback, describeTargets, manualUndo, parseJournal } from '../core/mode-transaction.js';
+import { applyRollbackToRows, createStepShow, rollbackRowView, runRows, SATISFIED } from '../core/mode-run.js';
 import { sound } from '../sound.js';
 
-const MARK = { done: '✓', ok: '✓', todo: '•', unknown: '?', na: '–', running: '…', skipped: '–', failed: '✕', aborted: '–' };
+// Open and put back: an empty box (the tick goes away again). In progress: no glyph, the box shows a ring (styles.css).
+const MARK = { done: '✓', ok: '✓', todo: '', unknown: '?', na: '–', running: '', undoing: '', skipped: '–', failed: '✕', aborted: '–', undone: '', unchanged: '–', notundone: '✕', later: '↺' };
+// How long a row shows its undo running at least, so an instant undo is still seen going back row by row (it never delays the undo).
+const UNDO_BEAT = 250;
 const LABEL = () => ({
   done: t('consoleSetup.status.done'),
   ok: t('consoleSetup.status.ok'),
@@ -33,11 +39,34 @@ const LABEL = () => ({
   unknown: t('consoleSetup.status.unknown'),
   na: t('consoleSetup.status.na'),
   running: t('consoleSetup.status.running'),
+  undoing: t('consoleSetup.status.undoing'),
   skipped: t('consoleSetup.status.skipped'),
   failed: t('consoleSetup.status.failed'),
-  aborted: t('consoleSetup.status.aborted')
+  aborted: t('consoleSetup.status.aborted'),
+  undone: t('consoleSetup.status.undone'),
+  unchanged: t('consoleSetup.status.unchanged'),
+  notundone: t('consoleSetup.status.notUndone'),
+  // The full text is the row's note (the label has a fixed width).
+  later: t('consoleSetup.status.laterShort')
 });
-const SATISFIED = new Set(['done', 'ok', 'na']);
+
+/** The texts of a row after the undo (core/mode-run.js rollbackRowView). */
+const rollbackTexts = () => ({
+  notUndone: t('consoleSetup.rollbackNote.notUndone'),
+  cancelled: t('consoleSetup.cancelledNote'),
+  cancelledAfterUndo: t('consoleSetup.cancelledAfterUndo'),
+  undone: t('consoleSetup.status.undone'),
+  later: t('consoleSetup.status.later')
+});
+
+/** The host's record of a switch that was cut off (null: none, or one that does not pass the checks). */
+async function readJournal() {
+  try {
+    return parseJournal((await api.getSettings())?.modeSwitchJournal ?? '');
+  } catch {
+    return null;
+  }
+}
 
 /** Fresh view of the host state; steps read it instead of trusting what the page loaded earlier. */
 async function loadEnv() {
@@ -61,9 +90,33 @@ async function readStatus(step, env) {
 }
 
 // ---------------------------------------------------------------------------
+const { SETUP_UNDO, REVERT_UNDO } = createUndoTables({ api, state });
+
+/** The steps with their record and undo attached. */
+const withUndo = (steps, table) => steps.map((step) => ({ ...step, snapshot: table[step.id]?.snapshot, undo: table[step.id]?.undo }));
+
+/** What a step is about to change; null when it cannot be read (its undo then reports it instead of guessing). */
+async function snapshotOf(step, env) {
+  try {
+    return step.snapshot ? await step.snapshot(env) : null;
+  } catch (err) {
+    console.warn(`console step ${step.id}: no snapshot (${errorText(err)})`);
+    return null;
+  }
+}
+
+/** { stepId: undo(before) } of a step list; a step without an undo is one only the person can reverse. */
+function undoersOf(steps) {
+  return Object.fromEntries(steps.map((step) => [step.id, step.undo ? (before) => step.undo(before) : () => { throw manualUndo(); }]));
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 
-function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, steps, restartAsk, restartLabel, deps, autoStart = false, onDone = null }) {
+function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, steps, restartAsk, restartLabel, deps, autoStart = false, onDone = null, from = 'app', carriedEntries = [] }) {
+  // What the switch changed, to undo it on cancel (core/mode-transaction.js). The host keeps a copy: a crash in the middle is found at the next start.
+  const tx = createModeTransaction({ from, entries: carriedEntries, persist: (text) => api.setSetting('modeSwitchJournal', text) });
+  const undoers = undoersOf(steps);
   const rows = steps.map((step) => ({ step, status: 'todo', note: '' }));
   let phase = 'loading'; // loading, overview, running, done
   let cancel = false;
@@ -75,16 +128,27 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
   // Waiting for the couch to open (code entry, Windows sign-in) and, with a lock of 0.4.0, for an administrator's approval (UAC):
   // no step shows a status of its own until that is through.
   let waiting = null; // null, 'unlock', 'admin'
+  let rollbackReport = null; // after an undo that left something behind: the titles
+  let rollingNow = null;
+  // While an undo is shown: what each row shows (the rows themselves get the result at the end), and the pacing of it.
+  let shown = null;
+  let show = null;
+  let failedRun = false; // the last run ended with a failed or stopped step: only retry or undo
 
   const page = {
     id,
     name: title,
     index: 0,
-    captures: (action) => phase === 'running' && ['b', 'lb', 'rb', 'start'].includes(action),
+    captures: (action) => (phase === 'running' && ['b', 'lb', 'rb', 'start'].includes(action)) || (['done', 'rolling', 'rolled'].includes(phase) && failedRun && action === 'guide'),
     onClose() {
       closed = true;
       cancel = true;
-      deps.refresh();
+      // The held couch must never outlive the page, in any phase. A failed switch that is still recorded is undone (closing is a cancel;
+      // the undo ends the hold), everything else just ends the hold.
+      const what = closeAction(phase, tx.pending, failedRun);
+      if (what === 'rollback') this.rollbackNow().finally(() => deps.refresh());
+      else if (what === 'release') this.releaseHold().finally(() => deps.refresh());
+      else deps.refresh();
     },
 
     load() {
@@ -118,6 +182,9 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
         return;
       }
       try {
+        // An older switch that was cut off is still on record: this one takes it over instead of overwriting it (same direction).
+        const older = await readJournal();
+        if (older?.from === from) await tx.adopt(older.entries);
         const env = await loadEnv();
         lastEnv = env;
         adminPrompts = 0;
@@ -157,6 +224,17 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
       // The lock step must not lock the HUD in the middle of the setup: the couch stays open until the end. Without that hold, and on the
       // stand-in of broken settings (the host refuses the hold there too), nothing runs: the reason is shown and the overview stays.
       if (!(await this.unlock())) return;
+      // A record of the other direction would be overwritten by this switch: it has to be settled first (the next start asks about it).
+      const older = await readJournal();
+      if (older && older.from !== from) {
+        // Settle it first, here and now (same unlock): undo it, or leave it for the next start. Finishing it is another page's job.
+        const settled = await resolveInterruptedSwitch(deps, (await api.getSettings())?.modeSwitchJournal ?? '', { chooseDialog, allowFinish: false });
+        if (settled === 'undone') state.info.modeSwitchPending = false;
+        else {
+          toast(t('consoleSetup.recover.waiting'), 9000);
+          return;
+        }
+      }
       const begun = await beginSetupHold({ readSecurity: () => api.getSecurity(), hold: () => api.holdUnlockForSetup(true) });
       if (begun.security) state.info.configFault = !!begun.security.configFault;
       if (!begun.ok) {
@@ -169,67 +247,143 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
       }
       phase = 'running';
       cancel = false;
+      // Fresh for every run: a successful retry must not carry the verdict of the failed one.
+      failedRun = false;
       this.paint();
-      for (const row of rows) {
-        if (cancel) {
-          if (!SATISFIED.has(row.status)) {
-            row.status = 'aborted';
-            row.note = t('consoleSetup.cancelledNote');
-          }
-          continue;
-        }
-        if (SATISFIED.has(row.status)) continue;
-        const missing = (row.step.requires ?? []).map((rid) => rows.find((r) => r.step.id === rid)).find((r) => r && !SATISFIED.has(r.status));
-        if (missing) {
-          row.status = 'skipped';
-          row.note = t('consoleSetup.needsFirst', { step: missing.step.title });
-          continue;
-        }
-        // The release of the couch lock is short; ask again whenever it ran out between two steps.
-        if (!(await this.unlock())) {
-          cancel = true;
-          row.status = 'aborted';
-          row.note = t('consoleSetup.notUnlocked');
-          continue;
-        }
-        let result;
-        try {
-          // Right before: what the overview saw may be old (an earlier step, the lock) or was never readable.
-          const env = await loadEnv();
-          const again = await readStatus(row.step, env);
-          if (SATISFIED.has(again)) {
-            row.status = again;
-            row.note = '';
-            this.paint();
-            continue;
-          }
-          row.status = 'running';
-          row.note = row.step.working ?? '';
-          this.paint();
-          result = await row.step.run(env, deps);
-        } catch (err) {
-          console.error(err);
-          result = { status: 'failed', note: errorText(err) };
-        }
-        row.status = result.status;
-        row.note = result.note ?? '';
-        this.paint();
+      const verdict = await runRows(rows, {
+        isCancelled: () => cancel,
+        cancel: () => { cancel = true; },
+        unlock: () => this.unlock(),
+        loadEnv,
+        readStatus,
+        snapshotOf,
+        paint: () => this.paint(),
+        tx,
+        deps,
+        texts: { cancelled: t('consoleSetup.cancelledNote'), notUnlocked: t('consoleSetup.notUnlocked'), needsFirst: (title) => t('consoleSetup.needsFirst', { step: title }) }
+      });
+      failedRun = verdict.failedRun;
+      // Stopped by the person (B during the run): that is a cancel, everything done so far is undone.
+      const stopped = verdict.stopped;
+      // A failed switch keeps the couch open for the one decision (try again or undo) and nothing else: no code again to undo what this
+      // very flow changed, and no way to pick another mode from here. Otherwise the lock may close the couch now.
+      const next = afterRun(closed, failedRun, tx.pending);
+      if (next === 'rollback') {
+        // The page was closed during the run and its last step failed: nobody is left to decide, undo it (this also ends the hold).
+        phase = 'done';
+        await this.rollbackNow();
+        return;
       }
-      // Now the lock may close the couch.
-      await attempt(() => api.holdUnlockForSetup(false), undefined, { quietLocked: true });
+      if (next === 'release') {
+        await this.releaseHold();
+        if (!failedRun) await tx.finish();
+      }
       phase = 'done';
+      if (stopped && tx.pending) {
+        this.paint();
+        return this.abandon();
+      }
       // The setup assistant writes its marker only now that the run really happened (a restart offered below must not bring it back).
       try { await onDone?.(); } catch (err) { console.error(err); }
       const retry = rows.some((r) => ['failed', 'skipped', 'aborted'].includes(r.status));
-      actions = [
-        ...(restartAsk(rows) ? [{ label: restartLabel, run: () => this.restart() }] : []),
-        ...(retry ? [{ label: t('consoleSetup.action.retry'), run: () => this.retry() }] : []),
-        { label: restartAsk(rows) ? t('consoleSetup.action.later') : t('consoleSetup.action.done'), run: () => pop() }
-      ];
+      actions = failedRun && tx.pending
+        ? [
+          { label: t('consoleSetup.action.retry'), run: () => this.retry() },
+          { label: t('consoleSetup.action.undo'), run: () => this.abandon() }
+        ]
+        : [
+          ...(restartAsk(rows) ? [{ label: restartLabel, run: () => this.restart() }] : []),
+          ...(retry ? [{ label: t('consoleSetup.action.retry'), run: () => this.retry() }] : []),
+          { label: restartAsk(rows) ? t('consoleSetup.action.later') : t('consoleSetup.action.done'), run: () => pop() }
+        ];
       this.index = rows.length;
       sound.select();
       deps.refresh();
       this.paint();
+    },
+
+    async releaseHold() {
+      await attempt(() => api.holdUnlockForSetup(false), undefined, { quietLocked: true });
+    },
+
+    /** Undoes what this flow recorded, last first. { undone, unchanged, leftover }; the hold goes when it is through. */
+    rollbackNow() {
+      // The page closing during the undo's code entry asks again: one undo, one report, one end of the hold.
+      rollingNow ??= this.rollbackRun().finally(() => { rollingNow = null; });
+      return rollingNow;
+    },
+
+    async rollbackRun() {
+      let result;
+      try {
+        result = await tx.rollback(undoers, { onStep: (event) => show?.push(event) });
+        if (!tx.pending) await tx.finish();
+      } finally {
+        await this.releaseHold();
+      }
+      // The undo is through; its report waits until the rows on screen have gone back too (only pacing, nothing runs any more; not when the page is gone).
+      if (!closed) await show?.idle();
+      // The rows say what really happened to each step, not what the run said before the undo.
+      applyRollbackToRows(rows, result, rollbackTexts());
+      if (result.leftover.length) {
+        const titles = result.leftover.map((l) => steps.find((s) => s.id === l.id)?.title ?? l.id);
+        toast(describeRollback(result, (id) => steps.find((s) => s.id === id)?.title ?? id, t).lines.join(' '), 20000, { long: true });
+        rollbackReport = titles;
+      }
+      return result;
+    },
+
+    /** Cancel after a failed or stopped switch: back to the exact previous state, and say how far that worked. */
+    async abandon() {
+      if (phase === 'rolling') return;
+      // The hold normally lasts through the decision; if it ran out the couch code is asked again (the lock was not meant to stay open).
+      if (!(await this.unlock())) {
+        await this.releaseHold();
+        return;
+      }
+      // The page closed during the code entry: onClose has undone it already; nothing more to say or to pop.
+      if (closed) return;
+      phase = 'rolling';
+      waiting = null;
+      actions = [];
+      this.showUndo();
+      this.paint();
+      const result = await this.rollbackNow();
+      // The rows have gone back on screen (rollbackRun waited for it); the last one stays a moment.
+      if (shown && !closed) await new Promise((resolve) => setTimeout(resolve, UNDO_BEAT * 2));
+      shown = null;
+      show = null;
+      if (closed) return;
+      if (result.leftover.length) {
+        phase = 'rolled';
+        actions = [{ label: t('consoleSetup.action.done'), run: () => pop() }];
+        this.index = rows.length;
+        deps.refresh();
+        return this.paint();
+      }
+      toast(t('consoleSetup.rollback.done'), 6000);
+      failedRun = false;
+      deps.refresh();
+      pop();
+    },
+
+    /**
+     * The rows go back one by one, from the bottom up, as the undo really runs (the order of tx.rollback): a row shows its undo running,
+     * then what came of it, the same text the rows get at the end (rollbackRowView).
+     */
+    showUndo() {
+      const before = rows.map((row) => ({ status: row.status, note: row.note }));
+      shown = before.map((view) => ({ ...view }));
+      const texts = rollbackTexts();
+      show = createStepShow({
+        beat: UNDO_BEAT,
+        apply: (event) => {
+          const at = rows.findIndex((row) => row.step.id === event.id);
+          if (at < 0 || !shown) return;
+          shown[at] = event.phase === 'start' ? { status: 'undoing', note: shown[at].note } : rollbackRowView(before[at], event.outcome, texts);
+          this.paint();
+        }
+      });
     },
 
     async retry() {
@@ -255,20 +409,25 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
       if (phase === 'loading' || phase === 'running') actions = [];
       // Before the first read (code entry, approval) nothing is known yet: no "will be done" for a step that has not been looked at.
       const label = (row) => (phase === 'loading' ? t('consoleSetup.status.pending') : phase === 'overview' && row.status === 'todo' ? t('consoleSetup.status.open') : LABEL()[row.status]);
-      this.stepNodes = rows.map((row) => el('li', { className: `check-row console-step status-${phase === 'loading' ? 'pending' : row.status}` },
-        el('span', { className: 'check-box', textContent: phase === 'loading' ? MARK.na : MARK[row.status] }),
-        el('span', { className: 'check-main' },
-          el('strong', { textContent: row.step.title }),
-          el('small', { textContent: (phase !== 'loading' && row.note) || row.step.detail })),
-        el('span', { className: `pill ${phase !== 'loading' && (row.status === 'ok' || row.status === 'done') ? 'on' : 'off'}`, textContent: label(row) })));
+      // During an undo the rows show its progress (showUndo), afterwards their own state again.
+      const view = (row, at) => (shown?.[at] ? { step: row.step, ...shown[at] } : row);
+      this.stepNodes = rows.map((source, at) => {
+        const row = view(source, at);
+        return el('li', { className: `check-row console-step status-${phase === 'loading' ? 'pending' : row.status}` },
+          el('span', { className: 'check-box', textContent: phase === 'loading' ? '' : MARK[row.status] ?? '' }),
+          el('span', { className: 'check-main' },
+            el('strong', { textContent: row.step.title }),
+            el('small', { textContent: (phase !== 'loading' && row.note) || row.step.detail })),
+          el('span', { className: `pill ${phase !== 'loading' && (row.status === 'ok' || row.status === 'done') ? 'on' : 'off'}`, textContent: label(row) }));
+      });
       this.actionNodes = actions.map((a) => el('li', { className: 'check-row highlight console-action' },
         el('span', { className: 'check-main' }, el('strong', { textContent: a.label }))));
-      const heading = phase === 'done' ? t('consoleSetup.headingDone', { summary: this.summary() }) : phase === 'running' ? t('consoleSetup.headingRunning') : title;
+      const heading = phase === 'rolling' ? t('consoleSetup.rollback.running') : phase === 'rolled' ? t('consoleSetup.rollback.headingPartial') : phase === 'done' ? t('consoleSetup.headingDone', { summary: this.summary() }) : phase === 'running' ? t('consoleSetup.headingRunning') : title;
       const waitText = waiting === 'admin' ? t('consoleSetup.waitingAdmin') : waiting === 'unlock' ? t('consoleSetup.waitingUnlock') : '';
-      const lead = waitText ? waitText : phase === 'done'
+      const lead = waitText ? waitText : phase === 'rolling' ? t('consoleSetup.rollback.leadRunning') : phase === 'rolled' ? t('consoleSetup.rollback.leadPartial') : phase === 'done' && failedRun && tx.pending ? t('consoleSetup.leadFailedUndo') : phase === 'done'
         ? (rows.some((r) => r.status === 'failed') ? t('consoleSetup.leadFailed') : rows.some((r) => ['skipped', 'aborted'].includes(r.status)) ? t('consoleSetup.leadSkipped') : t('consoleSetup.leadAllDone'))
         : phase === 'running' ? t('consoleSetup.leadRunning') : intro;
-      const extra = phase === 'overview' ? notes(adminPrompts, lastEnv) : phase === 'done' ? doneNotes(rows) : [];
+      const extra = phase === 'overview' ? notes(adminPrompts, lastEnv) : phase === 'rolled' ? [t('consoleSetup.rollback.partial', { steps: (rollbackReport ?? []).join(', ') }), t('consoleSetup.rollback.fix')] : phase === 'done' ? doneNotes(rows) : [];
       this.index = Math.min(this.index, Math.max(0, this.focusNodes().length - 1));
       this.root.replaceChildren(el('div', { className: 'files console-page' },
         el('div', { className: 'files-head' },
@@ -280,7 +439,7 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
         this.actionNodes.length ? el('ul', { className: 'console-actions' }, this.actionNodes) : null));
       this.update();
       renderHints();
-      const running = this.stepNodes.find((n) => n.classList.contains('status-running'));
+      const running = this.stepNodes.find((n) => n.classList.contains('status-running') || n.classList.contains('status-undoing'));
       if (running) keepInView(this.stepList, running, { instant: true });
     },
 
@@ -292,8 +451,8 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
 
     update() {
       const nodes = this.focusNodes();
-      // No cursor while the run is in progress.
-      setFocused(nodes, phase === 'running' || phase === 'loading' ? -1 : this.index);
+      // No cursor while the run or the undo is in progress.
+      setFocused(nodes, ['running', 'loading', 'rolling'].includes(phase) ? -1 : this.index);
       if (this.index < this.stepNodes.length) keepInView(this.stepList, this.stepNodes[this.index]);
       renderHints();
     },
@@ -332,7 +491,8 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
           return button.run();
         }
         case 'b':
-          return pop();
+          // After a failed switch B is the cancel: it undoes, it does not just leave the half-done state behind.
+          return phase === 'done' && failedRun && tx.pending ? this.abandon() : pop();
       }
     },
 
@@ -345,6 +505,7 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
 
     hints() {
       if (phase === 'running') return [['B', t('consoleSetup.action.cancel')]];
+      if (phase === 'rolling') return [];
       if (phase === 'loading') return [['B', t('consoleSetup.hint.back')]];
       const onButton = this.index >= (this.stepNodes?.length ?? 0);
       return [onButton ? ['A', t('consoleSetup.hint.select')] : ['↕', t('consoleSetup.hint.scroll')], ['B', phase === 'done' ? t('consoleSetup.hint.close') : t('consoleSetup.hint.back')]];
@@ -367,15 +528,21 @@ const failed = (note) => ({ status: 'failed', note });
  */
 async function setupLock(env, deps) {
   // A code from the open couch is not kept: said before the entry, so the old code can simply be entered again.
-  if (env.security.couchLock !== 'code' && env.security.couchLock !== 'windows' && env.security.hasPasscode) toast(t('consoleSetup.lock.reenterCode'), 8000);
+  if (env.security.couchLock !== 'code' && env.security.couchLock !== 'windows' && env.security.hasPasscode && codeLockPlan(env.security) !== 'keep') toast(t('consoleSetup.lock.reenterCode'), 8000);
+  const resets = deps.codesResets?.() ?? 0;
+  const offers = deps.codesResetOffers?.() ?? 0;
   const result = await setupCouchLock({
     security: env.security,
     enroll: () => deps.enrollCodeLock(),
     restore: () => deps.restoreCodeLock(),
     askAgain: () => confirmDialog(t('consoleSetup.lock.codeNotSet'), t('consoleSetup.lock.codeNotSetButton'))
   });
+  // The service's code store is damaged: the reset is offered right here, once per step (not again after it was declined in the code
+  // dialog of this step); once it went through, the step says so and "Try again" runs it.
+  if (result.note === 'codesDamaged' && (deps.codesResetOffers?.() ?? 0) === offers) await deps.offerCodesReset?.(t('consoleSetup.lock.codesDamaged'));
+  if (result.status === 'failed' && (deps.codesResets?.() ?? 0) > resets) return failed(t('consoleSetup.lock.codesReset'));
   // i18n-used: consoleSetup.lock.windowsNote consoleSetup.lock.codeNoPassword consoleSetup.lock.existingActive consoleSetup.lock.codeActive
-  // i18n-used: consoleSetup.lock.notSaved consoleSetup.lock.noCode consoleSetup.lock.legacyConfirmFirst
+  // i18n-used: consoleSetup.lock.notSaved consoleSetup.lock.noCode consoleSetup.lock.legacyConfirmFirst consoleSetup.lock.codesDamaged
   const note = `consoleSetup.lock.${result.note}`;
   return { status: result.status, note: t(note) };
 }
@@ -507,7 +674,7 @@ function setupSteps({ pauseServices = true } = {}) {
  * skip: step ids the setup leaves out because the user declined them in the setup assistant (automatic sign-in, the Steam and
  * startup changes, the services). The steps that must go together stay: lock, shell and integration are never skipped.
  */
-export function consoleSetupPage(deps, { skip = [], pauseServices = true, carried = [], autoStart = false, onDone = null } = {}) {
+export function consoleSetupPage(deps, { skip = [], pauseServices = true, carried = [], autoStart = false, onDone = null, carriedEntries = [] } = {}) {
   return stepsPage({
     id: 'console-setup',
     title: t('consoleSetup.setup.title'),
@@ -524,7 +691,9 @@ export function consoleSetupPage(deps, { skip = [], pauseServices = true, carrie
     ],
     startLabel: t('consoleSetup.setup.start'),
     // Never left out: integration, lock and shell go together, and the services step (at least its lock tasks) belongs to the lock.
-    steps: filterSetupSteps(setupSteps({ pauseServices }), skip),
+    steps: withUndo(filterSetupSteps(setupSteps({ pauseServices }), skip), SETUP_UNDO),
+    from: 'app',
+    carriedEntries,
     restartAsk: (rows) => rows.some((r) => r.step.id === 'shell' && (r.status === 'ok' || r.status === 'done')) && rows.some((r) => r.status === 'ok'),
     restartLabel: t('consoleSetup.setup.restart'),
     deps
@@ -640,7 +809,7 @@ function revertSteps() {
   ];
 }
 
-export function consoleRevertPage(deps, wasShell, { carried = [], autoStart = false, onDone = null } = {}) {
+export function consoleRevertPage(deps, wasShell, { carried = [], autoStart = false, onDone = null, carriedEntries = [] } = {}) {
   return stepsPage({
     id: 'console-revert',
     title: t('consoleSetup.revert.title'),
@@ -653,7 +822,9 @@ export function consoleRevertPage(deps, wasShell, { carried = [], autoStart = fa
       t('consoleSetup.revert.after')
     ],
     startLabel: t('consoleSetup.revert.start'),
-    steps: revertSteps(),
+    steps: withUndo(revertSteps(), REVERT_UNDO),
+    from: 'shell',
+    carriedEntries,
     restartAsk: (rows) => wasShell && rows.some((r) => r.step.id === 'light' && (r.status === 'ok' || r.status === 'done')),
     restartLabel: t('consoleSetup.revert.restart'),
     deps
@@ -686,6 +857,40 @@ export async function openSetupSteps() {
  */
 export function hasConsoleSetup(settings, security, leftovers = false) {
   return settings?.integrationMode === 'full' || !!settings?.isShell || !!security?.autoLogon || security?.autoLogonState === 'lost' || leftovers;
+}
+
+/**
+ * A mode switch that was cut off (crash, power loss, a closed window) is found at the next start by the host's record. After the unlock
+ * the person chooses: undo what it changed (back to the exact previous mode), finish it (the guided run again, which does only what is
+ * missing), or decide later (the record stays). Resolves to 'undone', 'finish', 'later' or 'partial'.
+ */
+export async function resolveInterruptedSwitch(deps, journalText, { chooseDialog, allowFinish = true }) {
+  const record = parseJournal(journalText);
+  if (!record) {
+    await attempt(() => api.setSetting('modeSwitchJournal', ''), undefined, { quietLocked: true });
+    return 'later';
+  }
+  // i18n-used: consoleSetup.recover.undo consoleSetup.recover.undoDetail consoleSetup.recover.finish consoleSetup.recover.finishDetail
+  const all = [
+    { label: t('consoleSetup.recover.undo'), detail: t('consoleSetup.recover.undoDetail', { steps: describeTargets([...record.entries].reverse(), t).join(' · ') }), value: 'undo' },
+    { label: t('consoleSetup.recover.finish'), detail: t('consoleSetup.recover.finishDetail'), value: 'finish' }
+  ];
+  const options = all.filter((o) => recoveryChoices(allowFinish).includes(o.value));
+  const pick = await chooseDialog(t('consoleSetup.recover.title'), options, 'undo');
+  if (pick === 'finish') return { choice: 'finish', record };
+  if (pick !== 'undo') return 'later';
+  if (!(await ensureUnlocked(t('consoleSetup.recover.title')))) return 'later';
+  const steps = record.from === 'shell' ? withUndo(revertSteps(), REVERT_UNDO) : withUndo(setupSteps(), SETUP_UNDO);
+  const tx = createModeTransaction({ from: record.from, entries: record.entries, persist: (text) => api.setSetting('modeSwitchJournal', text) });
+  const result = await tx.rollback(undoersOf(steps));
+  if (!tx.pending) await tx.finish();
+  deps.refresh?.();
+  if (!result.leftover.length) {
+    toast(t('consoleSetup.rollback.done'), 6000);
+    return 'undone';
+  }
+  toast(describeRollback(result, (id) => steps.find((s) => s.id === id)?.title ?? id, t).lines.join(' '), 20000, { long: true });
+  return 'partial';
 }
 
 export { isConsoleReady };

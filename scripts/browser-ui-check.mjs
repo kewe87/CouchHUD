@@ -88,6 +88,37 @@ await sleep(3500);
 await evaluate('document.querySelector("#boot")?.classList.add("done")');
 
 try {
+  // 0. Menus: an ungrouped menu renders as before (no headings, a detail on every entry, plain list); the grouped power menu in
+  // tiles has its headings outside the entry indices and no label wider than its tile.
+  const plain = await evaluate(`(async () => {
+    const { openOverlay, closeOverlay } = await import('/components/overlay.js');
+    openOverlay({ title: 'T', entries: [{ label: 'a', detail: 'da', run: () => {} }, { label: 'b', detail: 'db', run: () => {} }, { label: 'c', detail: 'dc', run: () => {} }], index: 1 });
+    const ul = document.querySelector('#overlay .menu');
+    const r = { cls: [...ul.classList].sort(), items: ul.children.length, details: ul.querySelectorAll('li small').length, headings: ul.querySelectorAll('.menu-group').length,
+      below: !!document.querySelector('#overlay .menu-detail'), indexes: [...ul.children].map((li) => li.dataset.index).join(','), focused: ul.querySelector('li.focused')?.dataset.index };
+    closeOverlay();
+    return r;
+  })()`);
+  check(plain.cls.join() === 'menu' && plain.items === 3 && plain.details === 3 && plain.headings === 0 && !plain.below && plain.indexes === '0,1,2' && plain.focused === '1',
+    'ungrouped menu renders unchanged', plain);
+  const tiles = await evaluate(`(async () => {
+    const { state } = await import('/core/state.js');
+    state.info.isShell = true;
+    const { powerMenu } = await import('/core/power.js');
+    const { openOverlay, closeOverlay } = await import('/components/overlay.js');
+    openOverlay(powerMenu());
+    const ul = document.querySelector('#overlay .menu');
+    const fits = [...ul.querySelectorAll('.menu-label')].every((l) => l.scrollWidth <= l.parentElement.clientWidth + 1);
+    const r = { tiles: ul.classList.contains('tiles'), headings: [...ul.querySelectorAll('.menu-group')].map((h) => h.dataset.index ?? '-').join(','),
+      entries: ul.querySelectorAll('li[data-index]').length, focused: state.overlay.entries[state.overlay.index].id, details: ul.querySelectorAll('li small').length,
+      below: document.querySelector('#overlay .menu-detail')?.textContent ?? null, fits };
+    closeOverlay();
+    state.info.isShell = false;
+    return r;
+  })()`);
+  check(tiles.tiles && tiles.headings === '-,-' && tiles.entries === 7 && tiles.focused === 'standby' && tiles.details === 0 && !!tiles.below && tiles.fits,
+    'power menu: tiles, two headings outside the indices, detail under the tiles, labels fit', tiles);
+
   // 1. Opening a site: the browser tab comes up with the page in front and the controller on it.
   await clearCalls();
   await evaluate(`import('/core/api.js').then(({ api }) => api.openBrowser('example.org'))`);

@@ -8,7 +8,7 @@ namespace CouchHud.Core.Library;
 /// Combines all providers (built-in scanners, config entries, plugins) into one
 /// library and keeps user state like favorites and launch times on top of it.
 /// </summary>
-public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, IEnumerable<ILibraryProvider> providers)
+public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, IEnumerable<ILibraryProvider> providers) : IDisposable
 {
     /// <summary>A provider that takes longer (offline media server, hung plugin) is skipped for this scan.</summary>
     public TimeSpan ProviderTimeout { get; init; } = TimeSpan.FromSeconds(20);
@@ -185,11 +185,20 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         return Replace(id, i => ApplyUserState(i with { Name = BaseName(i) }));
     }
 
-    /// <summary>Picks artwork for one slot ("cover", "hero", "logo"): an https URL or a local image. Null goes back to automatic.</summary>
+    /// <summary>Picks artwork for one slot ("cover", "hero", "logo", "square"): an https URL or a local image. Null goes back to automatic.</summary>
     public LibraryItem SetArtwork(string id, string slot, string? urlOrPath)
     {
-        if (Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
         var url = string.IsNullOrWhiteSpace(urlOrPath) ? null : ArtworkOverrides.Normalize(urlOrPath);
+        var result = StoreArtwork(id, slot, url);
+        // A reset slot may still be empty (the lookup skipped it while the pick was there).
+        if (url is null) _ = FetchMissingArtworkAsync();
+        else if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) _ = CachePickedAsync(url);
+        return result;
+    }
+
+    private LibraryItem StoreArtwork(string id, string slot, string? url)
+    {
+        if (Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
         ItemOverride? after = null;
         config.Update(c =>
         {
@@ -200,10 +209,56 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
             after = o;
         });
         // Recomputed from the automatic art, so nothing is lost when a pick is reset.
-        var result = Replace(id, i => i with { Art = ArtworkOverrides.Apply(BaseArt(i), after) });
-        // A reset slot may still be empty (the lookup skipped it while the pick was there).
+        return Replace(id, i => i with { Art = ArtworkOverrides.Apply(BaseArt(i), after) });
+    }
+
+    private readonly Dictionary<string, int> _pickStarted = new();
+    private readonly Dictionary<string, int> _pickStored = new();
+
+    /// <summary>
+    /// The pick of the UI: an online image from a downloadable source is fetched into the cache first, and only then stored as the pick, so
+    /// the UI never points at a file that is not there yet. If the download fails nothing changes and the user gets a clear message.
+    /// <paramref name="stillAllowed"/> runs right after the download, before anything is stored (the couch may have been locked meanwhile).
+    /// Two picks for the same slot: the one chosen last wins; an older one that finishes later throws <see cref="PickSupersededException"/> and changes nothing.
+    /// </summary>
+    public async Task<LibraryItem> SetArtworkAsync(string id, string slot, string? urlOrPath, Action? stillAllowed = null, CancellationToken ct = default)
+    {
+        if (Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
+        var url = string.IsNullOrWhiteSpace(urlOrPath) ? null : ArtworkOverrides.Normalize(urlOrPath);
+        var key = id + "|" + slot;
+        int mine;
+        lock (_lock) _pickStarted[key] = mine = _pickStarted.GetValueOrDefault(key) + 1;
+        var download = url is not null && artwork.Images is not null && ArtworkSources.IsAllowed(url);
+        if (download)
+        {
+            bool cached;
+            try
+            {
+                cached = await artwork.CacheNowAsync(url!, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Console.Error.WriteLine($"[artwork] picked image: {ex.Message}");
+                cached = false;
+            }
+            if (!cached)
+            {
+                Console.Error.WriteLine($"[artwork] picked image could not be downloaded: {url}");
+                throw new InvalidOperationException(Strings.Get("artwork.pickDownloadFailed"));
+            }
+        }
+        stillAllowed?.Invoke();
+        LibraryItem result;
+        // The check and the store are one step: a pick that was chosen later and has already been stored is never overwritten.
+        // A newer pick that failed or is still loading does not count (it never stored anything).
+        lock (_lock)
+        {
+            if (_pickStored.GetValueOrDefault(key) > mine) throw new PickSupersededException();
+            _pickStored[key] = mine;
+            result = StoreArtwork(id, slot, url);
+        }
         if (url is null) _ = FetchMissingArtworkAsync();
-        else if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) _ = CachePickedAsync(url);
+        Changed?.Invoke(Items);
         return result;
     }
 
@@ -230,6 +285,32 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     /// <summary>Candidates for the artwork picker.</summary>
     public Task<ArtworkChoices> GetArtworkChoicesAsync(string id, CancellationToken ct = default) =>
         artwork.GetChoicesAsync(Find(id) ?? throw new KeyNotFoundException($"unknown item {id}"), ct);
+
+    /// <summary>
+    /// "Reload artwork" for one entry: the cache times are ignored and every slot is looked up anew (see <see cref="ArtworkResolver.ReloadAsync"/>).
+    /// Only the automatic art changes; a picked image stays, because the user's picks are applied on top afterwards.
+    /// Returns "found", "nothing", "failed" or "busy".
+    /// </summary>
+    public async Task<string> ReloadArtworkAsync(string id, CancellationToken ct = default)
+    {
+        var item = Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
+        LibraryItem automatic;
+        lock (_lock) automatic = item with { Art = BaseArt(item) };
+        var (updated, result) = await artwork.ReloadAsync(automatic, ct);
+        if (result == ArtworkResolver.ReloadResult.Found)
+        {
+            IReadOnlyList<LibraryItem> merged;
+            lock (_lock)
+            {
+                _baseArt[id] = updated.Art;
+                var own = config.Current.Overrides.GetValueOrDefault(id);
+                merged = _items.Select(i => i.Id == id ? i with { Art = ArtworkOverrides.Apply(updated.Art, own) } : i).ToList();
+                _items = merged;
+            }
+            Changed?.Invoke(merged);
+        }
+        return result.ToString().ToLowerInvariant();
+    }
 
     public IReadOnlyList<ItemCollection> GetCollections()
     {
@@ -486,8 +567,22 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         return Replace(id, i => i with { PlaytimeMinutes = total, LastSessionMinutes = minutes, LastPlayed = Math.Max(i.LastPlayed, last) });
     }
 
+    private Timer? _artworkTimer;
+
+    /// <summary>Stops the periodic look for missing pictures.</summary>
+    public void Dispose() => Interlocked.Exchange(ref _artworkTimer, null)?.Dispose();
+
+    /// <summary>How often the library looks again for pictures that are missing (each entry has its own, daily, due time).</summary>
+    private static readonly TimeSpan ArtworkTick = TimeSpan.FromHours(6);
+
     private async Task FetchMissingArtworkAsync()
     {
+        // Once per process: a library that stays up for days still looks again for missing pictures.
+        if (_artworkTimer is null)
+        {
+            var timer = new Timer(_ => _ = FetchMissingArtworkAsync(), null, ArtworkTick, ArtworkTick);
+            if (Interlocked.CompareExchange(ref _artworkTimer, timer, null) is not null) timer.Dispose();
+        }
         if (Interlocked.Exchange(ref _artworkRunning, 1) == 1) return;
         try
         {
@@ -521,7 +616,7 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
 
             // The images themselves: once to disk, slowly, in the background. The UI shows each as it arrives.
             var slots = Items.Where(i => fetchFor is null || fetchFor(i))
-                .SelectMany(i => new[] { i.Art.Cover, i.Art.Hero, i.Art.Logo, i.Art.Icon }).ToList();
+                .SelectMany(i => new[] { i.Art.Cover, i.Art.Hero, i.Art.Logo, i.Art.Square, i.Art.Icon }).ToList();
             var arrived = await artwork.DownloadMissingAsync(slots, () => Changed?.Invoke(Items));
             // A scan without some stores does not know their entries: their pictures stay until a full scan.
             bool stillFull;
@@ -557,3 +652,6 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         }
     }
 }
+
+/// <summary>A pick for the same slot that was chosen later has already been stored: this older one changed nothing (not an error to show).</summary>
+public sealed class PickSupersededException : Exception;

@@ -96,6 +96,14 @@ public sealed class PluginPage
     /// The page and all of its rows without an own function.
     /// </summary>
     public string? Function { get; init; }
+
+    // ---- SDK 4 ----
+
+    /// <summary>
+    /// Up to three actions shown as button hints in the footer while the page is open (see <see cref="PluginPageAction"/>). They replace rows
+    /// that would only be links or buttons around the page's content. A plugin that sets this declares "sdk": 4.
+    /// </summary>
+    public IReadOnlyList<PluginPageAction> Actions { get; init; } = [];
 }
 
 /// <summary>An entry in the guide menu, e.g. "Licht aus" or "Lüfter leise".</summary>
@@ -134,7 +142,13 @@ public enum SettingKind
     Text,
     /// <summary>Like text, but never shown again (tokens, passwords).</summary>
     Secret,
-    Choice
+    Choice,
+    /// <summary>
+    /// SDK 4: no value. An entry on the plugin's settings page that opens one of the plugin's own pages (<see cref="PluginSetting.Page"/>), e.g.
+    /// a device picker. The host opens it, the plugin's code is not called; the settings gate (the setting's function, else "settings", else admin)
+    /// applies on top of the page's own. B on that page returns to the settings page.
+    /// </summary>
+    Page
 }
 
 /// <summary>A setting on the plugin's page in the settings. Values are stored by CouchHud.</summary>
@@ -160,6 +174,12 @@ public sealed class PluginSetting
     public double? Min { get; init; }
 
     public double? Max { get; init; }
+
+    /// <summary>
+    /// For a <see cref="SettingKind.Page"/> entry: the id of a <see cref="PluginPage"/> of this plugin that it opens. Ignored for other kinds.
+    /// An id the plugin did not register, or that starts with "$", is ignored by the host (the entry is not shown). Needs "sdk": 4.
+    /// </summary>
+    public string? Page { get; init; }
 }
 
 /// <summary>

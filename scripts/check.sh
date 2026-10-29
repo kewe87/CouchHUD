@@ -34,6 +34,9 @@ node scripts/catalog-check.mjs
 echo "› CSS syntax"
 node scripts/css-check.mjs
 
+echo "› Skins keep the tabs"
+node scripts/skin-check.mjs
+
 echo "› UI texts (de/en)"
 node scripts/i18n-check.mjs
 

@@ -25,9 +25,13 @@ public enum DownloadState
     Failed
 }
 
+/// <summary>Which package of several a run is at (app updates): "App 1 of 2", the name and what happens to it ("prepare", "download", "install").</summary>
+public sealed record UpdateStep(int Index, int Total, string? Name, string Phase);
+
 /// <summary>One line of the downloads page.</summary>
 /// <param name="Progress">0..1 when the source really knows it; null otherwise (the page then shows no bar).</param>
 /// <param name="Detail">A text of the source (state of a setup, result), already in the UI language; may be null.</param>
+/// <param name="Step">An app update with several packages: which one is running now; null for everything else.</param>
 /// <param name="Cancellable">The running work can be cancelled right now (CouchHUD's own download, before the hand-over); never a
 /// finished line.</param>
 public sealed record DownloadEntry(
@@ -42,7 +46,8 @@ public sealed record DownloadEntry(
     bool IsUpdate,
     string? Detail,
     long UpdatedAt,
-    bool Cancellable = false)
+    bool Cancellable = false,
+    UpdateStep? Step = null)
 {
     public bool Active => State is DownloadState.Waiting or DownloadState.Downloading or DownloadState.Installing or DownloadState.InClient;
 
@@ -150,14 +155,15 @@ public sealed class DownloadCenter(Func<DateTimeOffset>? now = null)
     /// source's real counters (never a guess such as an update's largest package); 0 clears the bytes, done is kept within 0..total.
     /// </summary>
     public void Report(string id, double? progress = null, string? detail = null, DownloadState? state = null, long? bytesDone = null, long? bytesTotal = null,
-        bool? cancellable = null)
+        bool? cancellable = null, UpdateStep? step = null, bool unknownProgress = false)
     {
         lock (_lock)
         {
             if (!_activities.TryGetValue(id, out var e)) return;
             _activities[id] = e with
             {
-                Progress = progress is { } p ? Math.Clamp(p, 0, 1) : e.Progress,
+                Progress = progress is { } p ? Math.Clamp(p, 0, 1) : unknownProgress ? null : e.Progress,
+                Step = step ?? e.Step,
                 Detail = detail ?? e.Detail,
                 State = state ?? e.State,
                 BytesTotal = bytesTotal is { } t ? Math.Max(0, t) : e.BytesTotal,
@@ -176,7 +182,7 @@ public sealed class DownloadCenter(Func<DateTimeOffset>? now = null)
         lock (_lock)
         {
             if (!_activities.Remove(id, out var e)) return;
-            done = Finish(e with { State = ok ? DownloadState.Done : DownloadState.Failed, Progress = ok ? 1 : e.Progress, Detail = detail ?? e.Detail });
+            done = Finish(e with { State = ok ? DownloadState.Done : DownloadState.Failed, Progress = ok ? 1 : e.Progress, Detail = detail ?? e.Detail, Step = null });
         }
         Finished?.Invoke(done);
         Changed?.Invoke();

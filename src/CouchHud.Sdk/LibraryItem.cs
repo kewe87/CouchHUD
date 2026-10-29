@@ -28,6 +28,8 @@ public sealed record Artwork
     public IReadOnlyList<string> Cover { get; init; } = [];
     public IReadOnlyList<string> Hero { get; init; } = [];
     public IReadOnlyList<string> Logo { get; init; } = [];
+    /// <summary>Square picture (SteamGridDB square grid or icon); skins with square tiles use it, otherwise the UI crops the cover.</summary>
+    public IReadOnlyList<string> Square { get; init; } = [];
     /// <summary>Square app icon (exe icon, package logo); the UI draws it on a generated banner when there is no cover.</summary>
     public IReadOnlyList<string> Icon { get; init; } = [];
 

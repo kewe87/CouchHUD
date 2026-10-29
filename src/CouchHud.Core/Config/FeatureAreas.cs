@@ -45,13 +45,13 @@ public static class FeatureAreas
         ["browserHistory"] = Browser,
         // Favorites tab (formerly Home): websites belong to the browser, the arrangement to everything.
         ["favoritesSites"] = Browser,
-        ["favoritesMode"] = Always,
+        ["favoritesMode"] = Always, ["favoritesRecentDays"] = Always,
         // Everything else is shared by all areas.
         ["audioMode"] = Always, ["screensaverMinutes"] = Always, ["screensaverStyle"] = Always, ["displayOffMinutes"] = Always,
         ["tvInGuide"] = Always, ["tvOnWithCouchHud"] = Always, ["tvOffWithPc"] = Always,
         ["bluetoothAutoOn"] = Always, ["selfUpdateCheck"] = Always, ["pixelShift"] = Always, ["reduceMotion"] = Always,
         ["pointer"] = Always, ["mouseUnlocked"] = Always, ["closeExplorerInLight"] = Always, ["acceptedTerms"] = Always,
-        ["setupWizardDone"] = Always, ["autoLogonDeclined"] = Always, ["guideTapInGame"] = Always, ["suppressCompetitors"] = Always, ["gameBarButton"] = Always,
+        ["setupWizardDone"] = Always, ["modeSwitchJournal"] = Always, ["autoLogonDeclined"] = Always, ["guideTapInGame"] = Always, ["suppressCompetitors"] = Always, ["gameBarButton"] = Always,
         ["musicVolume"] = Always, ["soundVolume"] = Always, ["soundSet"] = Always, ["uiHdr"] = Always, ["sounds"] = Always,
         ["expertMode"] = Always, ["language"] = Always, ["rumble"] = Always, ["padGlyphs"] = Always, ["runStartupApps"] = Always,
         ["killExplorerOnReturn"] = Always, ["nightMode"] = Always, ["nightModeStrength"] = Always,
@@ -59,6 +59,9 @@ public static class FeatureAreas
         ["autoSwitchHeadphones"] = Always, ["returnHoldMs"] = Always, ["weatherLocation"] = Always,
         ["aiProvider"] = Always, ["aiModel"] = Always,
         ["anthropicApiKey"] = Always, ["openAiApiKey"] = Always, ["mcpEnabled"] = Always, ["mirrorNotifications"] = Always,
+        // Privacy (Settings > Privacy): the save list belongs to Gaming, the news feeds to News, the rest is shared.
+        ["offline"] = Always, ["netCatalog"] = Always, ["netSystemUpdates"] = Always, ["netWeather"] = Always, ["netAssistant"] = Always,
+        ["catalogUpdateCheck"] = Always, ["pluginAutoUpdate"] = Always, ["netSaves"] = Games, ["netNews"] = News,
         ["remoteEnabled"] = Always, ["mcpLan"] = Always, ["mcpToken"] = Always, ["screenshotCombo"] = Always,
     };
 
@@ -107,12 +110,12 @@ public static class FeatureAreas
     {
         // Library and entries (checked per entry or per added entry).
         "getLibrary", "getFavorites", "launch", "toggleFavorite", "toggleFavoriteSite", "getStoreInfo", "getDetails", "uninstall", "browse", "addEntries", "editLaunch",
-        "getLaunchOptions", "setLaunchOverride", "getItemInfo", "setItemInfo", "editItem", "getArtworkChoices", "setArtwork",
+        "getLaunchOptions", "setLaunchOverride", "getItemInfo", "setItemInfo", "editItem", "getArtworkChoices", "setArtwork", "reloadArtwork",
         "getCollections", "createCollection", "renameCollection", "deleteCollection", "setCollectionMember", "setCollectionOnHome",
         "removeEntry", "getSession", "resumeGame", "quitGame",
         // Console, settings (per key), lock, codes, parental controls and profiles.
-        "systemInfo", "setShell", "enterPcMode", "power", "quit", "getSettings", "setFeatureAreas", "setSetting", "setIntegrationMode",
-        "displayOn", "displayOff", "getSecurity", "getServiceStatus", "repairService", "getParental", "setParental",
+        "systemInfo", "setShell", "enterPcMode", "power", "quit", "restartCouchHud", "getSettings", "setFeatureAreas", "setSetting", "setIntegrationMode",
+        "displayOn", "displayOff", "getSecurity", "getServiceStatus", "repairService", "resetCodeStore", "getParental", "setParental",
         "setParentalItemLock", "parentalCheck", "parentalExtend", "parentalAuth", "confirmWindowsUnlock", "parentalReset",
         "parentalAcceptClock", "parentalAdoptZone", "parentalCloseGame", "getProfiles", "switchProfile", "profileScreen", "profileIdle",
         "addProfile", "renameProfile", "setProfileLook", "setProfileRestricted", "setProfileCode", "removeProfile", "getProfileRules",
@@ -126,7 +129,7 @@ public static class FeatureAreas
         // Downloads tab (CouchHUD's and Windows' own downloads; game lines go with Gaming inside the center).
         "getDownloadCenter", "dismissDownload", "cancelDownload",
         // Plugins and skins.
-        "getPlugins", "setPluginEnabled", "setPluginSetting", "setPluginFunctionLevel", "endPluginVisit", "getPluginPage", "getPluginTabs", "getPluginGate", "activatePluginRow", "getQuickActions", "approvePlugin",
+        "getPlugins", "setPluginEnabled", "setPluginSetting", "openPluginSettingPage", "setPluginFunctionLevel", "endPluginVisit", "getPluginPage", "getPluginTabs", "getPluginGate", "activatePluginRow", "activatePluginAction", "getQuickActions", "approvePlugin",
         "runQuickAction", "installPackage", "getCatalog", "getCatalogUpdates", "installCatalogEntry", "updateCatalogEntry", "getCatalogDetail", "getCatalogSources", "addCatalogSource", "removeCatalogSource", "uninstallPlugin", "acceptRevokedPlugin",
         "confirmPluginExe", "getPluginSuggestions", "dismissPluginSuggestion", "changePluginRow", "listSkins", "setSkin",
         // Notifications, Bluetooth, Wi-Fi, phone remote, firewall.
@@ -136,7 +139,7 @@ public static class FeatureAreas
         // Startup, services, policies, processes, updates.
         "getStartup", "setStartupMode", "applyStartupSuggestions", "getServices", "toggleCouchService", "setupServiceTask",
         "releaseLockPolicies", "cleanupStuckPolicies", "getProcesses", "switchProcess", "killProcess", "getUpdates", "checkUpdates",
-        "getSelfUpdate", "checkSelfUpdate", "startSelfUpdate", "startUpdate",
+        "getSelfUpdate", "refreshUpdates", "checkSelfUpdate", "startSelfUpdate", "startUpdate",
         // Weather.
         "getWeather", "searchPlaces",
     };
@@ -145,7 +148,7 @@ public static class FeatureAreas
     public static readonly IReadOnlySet<string> ItemMethods = new HashSet<string>(StringComparer.Ordinal)
     {
         "launch", "toggleFavorite", "getStoreInfo", "getDetails", "uninstall", "getItemInfo", "setItemInfo", "getArtworkChoices",
-        "setArtwork", "editLaunch", "getLaunchOptions", "setLaunchOverride", "setStoreMatch", "setEntryEdge", "getSaveInfo",
+        "setArtwork", "reloadArtwork", "editLaunch", "getLaunchOptions", "setLaunchOverride", "setStoreMatch", "setEntryEdge", "getSaveInfo",
         "backupSaves", "restoreSaves", "deleteSaveBackup", "getProfile", "setProfile", "editItem", "removeEntry",
     };
 

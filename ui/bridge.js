@@ -11,7 +11,7 @@ webview.addEventListener('message', ({ data }) => {
     const call = pending.get(data.id);
     if (!call) return;
     pending.delete(data.id);
-    if (data.error !== undefined) call.reject(Object.assign(new Error(data.error), { locked: data.locked === true, held: data.held === true, parent: data.parent ?? null }));
+    if (data.error !== undefined) call.reject(Object.assign(new Error(data.error), { locked: data.locked === true, held: data.held === true, parent: data.parent ?? null, codesDamaged: data.codesDamaged === true }));
     else call.resolve(data.result);
   } else if (data.event) {
     for (const cb of listeners.get(data.event) || []) cb(data.payload);
@@ -77,6 +77,7 @@ window.couchhud = {
   setEntryEdge: (id, edge) => call('setEntryEdge', id, edge),
   removeEntry: (id) => call('removeEntry', id),
   getArtworkChoices: (id) => call('getArtworkChoices', id),
+  reloadArtwork: (id) => call('reloadArtwork', id),
   setArtwork: (id, slot, urlOrPath) => call('setArtwork', id, slot, urlOrPath ?? null),
   getCollections: () => call('getCollections'),
   createCollection: (name) => call('createCollection', name),
@@ -86,6 +87,7 @@ window.couchhud = {
   setCollectionOnHome: (id, onHome) => call('setCollectionOnHome', id, onHome),
   setSkin: (id) => call('setSkin', id),
   quit: () => call('quit'),
+  restartCouchHud: () => call('restartCouchHud'),
   onInput: on('input'),
   onNav: on('nav'),
   onLibrary: on('library'),
@@ -144,10 +146,13 @@ window.couchhud = {
   setPluginEnabled: (folder, enabled) => call('setPluginEnabled', folder, enabled),
   approvePlugin: (folder, hash) => call('approvePlugin', folder, hash),
   setPluginSetting: (plugin, key, value) => call('setPluginSetting', plugin, key, value),
+  openPluginSettingPage: (plugin, key) => call('openPluginSettingPage', plugin, key),
   getPluginTabs: () => call('getPluginTabs'),
   onPluginTabs: on('pluginTabs'),
   getPluginPage: (plugin, page) => call('getPluginPage', plugin, page),
   activatePluginRow: (plugin, page, row) => call('activatePluginRow', plugin, page, row),
+  // A footer action of the page, named by its button ("X" or "Y"); the host looks the action up itself and checks it like a row press.
+  activatePluginAction: (plugin, page, button) => call('activatePluginAction', plugin, page, button),
   // A stepper or choice row got a value; the host only accepts one the row offers.
   changePluginRow: (plugin, page, row, value) => call('changePluginRow', plugin, page, row, String(value)),
   onPluginPageChanged: on('pluginPageChanged'),
@@ -200,6 +205,7 @@ window.couchhud = {
   getUpdates: () => call('getUpdates'),
   checkUpdates: () => call('checkUpdates'),
   getSelfUpdate: () => call('getSelfUpdate'),
+  refreshUpdates: () => call('refreshUpdates'),
   checkSelfUpdate: () => call('checkSelfUpdate'),
   startSelfUpdate: () => call('startSelfUpdate'),
   // TV control (LG webOS first): src/CouchHud.Shell/Services/TvManager.cs. Locked: state, volume, mute, on/off; the rest needs the unlock.
@@ -243,6 +249,7 @@ window.couchhud = {
   getSecurity: () => call('getSecurity'),
   getServiceStatus: (fresh = false) => call('getServiceStatus', !!fresh),
   repairService: () => call('repairService'),
+  resetCodeStore: () => call('resetCodeStore'),
   getParental: () => call('getParental'),
   setParental: (key, value) => call('setParental', key, value),
   setParentalItemLock: (id, locked) => call('setParentalItemLock', id, !!locked),

@@ -55,7 +55,7 @@ Alles bleibt später in den Einstellungen änderbar.
 | Windows | bleibt, wie es ist | Shell-Ersatz, Autologin, pausierte Dienste |
 | Steam & Co. | unberührt | im Hintergrund bereit |
 | Couch-Sperre | – | Controller-Code |
-| Rückweg | – | *Einstellungen › HUD › Modus › Zurück zum normalen Windows* |
+| Rückweg | – | *Einstellungen › HUD › Modus › In den App-Modus wechseln* |
 
 <p align="center"><img src="docs/screenshots/setup-assistant-de.webp" alt="Einrichtungsassistent: App oder Shell" width="640"></p>
 
@@ -221,7 +221,7 @@ Everything can be changed later in Settings.
 | Windows | stays as it is | shell replacement, auto sign-in, paused services |
 | Steam & co. | untouched | kept ready in the background |
 | Couch lock | – | controller code |
-| Way back | – | *Settings › HUD › Mode › Back to normal Windows* |
+| Way back | – | *Settings › HUD › Mode › Switch to App mode* |
 
 <p align="center"><img src="docs/screenshots/setup-assistant-en.webp" alt="Setup assistant: App or Shell" width="640"></p>
 

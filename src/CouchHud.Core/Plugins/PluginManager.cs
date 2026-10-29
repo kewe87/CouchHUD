@@ -101,6 +101,15 @@ public sealed record PluginInfo(
     public bool Revoked { get; init; }
 
     public string? RevokedReason { get; init; }
+
+    /// <summary>Offline mode (Settings › Privacy) is on and this plugin may reach the internet (see <see cref="PluginOfflinePolicy"/>): not loaded, or kept out of sight until the next start.</summary>
+    public bool PausedOffline { get; init; }
+
+    /// <summary>Not loaded at the start because Offline mode was on (set at load time).</summary>
+    public bool SkippedForOffline { get; init; }
+
+    /// <summary>Was skipped for Offline mode and Offline is off now: it loads at the next start.</summary>
+    public bool StartsAfterRestart { get; init; }
 }
 
 /// <summary>
@@ -201,7 +210,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         bool Running(string plugin)
         {
             if (!loaded.Contains(plugin) || GrantOf(plugin) is not { } grant) return false;
-            return isEnabled(grant.Folder) && Trust?.IsRemoved(grant.Folder) != true;
+            return isEnabled(grant.Folder) && Trust?.IsRemoved(grant.Folder) != true && !Paused(grant.Capabilities);
         }
         return PluginTabRules.Resolve(registered, Running, (plugin, page) => FindPage(plugin, page) is not null, Strings.Language, areas, childProfile, locked: IsLocked?.Invoke() ?? false, levelOf: LevelOf);
     }
@@ -221,7 +230,10 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
     private readonly Dictionary<string, PluginGrant> _grants = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>What a loaded plugin got: its origin and the capabilities it may use.</summary>
-    public sealed record PluginGrant(string Folder, PluginOrigin Origin, IReadOnlySet<string> Capabilities);
+    public sealed record PluginGrant(string Folder, PluginOrigin Origin, IReadOnlySet<string> Capabilities, int Sdk = 1);
+
+    /// <summary>The SDK version a loaded plugin declared in its plugin.json (1 when it declared none or is not loaded). What needs a newer SDK (page actions) is ignored below it.</summary>
+    public int SdkOf(string pluginId) => GrantOf(pluginId)?.Sdk ?? 1;
 
     /// <summary>The grant of a loaded plugin (by id); null when it is not loaded.</summary>
     public PluginGrant? GrantOf(string pluginId)
@@ -239,15 +251,36 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
     /// <summary>Completes when all plugins are loaded (or failed to).</summary>
     public Task Loaded => _loaded.Task;
 
+    /// <summary>Set by the host: Offline mode is on now (Settings › Privacy). Plugins that may reach the internet are then not loaded (<see cref="PluginOfflinePolicy"/>).</summary>
+    public Func<bool>? OfflineNow { get; set; }
+
+    private bool Paused(IEnumerable<string>? capabilities) => PluginOfflinePolicy.Pauses(OfflineNow?.Invoke() == true, capabilities);
+
+    /// <summary>
+    /// Is this loaded plugin paused (Offline mode on and it may reach the internet)? A paused plugin is fenced: the host lists none of its
+    /// provider items, pages, quick actions or tools, calls none of them, delivers no events to it and refuses its calls into the host. What the
+    /// host cannot fence is code the plugin already started on its own (its threads and sockets): that stops completely only with the restart.
+    /// </summary>
+    // Registrations (pages, actions, tools, providers, tabs, functions) made while a plugin is paused are dropped, not queued: the plugin registers
+    // again after the restart that loads it. What it registered before the pause comes back when Offline goes off.
+    public bool IsPaused(string pluginId) => Paused(GrantOf(pluginId)?.Capabilities);
+
+    private List<T> Live<T>(List<T> list, Func<T, string> plugin) => Snapshot(list).Where(x => !IsPaused(plugin(x))).ToList();
+
     public IReadOnlyList<PluginInfo> Plugins => Snapshot(_infos)
-        .Select(i => i.DescriptionText is { } d ? i with { Description = d.For(Strings.Language) } : i).ToList();
+        .Select(i => i with
+        {
+            Description = i.DescriptionText is { } d ? d.For(Strings.Language) : i.Description,
+            PausedOffline = Paused(i.Capabilities),
+            StartsAfterRestart = i.SkippedForOffline && !Paused(i.Capabilities)
+        }).ToList();
     public IReadOnlyList<ILibraryProvider> LibraryProviders => Snapshot(_providers);
-    public IReadOnlyList<(string Plugin, PluginPage Page)> Pages => Snapshot(_pages);
-    public IReadOnlyList<(string Plugin, QuickAction Action)> QuickActions => Snapshot(_actions);
-    public IReadOnlyList<(string Plugin, PluginSetting Setting)> Settings => Snapshot(_settings);
+    public IReadOnlyList<(string Plugin, PluginPage Page)> Pages => Live(_pages, p => p.Plugin);
+    public IReadOnlyList<(string Plugin, QuickAction Action)> QuickActions => Live(_actions, a => a.Plugin);
+    public IReadOnlyList<(string Plugin, PluginSetting Setting)> Settings => Live(_settings, s => s.Plugin);
 
     /// <summary>The functions the plugins declared (<see cref="IPluginContext.RegisterFunctions"/>).</summary>
-    public IReadOnlyList<(string Plugin, PluginFunction Function)> Functions => Snapshot(_functions);
+    public IReadOnlyList<(string Plugin, PluginFunction Function)> Functions => Live(_functions, f => f.Plugin);
 
     /// <summary>Set by the host: the level the owner stored for a function (plugin id, function id) as its text, or null. Asked on every decision.</summary>
     public Func<string, string, string?>? StoredLevel { get; set; }
@@ -404,7 +437,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
     public bool HasFunction(string pluginId, string functionId) => Functions.Any(f => f.Plugin.Equals(pluginId, StringComparison.OrdinalIgnoreCase) && f.Function.Id == functionId);
 
     /// <summary>Plugin tools as the assistant sees them, names prefixed with the plugin id.</summary>
-    public IReadOnlyList<ToolSpec> ToolSpecs => Snapshot(_tools).Select(t => ToolSpecNow(t.Plugin, t.Tool, t.Spec)).Where(s => s is not null).Select(s => s!).ToList();
+    public IReadOnlyList<ToolSpec> ToolSpecs => Live(_tools, t => t.Plugin).Select(t => ToolSpecNow(t.Plugin, t.Tool, t.Spec)).Where(s => s is not null).Select(s => s!).ToList();
 
     /// <summary>A tool tagged with a function: off hides it; restricted lets it run on the locked couch; admin keeps it off the locked couch. Untagged: as registered.</summary>
     private ToolSpec? ToolSpecNow(string plugin, PluginTool tool, ToolSpec spec)
@@ -469,7 +502,11 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
                 Console.Error.WriteLine($"[plugins] {pluginsDir}: bundled plugins are not loaded any more (install them from the catalog)");
                 continue;
             }
-            foreach (var dir in Directory.EnumerateDirectories(pluginsDir))
+            // A plugin installed from a signature is loaded before a local one: when two folders claim one id, the signed one keeps it
+            // whatever the folder names are, and the local one is told the id is taken.
+            foreach (var dir in Directory.EnumerateDirectories(pluginsDir)
+                .OrderBy(d => Trust?.Entry(Path.GetFileName(d))?.Origin is PluginOrigin.FirstParty or PluginOrigin.ThirdParty ? 0 : 1)
+                .ThenBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
             {
                 var folder = Path.GetFileName(dir);
                 // Leftovers of an interrupted install (.couchhud-new-…) are not plugins.
@@ -488,7 +525,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
             return;
         }
         var manifest = ReadManifest(dir);
-        var name = manifest?.Name ?? folder;
+        var name = PluginText.Title(manifest?.Name, folder);
         PluginTrustEntry? entry = null;
         if (Trust is not null)
         {
@@ -537,6 +574,13 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
             Add(_infos, info with { Enabled = false });
             return;
         }
+        // Offline mode: a plugin that may reach the internet does not start (it starts at the first launch after Offline is off).
+        if (Paused(granted))
+        {
+            Console.Error.WriteLine($"[plugins] {folder}: paused (offline mode)");
+            Add(_infos, info with { PausedOffline = true, SkippedForOffline = true });
+            return;
+        }
         try
         {
             if (manifest is not null && manifest.Sdk > SdkVersion.Current)
@@ -544,7 +588,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
                 throw new InvalidOperationException(Strings.Get("plugin.needsNewer", manifest.Sdk));
             }
             var dll = FindEntryAssembly(dir) ?? throw new InvalidOperationException(Strings.Get("plugin.dllMissing", folder));
-            foreach (var loadedId in LoadAssembly(dll, name, new PluginGrant(folder, origin, granted), entry?.PluginId))
+            foreach (var loadedId in LoadAssembly(dll, name, new PluginGrant(folder, origin, granted, manifest?.Sdk ?? 1), entry?.PluginId))
             {
                 Add(_infos, info with { Id = loadedId, Loaded = true });
             }
@@ -591,12 +635,85 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         var dir = UserFolder(folder);
         RequireShown(dir, shownHash);
         var manifest = ReadManifest(dir);
-        if (PluginPolicy.CheckDeclared(PluginOrigin.Local, manifest?.Capabilities) is { } problem) throw new InvalidOperationException(Strings.Get(problem));
+        if (PluginPolicy.DeclaredMessage(PluginOrigin.Local, manifest?.Capabilities) is { } problem) throw new InvalidOperationException(problem);
         var caps = manifest?.Capabilities is { } declared ? declared.ToList() : null;
-        PluginLint.CheckFolder(dir, PluginOrigin.Local, caps ?? []);
+        PluginLint.CheckFolder(dir, PluginOrigin.Local, caps ?? [], manifest?.Sdk ?? 1);
         // The check read the files once more: they must still be the ones that were shown.
         RequireShown(dir, shownHash);
         Trust.Record(folder, shownHash!, new PluginTrustEntry { Hash = "", Origin = PluginOrigin.Local, Capabilities = caps });
+    }
+
+    /// <summary>
+    /// Looks at an unsigned package (a local install) BEFORE anything is written, staged, trusted or registered, and refuses what would take
+    /// over or break a plugin that is already there: a name or id that is reserved for CouchHUD's own plugins (or listed in its signed index,
+    /// <paramref name="firstPartyIds"/>), a folder that is installed from a signature (CouchHUD's own or a third party's) or ships with the
+    /// program, an id another installed folder already holds, and capabilities a local plugin can never have (named in the message). Throws
+    /// an <see cref="InvalidOperationException"/> with the reason; the unreadable trust list refuses too (nothing can be judged then).
+    /// </summary>
+    public void RefuseLocalPackage(string zipPath, IEnumerable<string>? firstPartyIds)
+    {
+        using var copy = PackageInstaller.ReadCapped(zipPath);
+        RefuseLocalPackage(copy, Path.GetFileNameWithoutExtension(zipPath), firstPartyIds);
+    }
+
+    /// <summary>The same on the one private copy of the package that is also linted and installed (no second look at a file that could change).</summary>
+    public void RefuseLocalPackage(Stream zip, string zipName, IEnumerable<string>? firstPartyIds)
+    {
+        var own = (firstPartyIds ?? []).ToList();
+        try
+        {
+            RequireReadableTrust();
+            CheckLocalPackage(zip, zipName, own);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The list of approved plugins or a plugin folder cannot be read: nothing can be judged, so nothing is installed.
+            throw new InvalidOperationException(Strings.Get("plugin.trustFault"), ex);
+        }
+    }
+
+    private void CheckLocalPackage(Stream zip, string zipName, List<string> own)
+    {
+        PluginManifest? manifest;
+        try
+        {
+            manifest = CouchHud.Core.Updates.AutoUpdateRules.ReadManifest(zip);
+        }
+        catch (CatalogException ex)
+        {
+            throw new InvalidOperationException(ex.Message);
+        }
+        zip.Position = 0;
+        var folder = PackageInstaller.PlannedName(zip, zipName);
+        if (folder is null) throw new InvalidOperationException(Strings.Get("package.badName"));
+        // The id decides whose data, pages and settings these are, so a reserved id is refused whatever the folder is called; the folder name only
+        // by its look (the id check for non-ASCII letters is for ids: a folder called "Überblick" is fine).
+        var claimed = new List<string>();
+        if (folder.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' or ' ') && PluginNames.IsReserved(folder, own)) claimed.Add(folder);
+        if (manifest?.Id is { Length: > 0 } manifestId && PluginNames.IsReserved(manifestId, own)) claimed.Add(manifestId);
+        if (claimed.Count > 0)
+        {
+            // "The existing plugin was left untouched" only when there is one of that name.
+            var present = claimed.Any(c => Trust?.Entry(c) is not null || pluginDirs.Any(d => Directory.Exists(Path.Combine(d.Dir, c)))
+                || InstalledFolders().Any(f => PluginNames.Skeleton(f.Item1) == PluginNames.Skeleton(c) || f.Item2.Any(i => PluginNames.Skeleton(i) == PluginNames.Skeleton(c))));
+            throw new InvalidOperationException(Strings.Get(present ? "plugin.local.reserved" : "plugin.local.reservedNone", string.Join(", ", claimed.Select(c => PluginText.Strip(c)))));
+        }
+
+        // Installed from a signature, or shipped with the program: a local package never replaces it (uninstall it first, if that is meant).
+        // Also when an update for the folder is staged (it is applied at the next start).
+        var entry = Trust?.Entry(folder);
+        if (entry is { Origin: PluginOrigin.FirstParty or PluginOrigin.ThirdParty } || Trust?.PendingFor(folder) is not null || Trust?.IsRemoved(folder) == true
+            || pluginDirs.Any(d => !d.UserInstalled && Directory.Exists(Path.Combine(d.Dir, folder))))
+            throw new InvalidOperationException(Strings.Get(Trust?.IsRemoved(folder) == true ? "plugin.local.signedRemoving" : "plugin.local.signedInstalled", PluginText.Strip(folder)));
+
+        // An id that another installed plugin holds would be refused at load anyway; refused here, before the other one is disturbed.
+        var ours = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { folder };
+        if (manifest?.Id is { Length: > 0 } id2) ours.Add(id2);
+        foreach (var (other, otherIds) in InstalledFolders())
+            if (!other.Equals(folder, StringComparison.OrdinalIgnoreCase) && otherIds.Overlaps(ours))
+                throw new InvalidOperationException(Strings.Get("plugin.local.idTaken", PluginText.Strip(other)));
+
+        if (PluginPolicy.DeclaredMessage(PluginOrigin.Local, manifest?.Capabilities) is { } problem) throw new InvalidOperationException(problem);
     }
 
     /// <summary>
@@ -608,9 +725,9 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         if (Trust is null) return;
         var dir = UserFolder(folder);
         var manifest = ReadManifest(dir);
-        if (PluginPolicy.CheckDeclared(PluginOrigin.Local, manifest?.Capabilities) is { } problem) throw new InvalidOperationException(Strings.Get(problem));
+        if (PluginPolicy.DeclaredMessage(PluginOrigin.Local, manifest?.Capabilities) is { } problem) throw new InvalidOperationException(problem);
         var caps = manifest?.Capabilities is { } declared ? declared.ToList() : null;
-        PluginLint.CheckFolder(dir, PluginOrigin.Local, caps ?? []);
+        PluginLint.CheckFolder(dir, PluginOrigin.Local, caps ?? [], manifest?.Sdk ?? 1);
         RequireShown(dir, unpackedHash);
         Trust.Record(folder, unpackedHash, new PluginTrustEntry { Hash = "", Origin = PluginOrigin.Local, Capabilities = caps });
     }
@@ -673,6 +790,21 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         return withDeps.Count == 1 ? withDeps[0] : null;
     }
 
+    /// <summary>Set by the host: the ids of CouchHUD's own plugins from the signed index (reserved for everyone else, like the fixed list).</summary>
+    public Func<IEnumerable<string>>? FirstPartyIds { get; set; }
+
+    private IEnumerable<string> FirstPartyIdsNow()
+    {
+        try
+        {
+            return FirstPartyIds?.Invoke() ?? [];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            return [];
+        }
+    }
+
     /// <param name="expectedId">The id in the signed statement: the plugin must answer with exactly that one.</param>
     private List<string> LoadAssembly(string dll, string name, PluginGrant grant, string? expectedId)
     {
@@ -691,7 +823,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
             // The id also names the plugin's data folder: plain characters only (no "..", no separators).
             if (id is null || !System.Text.RegularExpressions.Regex.IsMatch(id, "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
                 || (expectedId is not null && !id.Equals(expectedId, StringComparison.OrdinalIgnoreCase))
-                || (!PluginPolicy.IsOwn(grant.Origin) && PluginNames.IsReserved(id)))
+                || (!PluginPolicy.IsOwn(grant.Origin) && PluginNames.IsReserved(id, FirstPartyIdsNow())))
                 throw new InvalidOperationException(Strings.Get("plugin.idMismatch", id ?? ""));
             lock (_gate)
             {
@@ -752,20 +884,20 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
     public (PluginPage Page, string Plugin)? FindPage(string pluginId, string pageId)
     {
         if (PluginSettingRules.IsReservedPageId(pageId)) return null;
-        var hit = Snapshot(_pages).FirstOrDefault(p => p.Plugin == pluginId && p.Page.Id == pageId);
+        var hit = Live(_pages, p => p.Plugin).FirstOrDefault(p => p.Plugin == pluginId && p.Page.Id == pageId);
         return hit.Page is null ? null : (hit.Page, hit.Plugin);
     }
 
     public QuickAction? FindAction(string pluginId, string actionId) =>
-        Snapshot(_actions).FirstOrDefault(a => a.Plugin == pluginId && a.Action.Id == actionId).Action;
+        Live(_actions, a => a.Plugin).FirstOrDefault(a => a.Plugin == pluginId && a.Action.Id == actionId).Action;
 
-    public bool HasTool(string name) => Snapshot(_tools).Any(t => t.Spec.Name == name);
+    public bool HasTool(string name) => Live(_tools, t => t.Plugin).Any(t => t.Spec.Name == name);
 
-    public ToolSpec? FindTool(string name) => Snapshot(_tools).FirstOrDefault(t => t.Spec.Name == name).Spec;
+    public ToolSpec? FindTool(string name) => Live(_tools, t => t.Plugin).FirstOrDefault(t => t.Spec.Name == name).Spec;
 
     public Task<string> CallToolAsync(string name, JsonElement args)
     {
-        var tool = Snapshot(_tools).FirstOrDefault(t => t.Spec.Name == name);
+        var tool = Live(_tools, t => t.Plugin).FirstOrDefault(t => t.Spec.Name == name);
         if (tool.Tool is null) throw new ArgumentException(Strings.Get("plugin.unknownTool", name));
         // Off for everyone: refused here too, whatever the caller (assistant, MCP) believes it saw.
         if (LevelOf(tool.Plugin, tool.Tool.Function) is { } toolLevel
@@ -788,7 +920,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
     /// </summary>
     public async Task<string?> DetailAsync(string plugin, QuickAction action)
     {
-        if (action.Detail is not { } detail) return null;
+        if (action.Detail is not { } detail || IsPaused(plugin)) return null;
         Task<string?> call;
         lock (_details)
         {
@@ -833,6 +965,22 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
             if (cap is not null && !grant.Capabilities.Contains(cap)) throw new PluginCapabilityException(Strings.Get("plugin.cap.denied", pluginName, cap));
         }
 
+        private readonly HashSet<string> _toldPaused = [];
+
+        /// <summary>
+        /// Paused by Offline mode (after the capability check): the action does nothing and says so once in the log, never an exception (the plugin's own
+        /// background thread would not expect one). The harmless members (Log, Language, Locked, DataDirectory, Settings, Events) never ask.
+        /// </summary>
+        private bool Fenced(string member)
+        {
+            Need(member);
+            if (!owner.IsPaused(pluginId)) return false;
+            bool first;
+            lock (_toldPaused) first = _toldPaused.Add(member);
+            if (first) Console.Error.WriteLine($"[plugins] {pluginId}: {member} ignored while paused (offline mode)");
+            return true;
+        }
+
         public string DataDirectory
         {
             get
@@ -856,14 +1004,16 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
             get
             {
                 Need(nameof(Events));
-                return owner.Events;
+                return _events ??= new PausableEvents(owner.Events, () => owner.IsPaused(pluginId));
             }
         }
 
+        private IPluginEvents? _events;
+
         public void RegisterLibraryProvider(ILibraryProvider provider)
         {
-            Need(nameof(RegisterLibraryProvider));
-            owner.Add(owner._providers, provider);
+            if (Fenced(nameof(RegisterLibraryProvider))) return;
+            owner.Add(owner._providers, new PausableProvider(provider, () => owner.IsPaused(pluginId)));
         }
 
         public void Log(string message)
@@ -893,13 +1043,29 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         // Registering an id again replaces the earlier one (a plugin re-registers its texts when the language changes).
         public void RegisterSettings(params PluginSetting[] settings)
         {
-            Need(nameof(RegisterSettings));
-            foreach (var s in settings) owner.Replace(owner._settings, (Plugin: pluginId, Setting: s), x => x.Plugin == pluginId && x.Setting.Key == s.Key);
+            if (Fenced(nameof(RegisterSettings))) return;
+            var skipped = 0;
+            foreach (var s in settings)
+            {
+                if (s is null) continue;
+                // A plugin may register a bounded number of settings (a replacement of a key it already has always goes through).
+                lock (owner._gate)
+                {
+                    var known = owner._settings.Any(x => x.Plugin == pluginId && x.Setting.Key == s.Key);
+                    if (!known && owner._settings.Count(x => x.Plugin == pluginId) >= PluginSettingRules.MaxSettingsPerPlugin)
+                    {
+                        skipped++;
+                        continue;
+                    }
+                }
+                owner.Replace(owner._settings, (Plugin: pluginId, Setting: s), x => x.Plugin == pluginId && x.Setting.Key == s.Key);
+            }
+            if (skipped > 0) Console.Error.WriteLine($"[plugins] {PluginSettingRules.LogText(pluginId)}: {skipped} settings not registered (at most {PluginSettingRules.MaxSettingsPerPlugin} per plugin)");
         }
 
         public void RegisterPage(PluginPage page)
         {
-            Need(nameof(RegisterPage));
+            if (Fenced(nameof(RegisterPage))) return;
             // Ids starting with "$" belong to the core (the settings page of a plugin has a visit under "$settings"): a plugin page cannot take one.
             if (PluginSettingRules.IsReservedPageId(page.Id))
             {
@@ -911,7 +1077,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
 
         public void RegisterTab(PluginTab tab)
         {
-            Need(nameof(RegisterTab));
+            if (Fenced(nameof(RegisterTab))) return;
             // The same checks as when the tabs are listed (PluginTabRules.Resolve), so a refused tab is told to the log at once.
             if (PluginTabRules.Problem(tab, PluginPolicy.IsOwn(grant.Origin)) is { } problem)
             {
@@ -934,7 +1100,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
 
         public void RegisterFunctions(params PluginFunction[] functions)
         {
-            Need(nameof(RegisterFunctions));
+            if (Fenced(nameof(RegisterFunctions))) return;
             foreach (var f in functions ?? [])
             {
                 var de = PluginFunctionRules.CleanLabel(f?.LabelDe);
@@ -961,13 +1127,13 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
 
         public void RegisterQuickAction(QuickAction action)
         {
-            Need(nameof(RegisterQuickAction));
+            if (Fenced(nameof(RegisterQuickAction))) return;
             owner.Replace(owner._actions, (Plugin: pluginId, Action: action), x => x.Plugin == pluginId && x.Action.Id == action.Id);
         }
 
         public void RegisterTool(PluginTool tool)
         {
-            Need(nameof(RegisterTool));
+            if (Fenced(nameof(RegisterTool))) return;
             JsonObject schema;
             try
             {
@@ -994,7 +1160,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
 
         public void RemoveQuickAction(string id)
         {
-            Need(nameof(RemoveQuickAction));
+            if (Fenced(nameof(RemoveQuickAction))) return;
             owner.Remove(owner._actions, x => x.Plugin == pluginId && x.Action.Id == id);
         }
 
@@ -1004,20 +1170,20 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         {
             get
             {
-                Need(nameof(SignIn));
+                if (Fenced(nameof(SignIn))) return null;
                 return owner.SignInOpener is null ? null : _signIn ??= new PluginSignIn(owner, pluginId, pluginName);
             }
         }
 
         public void Notify(string title, string body)
         {
-            Need(nameof(Notify));
+            if (Fenced(nameof(Notify))) return;
             owner.Notifier?.Invoke(pluginName, title, body);
         }
 
         public bool OpenUrl(string url)
         {
-            Need(nameof(OpenUrl));
+            if (Fenced(nameof(OpenUrl))) return false;
             return WebLinks.IsWebUrl(url) && owner.UrlOpener?.Invoke(pluginName, url) == true;
         }
 
@@ -1025,7 +1191,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
 
         public void Invalidate(string pageId)
         {
-            Need(nameof(Invalidate));
+            if (Fenced(nameof(Invalidate))) return;
             if (owner.FindPage(pluginId, pageId) is null) return;
             owner.PageInvalidated?.Invoke(pluginId, pageId);
         }
@@ -1034,7 +1200,7 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         {
             get
             {
-                Need(nameof(Downloads));
+                if (Fenced(nameof(Downloads))) return PausedDownloads.Instance;
                 if (owner.DownloadCenter is not { } center) return null;
                 return _downloads ??= new PluginDownloads(center, pluginId, pluginName);
             }
@@ -1044,14 +1210,14 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
         {
             get
             {
-                Need(nameof(Network));
+                if (Fenced(nameof(Network))) return PausedNetwork.Instance;
                 return owner.Network;
             }
         }
 
         public async Task<PluginCliResult> RunTrustedCliAsync(string exePath, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            Need(nameof(RunTrustedCliAsync));
+            if (Fenced(nameof(RunTrustedCliAsync))) return new PluginCliResult(null, "", false, "paused");
             var confirmed = owner.Trust?.Entry(grant.Folder)?.ConfirmedExes ?? [];
             var refused = owner.Host.CheckCli(exePath, arguments ?? [], timeout, grant.Origin, owner.IsLocked?.Invoke() ?? true, confirmed, out var canonical);
             if (refused is not null)
@@ -1065,19 +1231,19 @@ public sealed class PluginManager(IReadOnlyList<(string Dir, bool UserInstalled)
 
         public Task<bool> RunSetupAsync(string path, string sha256, CancellationToken cancellationToken)
         {
-            Need(nameof(RunSetupAsync));
+            if (Fenced(nameof(RunSetupAsync))) return Task.FromResult(false);
             return owner.SetupRunner is { } run ? run(pluginId, pluginName, path, sha256, cancellationToken) : Task.FromResult(false);
         }
 
         public bool RestrictWhileLocked(string exePath)
         {
-            Need(nameof(RestrictWhileLocked));
+            if (Fenced(nameof(RestrictWhileLocked))) return false;
             return owner.Host.Restrict(pluginId, exePath);
         }
 
         public bool AdaptStartupArgs(string exePath, Func<string, string?> adapt)
         {
-            Need(nameof(AdaptStartupArgs));
+            if (Fenced(nameof(AdaptStartupArgs))) return false;
             return adapt is not null && owner.Host.AddStartupAdapter(pluginId, exePath, adapt);
         }
     }
@@ -1158,11 +1324,112 @@ public sealed class PluginEvents : IPluginEvents
     }
 }
 
+/// <summary>The downloads of a paused plugin (Offline mode): nothing is shown, nothing throws, so a background thread of the plugin keeps running without a null reference.</summary>
+internal sealed class PausedDownloads : IPluginDownloads
+{
+    public static readonly PausedDownloads Instance = new();
+
+    public void Begin(string id, string label, bool isUpdate = false) { }
+
+    public void Report(string id, double? progress = null, string? detail = null, long? bytesDone = null, long? bytesTotal = null) { }
+
+    public void Complete(string id, bool ok, string? detail = null) { }
+}
+
+/// <summary>The network state of a paused plugin: no adapters, so nothing is up and there is no default route.</summary>
+internal sealed class PausedNetwork : IPluginNetwork
+{
+    public static readonly PausedNetwork Instance = new();
+
+    public IReadOnlyList<PluginNetworkAdapter> Adapters() => [];
+}
+
+/// <summary>A plugin's library provider while Offline mode may pause the plugin: paused, it is not asked and lists nothing.</summary>
+internal sealed class PausableProvider(ILibraryProvider inner, Func<bool> paused) : ILibraryProvider
+{
+    public string Name => inner.Name;
+
+    public Task<IReadOnlyList<LibraryItem>> GetItemsAsync(CancellationToken cancellationToken) =>
+        paused() ? Task.FromResult<IReadOnlyList<LibraryItem>>([]) : inner.GetItemsAsync(cancellationToken);
+}
+
+/// <summary>The events as one plugin sees them: its handlers are called only while it is not paused (Offline mode).</summary>
+internal sealed class PausableEvents(IPluginEvents inner, Func<bool> paused) : IPluginEvents
+{
+    // One wrapper per handler and how often it is subscribed: subscribing twice and unsubscribing twice leaves nothing behind.
+    private readonly Dictionary<Delegate, (Delegate Wrapper, int Count)> _wrapped = [];
+
+    internal int Tracked
+    {
+        get
+        {
+            lock (_wrapped) return _wrapped.Count;
+        }
+    }
+
+    private T Wrap<T>(T handler, Func<T, T> make) where T : Delegate
+    {
+        lock (_wrapped)
+        {
+            var entry = _wrapped.TryGetValue(handler, out var known) ? known : (Wrapper: make(handler), Count: 0);
+            _wrapped[handler] = (entry.Wrapper, entry.Count + 1);
+            return (T)entry.Wrapper;
+        }
+    }
+
+    private T Unwrap<T>(T handler) where T : Delegate
+    {
+        lock (_wrapped)
+        {
+            if (!_wrapped.TryGetValue(handler, out var entry)) return handler;
+            if (entry.Count <= 1) _wrapped.Remove(handler);
+            else _wrapped[handler] = (entry.Wrapper, entry.Count - 1);
+            return (T)entry.Wrapper;
+        }
+    }
+
+    public event Action<GameEvent>? GameStarted
+    {
+        add => inner.GameStarted += Wrap(value!, h => e => { if (!paused()) h(e); });
+        remove => inner.GameStarted -= Unwrap(value!);
+    }
+
+    public event Action<GameEvent>? GameEnded
+    {
+        add => inner.GameEnded += Wrap(value!, h => e => { if (!paused()) h(e); });
+        remove => inner.GameEnded -= Unwrap(value!);
+    }
+
+    public event Action? PcModeEntered
+    {
+        add => inner.PcModeEntered += Wrap(value!, h => () => { if (!paused()) h(); });
+        remove => inner.PcModeEntered -= Unwrap(value!);
+    }
+
+    public event Action? CouchModeEntered
+    {
+        add => inner.CouchModeEntered += Wrap(value!, h => () => { if (!paused()) h(); });
+        remove => inner.CouchModeEntered -= Unwrap(value!);
+    }
+
+    public event Action<string>? LanguageChanged
+    {
+        add => inner.LanguageChanged += Wrap(value!, h => l => { if (!paused()) h(l); });
+        remove => inner.LanguageChanged -= Unwrap(value!);
+    }
+
+    public event Action<bool>? LockChanged
+    {
+        add => inner.LockChanged += Wrap(value!, h => l => { if (!paused()) h(l); });
+        remove => inner.LockChanged -= Unwrap(value!);
+    }
+}
+
 /// <summary>The sign-in of one plugin; the checks of the addresses are the shell's (it knows the browser).</summary>
 internal sealed class PluginSignIn(PluginManager owner, string pluginId, string pluginName) : IPluginSignIn
 {
     public bool Open(string pageUrl, string redirectHost, Action<string, string> onRedirect) =>
-        onRedirect is not null && owner.SignInOpener?.Invoke(pluginId, pluginName, pageUrl, redirectHost, onRedirect) == true;
+        onRedirect is not null && !owner.IsPaused(pluginId) && owner.SignInOpener?.Invoke(pluginId, pluginName, pageUrl, redirectHost, onRedirect) == true;
 
     public void Cancel() => owner.SignInCanceller?.Invoke(pluginId);
 }

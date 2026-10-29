@@ -23,13 +23,13 @@ export function publisherOf(x, fallback) {
   return isThirdParty(x) && x?.publisher ? `${name} · ${x.publisher}` : name;
 }
 
-// i18n-used: plugin.capability.library plugin.capability.pages plugin.capability.quickActions plugin.capability.assistant plugin.capability.notify plugin.capability.browser plugin.capability.downloads plugin.capability.network_state plugin.capability.process plugin.capability.browser_signin plugin.capability.tabs plugin.capability.setup_run plugin.capability.lock_restrict plugin.capability.startup_args plugin.capability.native plugin.capability.registry plugin.capability.network_loopback plugin.capability.network_internet plugin.capability.dynamicCode plugin.capability.unknown
+// i18n-used: plugin.capability.library plugin.capability.pages plugin.capability.quickActions plugin.capability.assistant plugin.capability.notify plugin.capability.browser plugin.capability.downloads plugin.capability.network_state plugin.capability.process plugin.capability.browser_signin plugin.capability.tabs plugin.capability.setup_run plugin.capability.lock_restrict plugin.capability.startup_args plugin.capability.native plugin.capability.registry plugin.capability.network_loopback plugin.capability.network_lan plugin.capability.network_internet plugin.capability.dynamicCode plugin.capability.unknown
 /** The ids of the capabilities as text keys: 'network:loopback' -> 'plugin.capability.network_loopback'. */
 export const capabilityKey = (id) => `plugin.capability.${String(id).replace(/[^A-Za-z0-9]+/g, '_')}`;
 
 const KNOWN_CAPABILITIES = new Set([
   'library', 'pages', 'quickActions', 'assistant', 'notify', 'browser', 'downloads', 'network.state', 'process', 'browser.signin', 'tabs', 'setup.run', 'lock.restrict',
-  'startup.args', 'native', 'registry', 'network:loopback', 'network:internet', 'dynamicCode'
+  'startup.args', 'native', 'registry', 'network:loopback', 'network:lan', 'network:internet', 'dynamicCode'
 ]);
 
 /** Capability keys to show; an id this version does not know is shown as unknown (never as its raw id inside a sentence). */
@@ -313,3 +313,15 @@ export function pageSync({ waiting, load, render }) {
     }
   };
 }
+
+/**
+ * The plugins Settings > Plugins lists with their own settings: running (loaded, switched on, not withdrawn) and with at least one setting or
+ * settings entry, by name. Everything else (switching off, approval, uninstall) stays on the plugin manager.
+ */
+export const pluginsWithSettings = (list) =>
+  (Array.isArray(list) ? list : [])
+    .filter((p) => p && p.loaded && p.enabled && !p.revoked && Array.isArray(p.settings) && p.settings.length > 0)
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+/** A page entry opens a page of the plugin; it has no value to change. */
+export const isPageSetting = (s) => s?.kind === 'page';

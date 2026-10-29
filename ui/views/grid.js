@@ -98,7 +98,7 @@ export function gridView(name, getItems, { columns, kind, className, empty, coll
       grid.style.setProperty('--cols', columns);
       this.tiles = this.list.map((item, i) => {
         const tile = el('div', { className: 'tile', dataset: { index: i } },
-          artwork(item, kind, kind),
+          artwork(item, kind, kind, { tile: true }),
           kind !== 'cover' ? el('span', { className: 'tile-label', textContent: item.name }) : null,
           item.favorite ? el('span', { className: 'fav', textContent: '★' }) : null);
         if (item.add) tile.classList.add('tile-add');

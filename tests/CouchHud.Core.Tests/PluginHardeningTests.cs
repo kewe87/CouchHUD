@@ -311,7 +311,7 @@ public class PluginHardeningTests : IDisposable
     [Fact]
     public void The_sdk_has_the_lock_state_and_stays_compatible()
     {
-        Assert.Equal(3, SdkVersion.Current);
+        Assert.Equal(4, SdkVersion.Current);
         // A host (or a test double) that knows nothing of SDK 2 answers "not locked" through the default implementation.
         IPluginContext old = new OldContext();
         Assert.False(old.Locked);

@@ -226,7 +226,12 @@ export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
       if (!result) return;
       if (result.message) toast(result.message);
       if (result.rows) data = { ...data, rows: result.rows };
-      if (currentView() === this) render();
+      // The host sends the actions that are allowed now with every answer (a lock or level change may have hidden one).
+      if (Array.isArray(result.actions)) data = { ...data, actions: result.actions };
+      if (currentView() === this) {
+        render();
+        renderHints();
+      }
     },
     async step(row, delta) {
       const s = settlerOf(row);
@@ -240,6 +245,7 @@ export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
         // push that came meanwhile) by sync once nothing is waiting or on its way.
         if (result?.message) toast(result.message);
         if (result?.rows) data = { ...data, rows: result.rows };
+        if (Array.isArray(result?.actions)) data = { ...data, actions: result.actions };
       }));
       const ref = this.nodes.get(row.id)?.refs.value;
       if (ref) ref.textContent = stepperState(row).text;
@@ -265,6 +271,22 @@ export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
         default:
           return this.applyResult(await attempt(() => withParentGrant(() => api.activatePluginRow(plugin.id, pageInfo.id, row.id)), plugin.name));
       }
+    },
+    /**
+     * A footer action (X or Y). The host knows the action by its button and checks it again like a row press; a link action hands back the page
+     * of the same plugin to open, anything else the new rows and a message.
+     */
+    async pressAction(button) {
+      const entry = this.actions().find((a) => a.button === button);
+      if (!entry) return sound.bump();
+      sound.select();
+      const result = await attempt(() => withParentGrant(() => api.activatePluginAction(plugin.id, pageInfo.id, button)), plugin.name);
+      if (result?.navigate) return push(declarativePage(plugin, result.navigate));
+      return this.applyResult(result);
+    },
+    /** The footer actions the host sent with the page (already cleaned and filtered: at most three, X and Y only). */
+    actions() {
+      return (Array.isArray(data?.actions) ? data.actions : []).filter((a) => (a?.button === 'X' || a?.button === 'Y') && typeof a.label === 'string');
     },
     async handle(action) {
       const move = (dr, dc) => {
@@ -297,12 +319,16 @@ export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
           if (!row) return sound.bump();
           sound.select();
           return this.press(row);
+        case 'x':
+        case 'y':
+          return this.pressAction(action.toUpperCase());
       }
     },
     hints() {
       const row = this.row;
       const label = { stepper: t('plugins.page.hint.send'), choice: t('plugins.page.hint.choose'), link: t('plugins.page.hint.open'), toggle: t('plugins.page.hint.toggle') }[row?.kind] ?? t('plugins.page.hint.press');
-      return [...(row ? [['A', label]] : []), ...(row?.kind === 'stepper' ? [['◀▶', t('plugins.page.hint.change')]] : []), ['B', t('plugins.hint.back')]];
+      // The page's own actions sit between A and B, as on the core pages (X, Y); the label is plain text from the host's cleaned data.
+      return [...(row ? [['A', label]] : []), ...(row?.kind === 'stepper' ? [['◀▶', t('plugins.page.hint.change')]] : []), ...this.actions().map((a) => [a.button, a.label]), ['B', t('plugins.hint.back')]];
     }
   };
   return page;

@@ -26,7 +26,15 @@ public static class FavoritesShelf
     /// <summary>Prefix of a favorite website in the favorites list (the rest is the bookmark's address).</summary>
     public const string SitePrefix = "site:";
 
+    /// <summary>Time spans offered for "recently used" (days); 0 is unlimited.</summary>
+    public static readonly IReadOnlyList<int> RecentDaysChoices = [7, 30, 90, 365, 0];
+
+    public const int DefaultRecentDays = 30;
+
     private const int MaxIdLength = 4200;
+
+    /// <summary>A known time span (7, 30, 90, 365 days or 0 = unlimited); anything else (hand-edited file) is 30 days.</summary>
+    public static int NormalizeRecentDays(int days) => RecentDaysChoices.Contains(days) ? days : DefaultRecentDays;
 
     /// <summary>A known mode; anything else (hand-edited file, older config) is the default, the combined view.</summary>
     public static string NormalizeMode(string? mode) => mode switch
@@ -73,14 +81,18 @@ public static class FavoritesShelf
 
     /// <summary>
     /// The entries of the shelf in order. Favorites come in the order they were marked; "recent" are the entries used last, newest
-    /// first. <paramref name="allowed"/> is the host's last word on one entry (a child's age limit, locked entries): an entry it
+    /// first and only within the time span (<paramref name="recentDays"/>). <paramref name="allowed"/> is the host's last word on one entry (a child's age limit, locked entries): an entry it
     /// refuses never shows, favorite or not. Websites show only with <paramref name="sites"/> and the browser area on.
     /// </summary>
     public static List<ShelfEntry> Build(
         IEnumerable<LibraryItem> library, IReadOnlyCollection<string> favorites, IEnumerable<Bookmark> bookmarks,
-        string mode, bool sites, AreaSet areas, Func<LibraryItem, bool> allowed, int recentLimit = MaxRecent)
+        string mode, bool sites, AreaSet areas, Func<LibraryItem, bool> allowed, int recentLimit = MaxRecent,
+        int recentDays = DefaultRecentDays, long? nowMs = null)
     {
         mode = NormalizeMode(mode);
+        // "Recently used" only reaches back recentDays (0 = unlimited); favorites are never cut. The boundary itself is inside.
+        var now = nowMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var since = recentDays > 0 ? now - recentDays * 86_400_000L : long.MinValue;
         var shown = library.Where(i => !i.Hidden && areas.Shows(i) && allowed(i)).ToList();
         var byId = shown.ToDictionary(i => i.Id, StringComparer.Ordinal);
         var result = new List<ShelfEntry>();
@@ -108,7 +120,7 @@ public static class FavoritesShelf
         if (mode != ModeFavorites)
         {
             var favs = favorites.ToHashSet(StringComparer.Ordinal);
-            var recent = shown.Where(i => i.LastPlayed > 0 && (mode == ModeRecent || !favs.Contains(i.Id)))
+            var recent = shown.Where(i => i.LastPlayed > 0 && i.LastPlayed >= since && (mode == ModeRecent || !favs.Contains(i.Id)))
                 .OrderByDescending(i => i.LastPlayed).ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
                 .Take(recentLimit);
             foreach (var item in recent)

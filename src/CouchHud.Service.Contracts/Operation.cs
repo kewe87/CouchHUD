@@ -39,5 +39,10 @@ public enum Operation
     /// <summary>Registers a pending administrator approval (the operations it is for) and answers with the control code for <c>sc.exe control</c> (UAC).</summary>
     RequestAdminApproval,
     /// <summary>Picks up the grant of an approval an administrator gave through UAC (the caller's own pending request only).</summary>
-    CollectAdminApproval
+    CollectAdminApproval,
+    /// <summary>
+    /// Sets a damaged code file aside (<c>codes.json.broken-&lt;time&gt;</c>) and starts with no codes: only while the code store is unavailable
+    /// because its file is not valid, only with an administrator's approval through UAC or as an elevated administrator.
+    /// </summary>
+    ResetCodeStore
 }

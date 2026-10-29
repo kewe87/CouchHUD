@@ -13,8 +13,9 @@ namespace CouchHud.Service.Dispatch;
 /// counts as yes (fail-closed).
 /// </param>
 /// <param name="EndLegacyLock">Ends that once an administrator confirmed the account's code or mode; true when the lock is no lock of 0.4.0 any more.</param>
+/// <param name="Now">The wall clock for the name of a damaged code file that is set aside (default: now).</param>
 public sealed record CodeParts(CodeStore Codes, GrantStore Grants, SessionEvents Sessions, AdminApprovals Approvals, Func<string, bool> IsBlankPassword,
-    IEventSink Log, RecentEvents? Events, Func<string, bool>? LegacyLock = null, Func<string, bool>? EndLegacyLock = null);
+    IEventSink Log, RecentEvents? Events, Func<string, bool>? LegacyLock = null, Func<string, bool>? EndLegacyLock = null, Func<DateTimeOffset>? Now = null);
 
 /// <summary>
 /// Package P9 ("Grants mit Code"): EnrollPasscode, ChangePasscode, RemovePasscode, SetLockMode, VerifyCode, RequestWindowsGrant ("unlock"),
@@ -37,7 +38,9 @@ public sealed class CodeHandlers(CodeParts parts)
         handlers[Operation.RequestWindowsGrant] = (context, _) => ValueTask.FromResult(codes.UnlockGrant(context.Caller));
         handlers[Operation.RequestAdminApproval] = (context, _) => ValueTask.FromResult(codes.RequestApproval(context));
         handlers[Operation.CollectAdminApproval] = (context, _) => ValueTask.FromResult(codes.CollectApproval(context));
+        handlers[Operation.ResetCodeStore] = (context, _) => ValueTask.FromResult(codes.ResetDamaged(context));
         checks.Register(StateCheck.EnrollAllowed, new StateCheckFunc(codes.EnrollAllowed));
+        checks.Register(StateCheck.CodeStoreDamaged, new StateCheckFunc(codes.CodeStoreDamaged));
         checks.Register(StateCheck.CodeExists, new StateCheckFunc(codes.CodeExists));
         checks.Register(StateCheck.LockModeChange, new StateCheckFunc(codes.LockModeChange));
         return codes;
@@ -383,6 +386,41 @@ public sealed class CodeHandlers(CodeParts parts)
         if (parts.Grants.Issue(caller, GrantKinds.WindowsAdmin, ops) is not { } issued) return Dispatcher.Fail(ErrorCodes.Denied);
         parts.Log.Info($"[grant] {GrantKindNames.WindowsAdmin} for {caller.Describe()}, for {string.Join('/', ops)} (UAC)");
         return Answer(new AdminApprovalResult("approved", issued.ToData()));
+    }
+
+    /// <summary>
+    /// ResetCodeStore only while the code file is damaged (<see cref="CodeStore.IsDamaged"/>): a working store, or one whose folder was refused,
+    /// is never reset this way. Checked before the approval is asked for, so nobody is sent to UAC for nothing; the table asks for the
+    /// administrator (elevated, or an administrator's approval through UAC).
+    /// </summary>
+    internal AuthorizationDecision CodeStoreDamaged(CallerInfo caller, ValidatedRequest request) =>
+        parts.Codes.IsDamaged ? AuthorizationDecision.Allowed : AuthorizationDecision.Denied("the code store is not damaged");
+
+    /// <summary>
+    /// The way out of a damaged code file (threat model in the changelog of 0.6.3): an administrator only (the table and
+    /// <see cref="OperationPolicy.AcceptedGrants(ValidatedRequest, LockView)"/>: elevated, or an administrator's approval through UAC); the file
+    /// is set aside, never deleted, and the store starts with no codes. Every account sets its lock again afterwards (the shell raises the mode
+    /// it keeps at once, raising is free; a new code takes the usual approval).
+    /// </summary>
+    private byte[] ResetDamaged(RequestContext context)
+    {
+        if (!AdminApproved(context)) return Dispatcher.Fail(ErrorCodes.NeedGrant);
+        switch (parts.Codes.ResetDamaged(parts.Now?.Invoke() ?? DateTimeOffset.UtcNow))
+        {
+            case CodeReset.Done:
+                parts.Log.Info($"[codes] the damaged code store was reset for {context.Caller.Describe()}{Approval(context)}");
+                parts.Events?.Add(context.Caller.Sid, "code", "damaged code store reset");
+                return ProtocolJson.Serialize(Response.Success());
+            case CodeReset.Recovered:
+                // Valid again when read right before: loaded, nothing set aside; the store works, which is what the caller wanted.
+                parts.Log.Info($"[codes] the code store asked to be reset by {context.Caller.Describe()} was valid again and was loaded instead");
+                return ProtocolJson.Serialize(Response.Success());
+            case CodeReset.NotDamaged:
+                return Dispatcher.Fail(ErrorCodes.Denied);
+            default:
+                parts.Log.Error($"[codes] the damaged code store could not be reset for {context.Caller.Describe()}");
+                return Dispatcher.Fail(ErrorCodes.Failed);
+        }
     }
 
     private static string Approval(RequestContext context) =>

@@ -13,7 +13,21 @@ public sealed record Notification(
     string Body,
     long Time,
     bool Read = false,
-    bool Security = false);
+    bool Security = false,
+    string? Target = null);
+
+/// <summary>
+/// Where a notification of CouchHUD itself leads when it is pressed or clicked. A fixed whitelist of screens, never a URL or a path;
+/// set by core code only (plugins and Windows notifications have none), and the UI follows nothing else. Opening a target only shows
+/// the screen: installing there follows the usual rules (parents' code, locked couch).
+/// </summary>
+public static class NotificationTargets
+{
+    public const string Downloads = "downloads";
+
+    /// <summary>The target when it is on the whitelist (exact match), else null.</summary>
+    public static string? Normalize(string? target) => target == Downloads ? Downloads : null;
+}
 
 /// <summary>
 /// The PlayStation-style notification list: newest first, a few dozen at most,

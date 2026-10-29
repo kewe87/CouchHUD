@@ -28,6 +28,19 @@ public static class PluginSettingRules
     public const int MaxText = 500;
     public const int MaxSecret = 4096;
 
+    /// <summary>How many settings (of any kind) a plugin may register; the rest is ignored with one log line.</summary>
+    public const int MaxSettingsPerPlugin = 64;
+
+    /// <summary>Text from a plugin for a log line: no control characters, at most 60 characters.</summary>
+    public static string LogText(string? text)
+    {
+        var clean = new string((text ?? "").Where(c => !char.IsControl(c)).ToArray());
+        return clean.Length > 60 ? clean[..60] : clean;
+    }
+
+    /// <summary>The longest label of a page entry (longer is cut).</summary>
+    public const int MaxPageLabel = 40;
+
     /// <summary>
     /// The function id that covers the setting: its own tag, else the plugin's function called "settings" when it declared one, else null
     /// (treated as admin only). <paramref name="declared"/> answers whether the plugin declared a function of that id.
@@ -64,6 +77,9 @@ public static class PluginSettingRules
                 return value is "true" or "false" ? value : null;
             case SettingKind.Choice:
                 return value is not null && setting.Choices.Contains(value, StringComparer.Ordinal) ? value : null;
+            case SettingKind.Page:
+                // An entry that opens a page has no value; nothing is ever stored for it.
+                return null;
             case SettingKind.Secret:
                 return Text(value, MaxSecret);
             default:
@@ -72,6 +88,31 @@ public static class PluginSettingRules
                 if (number < (setting.Min ?? double.NegativeInfinity) || number > (setting.Max ?? double.PositiveInfinity)) return null;
                 return number.ToString(CultureInfo.InvariantCulture);
         }
+    }
+
+    /// <summary>A page entry as the settings page shows it: the cleaned label and the page of the same plugin it opens.</summary>
+    public sealed record PageEntry(string Label, string PageId);
+
+    /// <summary>The SDK version a plugin must declare for <see cref="SettingKind.Page"/> entries.</summary>
+    public const int PageMinSdk = PluginPageAction.MinSdk;
+
+    /// <summary>
+    /// The page entry of a setting, or null (with the reason in <paramref name="problem"/>) when the host ignores it: not a page entry, the plugin
+    /// declares less than SDK 4, the page id is empty, reserved (starts with "$"), too long or not a page this plugin registered
+    /// (<paramref name="pageExists"/> looks only among its own pages, so another plugin's page or a core page is never reachable), or the label is
+    /// empty after cleaning like a page title or, for a plugin that is not CouchHUD's own, names a system function ("Back", "Settings" ...).
+    /// </summary>
+    public static PageEntry? CheckPage(PluginSetting setting, bool firstParty, int sdk, Func<string, bool> pageExists, out string? problem)
+    {
+        problem = null;
+        if (setting.Kind != SettingKind.Page) { problem = "not a page entry"; return null; }
+        if (sdk < PageMinSdk) { problem = "needs sdk 4"; return null; }
+        var id = setting.Page;
+        if (string.IsNullOrEmpty(id) || id.Length > PluginRows.MaxId || IsReservedPageId(id) || !pageExists(id)) { problem = $"unknown page '{LogText(id)}'"; return null; }
+        var label = PluginText.Safe(setting.Label, "", firstParty, MaxPageLabel);
+        if (label.Length == 0) { problem = "empty label"; return null; }
+        if (!firstParty && PluginPageActions.IsReserved(label)) { problem = "reserved label"; return null; }
+        return new PageEntry(label, id);
     }
 
     private static string? Text(string? value, int max)

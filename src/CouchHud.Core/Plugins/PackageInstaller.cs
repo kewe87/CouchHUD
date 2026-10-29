@@ -39,7 +39,7 @@ public static class PackageInstaller
     /// The same from an open stream: the caller can hash the package and unpack it from one handle that keeps writers out
     /// (<see cref="PendingPackages.ApplyAll"/>), so what is unpacked is what was checked.
     /// </summary>
-    internal static string Install(Stream zip, string zipName, string targetRoot, Kind kind, string? expectedName, out string folderHash)
+    public static string Install(Stream zip, string zipName, string targetRoot, Kind kind, string? expectedName, out string folderHash)
     {
         folderHash = "";
         using var archive = new ZipArchive(zip, ZipArchiveMode.Read, leaveOpen: true);
@@ -130,6 +130,43 @@ public static class PackageInstaller
             if (backup is not null) TryDelete(backup);
         }
         return target;
+    }
+
+    /// <summary>
+    /// Reads the package once, with writers kept out while it is read, into a private copy (within the size cap). Everything that looks at
+    /// the package afterwards (lint, the guard, the install) uses this copy, so what was checked is what is unpacked.
+    /// </summary>
+    public static MemoryStream ReadCapped(string zipPath)
+    {
+        if (!zipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException(Strings.Get("package.pickZip"));
+        try
+        {
+            using var file = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (file.Length > MaxUnpackedBytes) throw new InvalidOperationException(Strings.Get("package.tooLarge"));
+            var copy = new MemoryStream((int)file.Length);
+            file.CopyTo(copy);
+            copy.Position = 0;
+            return copy;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
+        {
+            throw new ArgumentException(Strings.Get("package.pickZip"), ex);
+        }
+    }
+
+    /// <summary>
+    /// The folder name <see cref="Install(string, string, Kind, string?)"/> would unpack a package of this name into (one top folder of the
+    /// archive, else the file name), or null when the archive has none that is valid. Reads only the entry names.
+    /// </summary>
+    public static string? PlannedName(Stream zip, string zipName)
+    {
+        using var archive = new ZipArchive(zip, ZipArchiveMode.Read, leaveOpen: true);
+        var files = archive.Entries.Where(e => !string.IsNullOrEmpty(e.Name)).ToList();
+        if (files.Count == 0) return null;
+        var tops = files.Select(e => e.FullName.Replace('\\', '/').Split('/')).Select(p => p.Length > 1 ? p[0] : "").Distinct().ToList();
+        var prefix = tops.Count == 1 && tops[0].Length > 0 ? tops[0] + "/" : "";
+        var name = Sanitize(prefix.Length > 0 ? prefix.TrimEnd('/') : zipName);
+        return name.Length == 0 ? null : name;
     }
 
     public const string TempPrefix = ".couchhud-";

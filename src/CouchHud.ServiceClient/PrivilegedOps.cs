@@ -104,6 +104,9 @@ public interface IPrivilegedOps
     /// <summary>Which codes the service holds for this account and its lock mode; null when it cannot be asked.</summary>
     Task<HeldCodes?> CodeStatusAsync(CancellationToken cancellation = default);
 
+    /// <summary>Resets a damaged code file (an administrator's approval; refused while the code store is not damaged).</summary>
+    Task<OpResult> ResetCodeStoreAsync(CancellationToken cancellation = default);
+
     /// <summary>A grant for the unlock or sign-in of this session the service saw a moment ago (into <see cref="Cache"/>).</summary>
     Task<OpResult> RequestUnlockGrantAsync(CancellationToken cancellation = default);
 
@@ -390,13 +393,24 @@ public sealed class ServiceOps : IPrivilegedOps
         return result;
     }
 
+    /// <summary>
+    /// The administrator's reset of a damaged code file (the service sets it aside and starts with no codes). Needs an administrator's approval
+    /// (UAC, see the shell's grant flow); refused while the code store is not damaged.
+    /// </summary>
+    public async Task<OpResult> ResetCodeStoreAsync(CancellationToken cancellation = default)
+    {
+        var (result, _) = await RunWithReplyAsync(Operation.ResetCodeStore,
+            g => _client.CallAsync(Operation.ResetCodeStore, g, HandlerWait, cancellation), () => Cache.Approval(Operation.ResetCodeStore), cancellation).ConfigureAwait(false);
+        return result;
+    }
+
     public async Task<HeldCodes?> CodeStatusAsync(CancellationToken cancellation = default)
     {
         if (_probe is null) return null;
         var reply = await _client.CallAsync(Operation.Status, cancellation: cancellation).ConfigureAwait(false);
         Learn(reply);
         if (!reply.Ok || reply.DataAs(ProtocolJsonContext.Default.StatusData) is not { } status) return null;
-        return new HeldCodes(status.CouchCode, status.ParentCode, status.LockMode, status.LegacyLock == true);
+        return new HeldCodes(status.CouchCode, status.ParentCode, status.LockMode, status.LegacyLock == true, status.CodesDamaged == true);
     }
 
     public async Task<OpResult> RequestUnlockGrantAsync(CancellationToken cancellation = default)

@@ -28,9 +28,12 @@ public static class LockPolicy
     public static readonly IReadOnlySet<string> OpenWhileLocked = new HashSet<string>
     {
         "getLibrary", "getFavorites", "launch", "toggleFavorite", "toggleFavoriteSite", "getStoreInfo", "getDetails", "systemInfo", "getSettings",
-        "enterPcMode", "holdUnlockForSetup", "power", "quit", "unlock", "confirmWindowsUnlock", "getSecurity", "setPasscode", "setCouchLock",
+        "enterPcMode", "holdUnlockForSetup", "power", "quit", "restartCouchHud", "unlock", "confirmWindowsUnlock", "getSecurity", "setPasscode", "setCouchLock",
         // The service: its state, and the repair (Windows' UAC prompt is the gate; the way out of a fail-closed lock).
         "getServiceStatus", "repairService",
+        // The reset of the service's damaged code file: UAC again (the service takes an administrator's approval only), and with a damaged
+        // file no code can unlock the couch.
+        "resetCodeStore",
         "getSession", "resumeGame", "quitGame", "getAudio", "setVolume", "setMute", "setAudioOutput", "getAppVolumes", "setAppVolume", "setAppMute", "getPads", "getBattery", "rumble",
         "getNews", "getFeeds", "assistantInfo", "askAssistant", "confirmAssistant", "resetAssistant",
         "getBrowser", "browserLayout", "browserFocus", "browserCommand", "displayOff", "displayOn", "getLaunchers", "getProfile", "capture", "getDownloads", "getDisplay",
@@ -44,21 +47,23 @@ public static class LockPolicy
         // runQuickAction: Hud decides per entry (PluginPolicy.MayRun): only an entry of CouchHUD's own plugins that is marked AllowedWhileLocked.
         // Plugin rows: the bridge lets them through, Hud decides by the row (PluginPolicy.MayPress): only rows of CouchHUD's own plugins that
         // are marked AllowedWhileLocked; a third-party row never. The suggestions answer nothing while locked (they wait).
-        "activatePluginRow", "changePluginRow", "getPluginSuggestions",
+        "activatePluginRow", "activatePluginAction", "changePluginRow", "getPluginSuggestions",
         // A plugin's setting: the bridge lets it through, Hud decides by the function level (PluginSettingRules): on the locked couch only
         // "restricted" settings with a value that fits; admin (also a setting without any function, and the "$settings" visit) needs the unlock, nobody is nobody.
         "setPluginSetting",
+        // A settings entry that opens a plugin page: the same gate (Hud.OpenPluginSettingPage); the page itself is decided again by getPluginPage.
+        "openPluginSettingPage",
         // The answer to the automatic Bluetooth switch-on's countdown: "now" or "leave it off" (the guest could switch the radio off with
         // the keyboard's airplane key anyway; switching it off in CouchHUD, "setBluetooth", needs the code).
         "answerBluetoothRecovery",
-        "getBluetooth", "getRemote", "keyboardState", "codeEntryState", "pairingState", "getUpdates", "getCatalogUpdates", "getSelfUpdate", "getWeather",
+        "getBluetooth", "getRemote", "keyboardState", "codeEntryState", "pairingState", "getUpdates", "getCatalogUpdates", "getSelfUpdate", "refreshUpdates", "getWeather",
         "listSkins", "setSkin", "getGameFolders", "getCollections", "getParental", "parentalCheck", "parentalCloseGame", "parentalAuth", "setParental", "setParentalItemLock", "parentalExtend", "parentalReset", "parentalAcceptClock", "parentalAdoptZone"
     };
 
     /// <summary>Settings a guest may change while locked: sound and look only.</summary>
     public static readonly IReadOnlySet<string> HarmlessSettings = new HashSet<string>
     {
-        "soundVolume", "soundSet", "audioMode", "musicVolume", "trailerPreviews", "favoritesMode", "rumble", "padGlyphs", "acceptedTerms",
+        "soundVolume", "soundSet", "audioMode", "musicVolume", "trailerPreviews", "favoritesMode", "favoritesRecentDays", "rumble", "padGlyphs", "acceptedTerms",
         "screensaverMinutes", "screensaverStyle", "displayOffMinutes", "pixelShift", "reduceMotion", "pointer", "mouseUnlocked", "nightMode", "nightModeStrength", "expertMode"
     };
 

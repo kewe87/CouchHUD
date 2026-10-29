@@ -147,7 +147,7 @@ public sealed class RequestValidator(Func<string, bool> serviceAllowed)
             case Operation.Hello or Operation.Status or Operation.Ping or Operation.CleanupPolicyKeys or Operation.AutoLogonOff or Operation.CollectAdminApproval
                 or Operation.RemoveRemoteFirewall or Operation.RemoveLegacyFirewallRules or Operation.MigrateTasks or Operation.ReleaseAllAccounts
                 or Operation.SearchWindowsUpdates
-                or Operation.ResetServiceState:
+                or Operation.ResetServiceState or Operation.ResetCodeStore:
                 if (args is { } none && (none.ValueKind != JsonValueKind.Object || none.EnumerateObject().Any())) return Bad("no arguments allowed");
                 return Pass(operation, grant, null);
             case Operation.ApplyLockPolicies:
@@ -255,7 +255,7 @@ public sealed class RequestValidator(Func<string, bool> serviceAllowed)
     {
         nameof(Operation.SetAutoLogon), nameof(Operation.ChangePasscode), nameof(Operation.EnrollPasscode), nameof(Operation.RemovePasscode),
         nameof(Operation.SetLockMode), nameof(Operation.ReleaseLockPolicies), nameof(Operation.CleanupPolicyKeys), nameof(Operation.SetRemoteFirewall),
-        nameof(Operation.InstallCouchHudUpdate)
+        nameof(Operation.InstallCouchHudUpdate), nameof(Operation.ResetCodeStore)
     };
 
     /// <summary>How many uses one parent's or administrator's grant may name (e.g. two policy groups and their key cleanup).</summary>

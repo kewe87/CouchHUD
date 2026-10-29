@@ -94,7 +94,7 @@ public sealed class DownloadControlContractTests
     }
 
     [Fact]
-    public void Both_pages_start_updates_through_the_same_functions()
+    public void Downloads_start_updates_through_the_update_functions()
     {
         var downloads = File.ReadAllText(Path.Combine(Root(), "ui", "views", "downloads.js"));
         Assert.Contains("import { installSelfUpdate, startUpdate } from './updates.js';", downloads);
@@ -103,5 +103,25 @@ public sealed class DownloadControlContractTests
         Assert.DoesNotContain("api.startUpdate", downloads);
         Assert.DoesNotContain("api.startSelfUpdate", downloads);
         Assert.DoesNotContain("api.installCatalogEntry", downloads);
+        // Search now, a restart that is due and each app update are reachable from the tab; Settings keeps the switches only.
+        Assert.Contains("api.checkUpdates()", downloads);
+        Assert.Contains("updates.reboot.title", downloads);
+        Assert.Contains("startUpdate('apps', a.id, null)", downloads);
+        var settings = File.ReadAllText(Path.Combine(Root(), "ui", "views", "settings.js"));
+        Assert.DoesNotContain("updatesPage", settings);
+        Assert.DoesNotContain("updatesPage", File.ReadAllText(Path.Combine(Root(), "ui", "views", "updates.js")));
+    }
+
+    [Fact]
+    public void Plugin_notifications_never_carry_a_target_and_shown_ones_are_filtered()
+    {
+        var hud = File.ReadAllText(Path.Combine(Root(), "src", "CouchHud.Shell", "Hud.cs"));
+        // The plugin path hands over plugin, title and body only.
+        var line = hud.Split((char)10).First(l => l.Contains("plugins.Notifier ="));
+        Assert.DoesNotContain("target", line, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PostNotification(plugin, title, body)", line);
+        // Whatever is stored is whitelisted again when the list is built, and PostNotification normalizes what it is given.
+        Assert.Contains("Target = NotificationTargets.Normalize(n.Target)", hud);
+        Assert.Contains("Target: NotificationTargets.Normalize(target)", hud);
     }
 }

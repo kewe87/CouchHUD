@@ -21,7 +21,8 @@ public enum GrantKind
 
 /// <summary>Which codes the service holds for the account and its lock mode (nulls: it could not tell).</summary>
 /// <param name="LegacyLock">The lock was taken over from 0.4.0 and waits for an administrator's confirmation (security review H-1).</param>
-public sealed record HeldCodes(bool? Couch, bool? Parent, string? LockMode, bool LegacyLock = false);
+/// <param name="Damaged">The service's code file is damaged: nothing is checked or stored until an administrator resets it.</param>
+public sealed record HeldCodes(bool? Couch, bool? Parent, string? LockMode, bool LegacyLock = false, bool Damaged = false);
 
 /// <summary>
 /// The grants the service gave this shell, in memory only (never written anywhere, never logged). Two lives, like in the service:
@@ -256,6 +257,122 @@ public static class CodeFlow
     /// be the code lock with no code to open it, and only an administrator could help. Not known (null) or a lock of 0.4.0: no.
     /// </summary>
     public static bool CodeLockKeepsCode(HeldCodes? held) => held is { Couch: true, LegacyLock: false } && LockModes.Rank(held.LockMode) > 0;
+
+    /// <summary>How the code lock is switched on (<see cref="PlanCodeLock"/>).</summary>
+    public enum CodeLockPlan
+    {
+        /// <summary>Nothing special is held: a new code comes along with the switch in one step (from no lock), or the shell's old paths apply.</summary>
+        Default,
+        /// <summary>The service holds a couch code under a lock mode that is on: the switch needs no code, the code from before applies again.</summary>
+        KeepHeldCode,
+        /// <summary>
+        /// A hash along with the switch would be refused (a lock mode is on, or a parents' code is held and may be an approved one): a code that
+        /// comes along is stored first, with the approval the service asks for (the old code, the parents' code or an administrator), then the mode is raised.
+        /// </summary>
+        StoreThenSwitch
+    }
+
+    /// <summary>
+    /// What the service's state means for switching on the code lock (the service's own rule stays as strict as it is: a code never comes along
+    /// next to one somebody approved, see <c>LockModeChange</c>). A lock of 0.4.0 not confirmed yet and an unknown state keep the default.
+    /// </summary>
+    public static CodeLockPlan PlanCodeLock(HeldCodes? held)
+    {
+        if (held is null or { LegacyLock: true }) return CodeLockPlan.Default;
+        if (LockModes.Rank(held.LockMode) > 0) return held.Couch == true ? CodeLockPlan.KeepHeldCode : CodeLockPlan.StoreThenSwitch;
+        return held.Parent == true ? CodeLockPlan.StoreThenSwitch : CodeLockPlan.Default;
+    }
+
+    /// <summary>How <see cref="StoreThenRaiseAsync"/> ended.</summary>
+    public enum StoreRaiseOutcome
+    {
+        /// <summary>The service holds the couch code under the raised mode.</summary>
+        Done,
+        /// <summary>The service did not answer when asked afterwards: not confirmed.</summary>
+        Unconfirmed,
+        /// <summary>The mode was raised but the service holds no couch code, also not after storing it once more.</summary>
+        CodeMissing
+    }
+
+    /// <summary>
+    /// Stores a couch code, raises the lock mode and looks at the service again. The service drops codes that were enrolled at an open couch
+    /// when the mode is raised (a held parents' code may be one of them, the service cannot tell the shell), so the new code can be gone after
+    /// the raise. Then it is stored once more (the mode is on, so it is an approved code that stays); if it is still missing the outcome says
+    /// so and the caller must not take the lock over in its config (fail closed). A refused store or raise throws before anything else happens.
+    /// </summary>
+    public static async Task<StoreRaiseOutcome> StoreThenRaiseAsync(string mode, Func<Task> store, Func<Task> raise, Func<Task<HeldCodes?>> status, Action<string>? log = null)
+    {
+        await store().ConfigureAwait(false);
+        await raise().ConfigureAwait(false);
+        // Only the code lock keeps a couch code; under any other mode the service drops it on purpose, so it is never stored again there.
+        if (mode != LockModes.Code) return StoreRaiseOutcome.Done;
+        var after = await status().ConfigureAwait(false) ?? await status().ConfigureAwait(false);
+        if (after is null) return StoreRaiseOutcome.Unconfirmed;
+        if (after.Couch == true) return StoreRaiseOutcome.Done;
+        log?.Invoke("the mode was raised but the couch code is gone (dropped with the open codes); storing it once more");
+        try { await store().ConfigureAwait(false); }
+        catch (Exception ex) { log?.Invoke($"storing again failed: {ex.GetType().Name}"); return StoreRaiseOutcome.CodeMissing; }
+        after = await status().ConfigureAwait(false) ?? await status().ConfigureAwait(false);
+        return after is null ? StoreRaiseOutcome.Unconfirmed : after.Couch == true ? StoreRaiseOutcome.Done : StoreRaiseOutcome.CodeMissing;
+    }
+
+    /// <summary>What to do with the service's answer to the one-step switch (mode and new code together).</summary>
+    public enum TogetherOutcome
+    {
+        /// <summary>The service took it.</summary>
+        Done,
+        /// <summary>Refused only because an approved code is held: use the approved way (store, then raise).</summary>
+        Fallback,
+        /// <summary>Any other refusal (wrong code, locked out, a grant missing, unavailable, denied with nothing held): the caller fails with the reason.</summary>
+        Refused
+    }
+
+    /// <summary>
+    /// <paramref name="held"/> is what the service holds right now, asked for only after a "denied" (null otherwise, or when it did not answer).
+    /// Only "denied" with a held couch or parents' code, or a lock mode that is on, falls back; a lock of 0.4.0 not confirmed yet never does.
+    /// </summary>
+    public static TogetherOutcome ClassifyTogether(OpResult result, HeldCodes? held)
+    {
+        if (result.Ok) return TogetherOutcome.Done;
+        if (result.Code != ErrorCodes.Denied || held is null or { LegacyLock: true } or { Damaged: true }) return TogetherOutcome.Refused;
+        return held.Couch == true || held.Parent == true || LockModes.Rank(held.LockMode) > 0 ? TogetherOutcome.Fallback : TogetherOutcome.Refused;
+    }
+
+    /// <summary>
+    /// Switches the code lock on from no lock. First the one step (mode and code together: <paramref name="together"/> returns false when the
+    /// service refused it because an approved code is already there, e.g. one a first attempt stored before its raise failed, and the
+    /// plan could not see that); then the approved way, <see cref="StoreThenRaiseAsync"/> (change with the approval the service asks for,
+    /// then raise). A refusal for any other reason throws in <paramref name="together"/>. Nothing is weakened: the fallback is the same
+    /// store with the same grants a lock that is on already uses.
+    /// </summary>
+    public static async Task<StoreRaiseOutcome> SwitchOnWithCodeAsync(string mode, Func<Task<bool>> together, Func<Task> store, Func<Task> raise,
+        Func<Task<HeldCodes?>> status, Action<string>? log = null)
+    {
+        if (await together().ConfigureAwait(false)) return StoreRaiseOutcome.Done;
+        log?.Invoke("the service holds an approved code already; storing the new one with the approval it asks for, then raising the mode");
+        return await StoreThenRaiseAsync(mode, store, raise, status, log).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether a refused code operation (<paramref name="result"/>) was refused because the service's code file is damaged
+    /// (<paramref name="held"/>, asked after the refusal): "denied" or "unavailable" while the service reports the damage. The HUD then says
+    /// so plainly and offers the administrator's reset instead of a generic refusal.
+    /// </summary>
+    public static bool RefusedForDamage(OpResult result, HeldCodes? held) =>
+        !result.Ok && result.Code is ErrorCodes.Denied or ErrorCodes.Unavailable && held is { Damaged: true };
+
+    /// <summary>
+    /// Why a code that came along with the lock switch was probably refused, from what the service holds: "codeHeld" (a couch code is still
+    /// stored), "parentHeld" (a parents' code is), else null. Reveals nothing the settings page does not show anyway (serviceCodes).
+    /// </summary>
+    public static string? RefusalHint(HeldCodes? held) => held switch
+    {
+        null or { LegacyLock: true } => null,
+        { Damaged: true } => "storeDamaged",
+        { Couch: true } => "codeHeld",
+        { Parent: true } => "parentHeld",
+        _ => null
+    };
 
     /// <summary>
     /// A new code. With parental controls as couch and parents' code in one step ("both": the HUD uses one code for both, and nothing planted

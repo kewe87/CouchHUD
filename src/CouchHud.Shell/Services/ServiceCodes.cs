@@ -152,8 +152,87 @@ public static class ServiceCodes
         var kind = parental ? CodeKinds.Both : CodeKinds.Couch;
         var result = await AdminService.WithGrantAsync(Operation.SetLockMode, () => AdminService.Ops.SetLockModeAsync(mode, hash, kind)).ConfigureAwait(false);
         Console.WriteLine($"[codes] lock mode {mode}: {result}");
-        if (!result.Ok) throw new InvalidOperationException(Strings.Get("codes.modeNotStored", AdminService.Message(result)));
+        if (!result.Ok) throw new InvalidOperationException(Strings.Get("codes.modeNotStored", await RefusalAsync(result, hash is not null).ConfigureAwait(false)));
         if (hash is not null) Conflict = false;
+    }
+
+    /// <summary>
+    /// Mode and new code in one step. False (nothing changed) when the service refused it only because it already holds an approved code
+    /// (the one-step switch is for a lock with no approved code); every other refusal throws with its reason.
+    /// </summary>
+    public static async Task<bool> TrySetModeWithCodeAsync(string mode, IReadOnlyList<string> sequence, bool parental)
+    {
+        var hash = Passcode.Hash(sequence);
+        var kind = parental ? CodeKinds.Both : CodeKinds.Couch;
+        var result = await AdminService.WithGrantAsync(Operation.SetLockMode, () => AdminService.Ops.SetLockModeAsync(mode, hash, kind)).ConfigureAwait(false);
+        Console.WriteLine($"[codes] lock mode {mode} with a new code: {result}");
+        var held = result.Code == ErrorCodes.Denied ? await RefreshAsync().ConfigureAwait(false) : null;
+        switch (CodeFlow.ClassifyTogether(result, held))
+        {
+            case CodeFlow.TogetherOutcome.Done:
+                Conflict = false;
+                return true;
+            case CodeFlow.TogetherOutcome.Fallback:
+                return false;
+        }
+        throw new InvalidOperationException(Strings.Get("codes.modeNotStored", await RefusalAsync(result, true).ConfigureAwait(false)));
+    }
+
+    /// <summary>
+    /// The reason shown for a refusal. A code that came along and was refused ("denied") is told apart by what the service holds: a code from
+    /// before is still stored (a new one never comes along next to it), or a parents' code is. Nothing else of the service is revealed.
+    /// </summary>
+    private static async Task<string> RefusalAsync(OpResult result, bool withCode)
+    {
+        await ThrowIfDamagedAsync(result).ConfigureAwait(false);
+        if (!withCode || result.Code != ErrorCodes.Denied) return AdminService.Message(result);
+        var held = await RefreshAsync().ConfigureAwait(false) ?? Known;
+        return CodeFlow.RefusalHint(held) switch
+        {
+            "codeHeld" => Strings.Get("codes.deniedCodeHeld"),
+            "parentHeld" => Strings.Get("codes.deniedParentHeld"),
+            _ => AdminService.Message(result)
+        };
+    }
+
+    /// <summary>
+    /// A refusal because the service's code file is damaged (it says so in Status, see <see cref="CodeFlow.RefusedForDamage"/>) is said as
+    /// what it is, with the way out (an administrator resets it in the settings), instead of the generic "the service refused it".
+    /// </summary>
+    private static async Task ThrowIfDamagedAsync(OpResult result)
+    {
+        if (result.Ok || result.Code is not (ErrorCodes.Denied or ErrorCodes.Unavailable)) return;
+        if (CodeFlow.RefusedForDamage(result, await RefreshAsync().ConfigureAwait(false))) throw new CodeStoreDamagedException(Strings.Get("codes.storeDamaged"));
+    }
+
+    /// <summary>Whether the service reported its code file as damaged when it was asked last.</summary>
+    public static bool Damaged => Known?.Damaged == true;
+
+    /// <summary>Before a change of the codes or the lock: asks the service, and a damaged code file is said at once (nothing is tried).</summary>
+    public static async Task ThrowIfStoreDamagedAsync()
+    {
+        if (!Expected) return;
+        if (await RefreshAsync().ConfigureAwait(false) is { Damaged: true }) throw new CodeStoreDamagedException(Strings.Get("codes.storeDamaged"));
+    }
+
+    /// <summary>
+    /// The administrator's reset of a damaged code file: the service sets the file aside and starts with no codes. Windows' UAC prompt is the
+    /// gate (the service accepts an administrator's approval only). Afterwards the lock mode this HUD keeps is raised again in the service
+    /// (raising is free), so a lock that was on stays on; a code lock then needs its code set again (the caller says so). Throws with the
+    /// reason when it did not happen.
+    /// </summary>
+    public static async Task ResetDamagedAsync(string couchLock)
+    {
+        var result = await AdminService.WithGrantAsync(Operation.ResetCodeStore, () => AdminService.Ops.ResetCodeStoreAsync()).ConfigureAwait(false);
+        Console.WriteLine($"[codes] damaged code store reset: {result}");
+        if (!result.Ok) throw new InvalidOperationException(Strings.Get("codes.resetFailed", AdminService.Message(result)));
+        if (LockModes.Rank(couchLock) > 0)
+        {
+            var raised = await AdminService.Ops.SetLockModeAsync(couchLock).ConfigureAwait(false);
+            Console.WriteLine($"[codes] lock mode {couchLock} set again after the reset: {raised}");
+        }
+        Conflict = false;
+        await RefreshAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -164,6 +243,8 @@ public static class ServiceCodes
     {
         var result = await AdminService.WithGrantAsync(Operation.RemovePasscode, () => AdminService.Ops.RemovePasscodeAsync(kind)).ConfigureAwait(false);
         Console.WriteLine($"[codes] {kind} code removed from the service: {result}");
+        // A damaged code file refuses with "denied" too: never taken as "nothing to remove".
+        await ThrowIfDamagedAsync(result).ConfigureAwait(false);
         // "denied" from the state check: there is no such code.
         if (!result.Ok && result.Code != ErrorCodes.Denied) throw new InvalidOperationException(Strings.Get("codes.notRemoved", AdminService.Message(result)));
     }
@@ -176,8 +257,15 @@ public static class ServiceCodes
     {
         var result = await CodeFlow.StoreAsync(AdminService.Ops, Passcode.Hash(sequence), parental, AdminService.WithGrantAsync).ConfigureAwait(false);
         Console.WriteLine($"[codes] new code to the service: {result}");
+        await ThrowIfDamagedAsync(result).ConfigureAwait(false);
         if (!result.Ok) throw new InvalidOperationException(Strings.Get("codes.notStored", AdminService.Message(result)));
         Conflict = false;
     }
 
 }
+
+/// <summary>
+/// The service's code file is damaged: no code is checked or stored until an administrator resets it. The bridge tells the page by a flag, and
+/// the page offers the reset (<see cref="ServiceCodes.ResetDamagedAsync"/>).
+/// </summary>
+public sealed class CodeStoreDamagedException(string message) : InvalidOperationException(message);

@@ -38,7 +38,12 @@ public enum RateBucket
     Approvals,
     /// <summary>Picking an approval up: polled for a few seconds after the UAC prompt, so its own, roomier budget.</summary>
     ApprovalPickup,
-    Housekeeping
+    Housekeeping,
+    /// <summary>
+    /// The reset of a damaged code store (ResetCodeStore): its own small budget, so refused calls never use up the housekeeping budget the
+    /// codes and the lock mode need.
+    /// </summary>
+    CodeStoreReset
 }
 
 public enum RateVerdict
@@ -91,6 +96,7 @@ public sealed class RateLimiter(IMonotonicClock clock)
         [RateBucket.Approvals] = new(6, TimeSpan.FromMinutes(1)),
         [RateBucket.ApprovalPickup] = new(60, TimeSpan.FromMinutes(1)),
         [RateBucket.Housekeeping] = new(10, TimeSpan.FromMinutes(1)),
+        [RateBucket.CodeStoreReset] = new(3, TimeSpan.FromMinutes(1)),
     };
 
     public static RateBucket BucketFor(Operation operation) => operation switch
@@ -107,6 +113,7 @@ public sealed class RateLimiter(IMonotonicClock clock)
         Operation.RequestWindowsGrant => RateBucket.Grants,
         Operation.RequestAdminApproval => RateBucket.Approvals,
         Operation.CollectAdminApproval => RateBucket.ApprovalPickup,
+        Operation.ResetCodeStore => RateBucket.CodeStoreReset,
         Operation.MigrateTasks or Operation.ReleaseAllAccounts or Operation.ResetServiceState or Operation.EnrollPasscode or Operation.ChangePasscode or Operation.RemovePasscode
             or Operation.SetLockMode => RateBucket.Housekeeping,
         // Hello, Status, Ping, GetJob, GetRecentEvents: cheap and read-only; the per-account connection quota bounds them.

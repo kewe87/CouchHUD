@@ -77,6 +77,30 @@ public sealed partial class SteamAssets
         }
     }
 
+    /// <summary>
+    /// Asks for one app again whatever the cache says (the hashed addresses change with art updates). An app the store
+    /// now lists no assets for keeps what it had; one that never had any stays a recorded miss.
+    /// </summary>
+    public async Task RefreshAsync(string appId, CancellationToken ct)
+    {
+        if (appId.Length == 0 || !appId.All(char.IsAsciiDigit)) return;
+        Dictionary<string, SteamArt> found;
+        try
+        {
+            found = await FetchAsync([appId], ct);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.BadRequest)
+        {
+            return;
+        }
+        lock (_lock)
+        {
+            if (found.TryGetValue(appId, out var art)) _cache[appId] = new Entry(art, _now());
+            else if (!_cache.TryGetValue(appId, out var old) || old.Art is null) _cache[appId] = new Entry(null, _now());
+        }
+        Save();
+    }
+
     /// <summary>The art of one app: from the cache, or asked for.</summary>
     public async Task<SteamArt?> GetAsync(string appId, CancellationToken ct)
     {

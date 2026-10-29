@@ -262,6 +262,15 @@ public sealed partial class ArtworkCache
         }
     }
 
+    /// <summary>Forgets a recorded miss, so the address is tried again (a re-check or a manual reload).</summary>
+    public void ClearFailed(string key)
+    {
+        lock (_lock)
+        {
+            if (_failures.Remove(key)) _failuresDirty = true;
+        }
+    }
+
     public bool RecentlyFailed(string key)
     {
         lock (_lock) return _failures.TryGetValue(key, out var at) && Now - at < FailureTtl;

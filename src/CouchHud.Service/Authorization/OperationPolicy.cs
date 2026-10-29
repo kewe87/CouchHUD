@@ -61,7 +61,12 @@ public enum StateCheck
     /// <summary>ChangePasscode and RemovePasscode: the SID has a code of that kind to change or remove. P9.</summary>
     CodeExists,
     /// <summary>GetJob: the job belongs to the caller's SID, or the caller is an elevated administrator. P6.</summary>
-    JobOwner
+    JobOwner,
+    /// <summary>
+    /// ResetCodeStore: the code store is unavailable because its file is not valid (not because the data folder was refused, and never
+    /// while it works). Refused before any approval is asked for.
+    /// </summary>
+    CodeStoreDamaged
 }
 
 /// <summary>One rule: the requirement from the table, and the state checks the dispatcher runs on top (all must pass).</summary>
@@ -136,6 +141,10 @@ public static class OperationPolicy
         // Sets a damaged state file aside and starts fresh (after releasing what can still be identified, in every account): machine-wide,
         // so an elevated administrator only; no grant of any kind.
         [Operation.ResetServiceState] = new(Requirement.Admin),
+        // Sets a damaged code file aside and starts with no codes (machine-wide): an elevated administrator, or an administrator's approval
+        // through UAC (the shell runs without elevation); never a parents' code or anything of the couch (AcceptedByLock), and only while
+        // the file is damaged.
+        [Operation.ResetCodeStore] = new(Requirement.ParentGrantOrAdmin, StateCheck.CodeStoreDamaged),
     };
 
     /// <summary>
@@ -175,6 +184,8 @@ public static class OperationPolicy
         var couchCode = view.HasParent || windows ? GrantKinds.ParentOrAdmin : GrantKinds.Couch | GrantKinds.ParentOrAdmin;
         return request switch
         {
+            // Whatever the lock: an administrator's approval only (a parents' code cannot be checked while the codes are damaged anyway).
+            { Operation: Operation.ResetCodeStore } => GrantKinds.WindowsAdmin,
             { Operation: Operation.ChangePasscode or Operation.RemovePasscode, Args: PasscodeHashArgs { Kind: CodeKinds.Couch } or CodeKindArgs { Kind: CodeKinds.Couch } } => couchCode,
             { Operation: Operation.EnrollPasscode, Args: PasscodeHashArgs { Kind: CodeKinds.Couch } } when windows && !view.HasParent => GrantKinds.WindowsUnlock | GrantKinds.ParentOrAdmin,
             { Operation: Operation.ChangePasscode or Operation.RemovePasscode or Operation.EnrollPasscode } => GrantKinds.ParentOrAdmin,

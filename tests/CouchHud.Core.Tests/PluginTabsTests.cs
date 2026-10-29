@@ -196,23 +196,25 @@ public sealed class PluginTabsTests : IDisposable
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("Ho\u0000me")]
-    [InlineData("Licht‮etsil")]
-    [InlineData("Licht​")]
-    [InlineData("Li\ncht")]
     [InlineData("<b>Licht</b>")]
     [InlineData("Лампа")]
     [InlineData("Αpps")] // a Greek capital alpha
-    [InlineData("Licht́́́")]
-    [InlineData("💡 Licht")]
     [InlineData("Dies ist ein viel zu langer Titel")]
     [InlineData("Fünfzehn Zeiche")]
     [InlineData("Sett\u0131ngs")]
     [InlineData("Ho\u01C0me")]
     [InlineData("Brow\u0131er")]
     [InlineData("\u00B5")]
-    [InlineData("A\u00D7B")]
     public void Odd_titles_are_refused(string raw) => Assert.Null(PluginTabRules.CleanTitle(raw));
+
+    [Theory]
+    [InlineData("Ho\u0000me", "Home")]
+    [InlineData("Li\ncht", "Li cht")]
+    [InlineData("A\u00D7B", "AB")]
+    [InlineData("\U0001F4A1 Licht", "Licht")]
+    [InlineData("Licht\u200B", "Licht")]
+    [InlineData("Licht\u202Eetsil", "Lichtetsil")]
+    public void Decoration_in_titles_is_stripped_before_the_rules(string raw, string expected) => Assert.Equal(expected, PluginTabRules.CleanTitle(raw));
 
     [Theory]
     [InlineData("Home")]

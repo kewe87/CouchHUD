@@ -6,7 +6,7 @@ import { glyphFor, glyphKind } from './pad-glyphs.js';
 /** "xbox" or "playstation": the expert setting when fixed, else the kind of pad the host saw pressed last. */
 export const glyphKindNow = () => glyphKind(state.info?.padGlyphs, state.info?.padKind);
 
-export const glyph = (btn) => glyphFor(btn, glyphKindNow(), state.skin.glyphs);
+export const glyph = (btn) => glyphFor(btn, glyphKindNow(), state.skin.glyphs, state.skin);
 
 const glyphListeners = new Set();
 

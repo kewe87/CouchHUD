@@ -1,3 +1,4 @@
+using CouchHud.Core.Localization;
 using CouchHud.Sdk;
 
 namespace CouchHud.Core.Plugins;
@@ -84,6 +85,17 @@ public static class PluginPolicy
             if (cap == PluginCapabilities.DynamicCode && origin == PluginOrigin.ThirdParty) return "plugin.cap.dynamicCode";
         }
         return null;
+    }
+
+    /// <summary>
+    /// <see cref="CheckDeclared"/> as a finished text that names the capabilities at fault (all of the refused kind, at most eight), or null when the list is fine.
+    /// </summary>
+    public static string? DeclaredMessage(PluginOrigin origin, IEnumerable<string>? declared)
+    {
+        var list = (declared ?? []).ToList();
+        if (CheckDeclared(origin, list) is not { } key) return null;
+        var names = list.Where(c => CheckDeclared(origin, [c]) == key).Distinct(StringComparer.Ordinal).Take(8).Select(c => new string(c.Where(ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '_' or '-' or ':').Take(64).ToArray()));
+        return Strings.Get(key) + ": " + string.Join(", ", names);
     }
 
     /// <summary>

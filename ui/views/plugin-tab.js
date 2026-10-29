@@ -3,9 +3,7 @@
 // the same lock and parents' code rules.
 
 import { api } from '../core/api.js';
-import { iconEl } from '../core/glyph-icons.js';
-import { el } from '../core/dom.js';
-import { cleanPluginTabs, showTabIcons, tabRegistry } from '../core/plugin-tabs.js';
+import { cleanPluginTabs, tabRegistry } from '../core/plugin-tabs.js';
 import { declarativePage } from './plugin-page.js';
 
 function makeView(tab) {
@@ -14,20 +12,13 @@ function makeView(tab) {
   view.tabInfo = info;
   // The tab bar reads the name each time it draws: a refreshed title shows at once.
   Object.defineProperty(view, 'name', { get: () => view.tabTitle, configurable: true });
-  view.tabIcon = () => {
-    // More than three plugin tabs: the bar has no room for icons.
-    if (view.tabCompact) return null;
-    if (view.tabImage) return el('span', { className: 'tab-icon' }, el('img', { src: view.tabImage, alt: '', draggable: false }));
-    return view.tabGlyph ? el('span', { className: 'tab-icon' }, iconEl(view.tabGlyph)) : null;
-  };
+  // The tab bar shows the title only, like every core tab: the icon and glyph a plugin sends are not drawn there.
   refreshView(view, tab);
   return view;
 }
 
 function refreshView(view, tab) {
   view.tabTitle = tab.title;
-  view.tabImage = tab.image;
-  view.tabGlyph = tab.glyph;
   view.tabArea = tab.area;
   Object.assign(view.tabInfo, { title: tab.pageTitle, description: tab.pageDescription });
 }
@@ -45,6 +36,5 @@ export async function loadPluginTabs() {
     list = [];
   }
   const views = registry.sync(cleanPluginTabs(list));
-  for (const view of views) view.tabCompact = !showTabIcons(views.length);
   return views;
 }

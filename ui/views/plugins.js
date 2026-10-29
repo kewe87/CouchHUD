@@ -6,6 +6,7 @@
 import { iconEl } from '../core/glyph-icons.js';
 import { api } from '../core/api.js';
 import { el, formatSize, keepInView, setFocused } from '../core/dom.js';
+import { offerRestart } from '../core/power.js';
 import { attempt, toast } from '../core/feedback.js';
 import { currentView, pop, push, render, renderHints } from '../core/nav.js';
 import { chooseDialog, confirmDialog } from '../components/overlay.js';
@@ -20,7 +21,7 @@ import { declarativePage } from './plugin-page.js';
 import { withParentGrant } from '../core/parent-retry.js';
 import {
   badgeOf, capabilityKeys, cleanKey, entryActions, entryState, grantAction, installBlock, installPlan, installedFor, isDelisted, isRisky,
-  gateOrigin, grantChange, isThirdParty, needsCode, publisherOf, runGates, safeImage, sourceAddCheck, sourceErrorKey, sourceRows, sourcesVisible, uninstallPlan
+  gateOrigin, grantChange, isPageSetting, isThirdParty, needsCode, publisherOf, runGates, safeImage, sourceAddCheck, sourceErrorKey, sourceRows, sourcesVisible, uninstallPlan
 } from '../core/plugin-rules.js';
 
 /** Generic list page: rows of { icon, img, label, detail, meta, value, on, badge, run }; a { section } row is a heading the cursor skips. */
@@ -129,7 +130,8 @@ async function installZip(kind) {
   if (!(await ensureParentGrant(t('plugins.codeReason'), { action: grantAction('install'), item: path.split(/[\\/]/).pop() }))) return;
   const name = await attempt(() => api.installPackage(path, kind), t('plugins.installFailed'));
   if (!name) return;
-  toast(kind === 'skin' ? t('plugins.zip.skinInstalled', { name }) : t('plugins.zip.pluginInstalled', { name }), 5000);
+  if (kind === 'skin') toast(t('plugins.zip.skinInstalled', { name }), 5000);
+  else offerRestart(t('plugins.zip.pluginInstalled', { name }));
 }
 
 /** The host sends a code for network errors; the UI words them. */
@@ -232,7 +234,8 @@ export async function installFromCatalog(entry, { expert } = {}) {
   toast(t('plugins.catalog.checking', { name: entry.name }), 4000);
   const result = await attempt(() => api.installCatalogEntry(entry.id, entry.kind), t('plugins.installFailed'));
   if (!result) return undefined;
-  toast(result.restartNeeded ? t('plugins.catalog.restartNeeded', { message: result.message }) : result.message, 7000);
+  if (result.restartNeeded) offerRestart(t('plugins.catalog.restartNeeded', { message: result.message }));
+  else toast(result.message, 7000);
   return result;
 }
 
@@ -241,7 +244,7 @@ async function setEnabled(plugin, enabled) {
   if (!(await gateOpen(enabled ? 'enable' : 'disable', gateOrigin(plugin)))) return undefined;
   if (!(await runGates(['code'], { code: () => codeStep(enabled ? 'enable' : 'disable', plugin, plugin.folder) }))) return undefined;
   const list = await attempt(() => api.setPluginEnabled(plugin.folder, enabled), t('plugins.notSaved'));
-  if (list) toast(t('plugins.page.restartHint'), 4000);
+  if (list) offerRestart(t('plugins.page.restartHint'));
   return list;
 }
 
@@ -282,7 +285,8 @@ async function uninstall(plugin) {
   });
   if (!ok) return undefined;
   const result = await attempt(() => api.uninstallPlugin(plugin.folder), t('plugins.notSaved'));
-  if (result) toast(result.gone ? t('plugins.uninstall.done', { name: plugin.name }) : t('plugins.uninstall.atRestart', { name: plugin.name }), 5000);
+  if (result && result.gone) toast(t('plugins.uninstall.done', { name: plugin.name }), 5000);
+  else if (result) offerRestart(t('plugins.uninstall.atRestart', { name: plugin.name }));
   return result?.plugins;
 }
 
@@ -296,7 +300,7 @@ async function acceptRevoked(plugin) {
   });
   if (!ok) return undefined;
   const list = await attempt(() => api.acceptRevokedPlugin(plugin.folder), t('plugins.notSaved'));
-  if (list) toast(t('plugin.revoked.accepted', { name: plugin.name }), 6000);
+  if (list) offerRestart(t('plugin.revoked.accepted', { name: plugin.name }));
   return list;
 }
 
@@ -373,7 +377,8 @@ export function pluginsPage(startTab = 0, { expert = false, openId = null } = {}
         detail: p.error ? t('plugins.installed.error', { error: p.error }) : [update ? t('plugins.installed.updateAvailable', { version: update.version }) : null, delisted ? t('plugin.delisted.badge') : null, p.description, p.author ? t('plugins.by', { author: p.author }) : null].filter(Boolean).join(' · ') || p.folder,
         badge,
         badgeClass: p.revoked ? 'danger' : isThirdParty(p) || p.origin === 'local' ? 'warn' : '',
-        value: p.needsApproval ? t('plugins.value.approval') : update ? t('plugins.value.update') : p.loaded ? t('plugins.value.active') : p.enabled ? t('plugins.value.error') : t('plugins.value.off'),
+        // i18n-used: plugins.value.pausedOffline plugins.value.pausedOfflineLoaded plugins.value.startsAfterRestart
+        value: p.pausedOffline ? t(p.loaded ? 'plugins.value.pausedOfflineLoaded' : 'plugins.value.pausedOffline') : p.startsAfterRestart ? t('plugins.value.startsAfterRestart') : p.needsApproval ? t('plugins.value.approval') : update ? t('plugins.value.update') : p.loaded ? t('plugins.value.active') : p.enabled ? t('plugins.value.error') : t('plugins.value.off'),
         on: !!update || p.loaded,
         dim: !p.enabled,
         run: () => push(pluginPage(p, store, setPlugins))
@@ -723,6 +728,67 @@ function endSettingsVisit(pluginId) {
   }
 }
 
+/**
+ * The rows for a plugin's settings: values to change, and entries (kind "page") that open one of the plugin's own pages. Shared by the
+ * plugin manager's page and the reduced page of Settings > Plugins. The host decides every press (the lock, the owner's level, the
+ * parents' code in a child's profile); the page entry hands back only the page, which is opened on the stack, so B returns here.
+ */
+function settingRows(p, refresh) {
+  return (p.settings ?? []).map((s) => isPageSetting(s) ? {
+    // An entry that opens one of the plugin's own pages. The host decides (the lock, the owner's level, the parents' code in a child's profile)
+    // and hands back only the page; B on that page returns here.
+    icon: '⚙',
+    label: s.label,
+    detail: s.description,
+    value: '›',
+    run: async () => {
+      const result = await attempt(() => withParentGrant(() => api.openPluginSettingPage(p.id, s.key)), p.name);
+      if (result?.id) push(declarativePage(p, result));
+    }
+  } : ({
+    icon: '⚙',
+    label: s.label,
+    detail: s.description,
+    value: s.kind === 'toggle' ? (s.value === 'true' ? t('plugins.value.on') : t('plugins.value.off')) : s.kind === 'secret' ? (s.value ? t('plugins.value.saved') : t('plugins.value.notSet')) : s.value || '–',
+    on: s.kind === 'toggle' && s.value === 'true',
+    run: async () => {
+      let value;
+      if (s.kind === 'toggle') value = s.value === 'true' ? 'false' : 'true';
+      else if (s.kind === 'choice') value = await chooseDialog(s.label, s.choices.map((c) => ({ label: c, value: c })), s.value);
+      else value = await openKeyboard({ title: s.label, value: s.kind === 'secret' ? '' : s.value ?? '', secret: s.kind === 'secret' });
+      if (value === undefined) return;
+      // A child's profile: the host asks for the parents' code once (a visit of this plugin's settings); then the change is repeated once.
+      refresh(await attempt(() => withParentGrant(() => api.setPluginSetting(p.id, s.key, value)), t('plugins.notSaved')));
+    }
+  }));
+}
+
+/**
+ * Settings > Plugins in simple mode: only the plugin's own settings and the pages they open. The switch, approval, function levels,
+ * uninstall, rights and folder stay on the plugin manager (expert mode).
+ */
+function pluginSettingsOnlyPage(plugin, onChange) {
+  let p = plugin;
+  const refresh = (list) => {
+    const next = list?.find((x) => x.folder === p.folder && x.id === p.id);
+    if (next) p = next;
+    if (list) onChange(list);
+    render();
+  };
+  return rowsPage({
+    id: 'plugin-settings',
+    // Back ends the visit the parents' code opened for this plugin's settings.
+    onClose: () => endSettingsVisit(p.id),
+    title: () => p.name,
+    rows: () => settingRows(p, refresh)
+  });
+}
+
+/** A plugin's own page in Settings > Plugins: in expert mode the plugin manager's page, in simple mode only its settings. */
+export function pluginSettingsPage(plugin, onChange, { expert = false } = {}) {
+  return expert ? pluginPage(plugin, null, onChange) : pluginSettingsOnlyPage(plugin, onChange);
+}
+
 function pluginPage(plugin, store, onChange) {
   let p = plugin;
   const refresh = (list) => {
@@ -766,8 +832,8 @@ function pluginPage(plugin, store, onChange) {
           if (!ok) return;
           const list = await attempt(() => api.approvePlugin(p.folder, p.approvalHash), t('plugins.notSaved'));
           if (!list) return;
-          toast(t('plugins.approve.done', { name: p.name }), 6000);
           refresh(list);
+          offerRestart(t('plugins.approve.done', { name: p.name }));
         }
       }] : []),
       {
@@ -782,22 +848,7 @@ function pluginPage(plugin, store, onChange) {
         }
       },
       ...(p.pages ?? []).map((pg) => ({ icon: pg.icon, label: pg.title, detail: pg.description, highlight: true, run: () => push(declarativePage(p, pg)) })),
-      ...(p.settings ?? []).map((s) => ({
-        icon: '⚙',
-        label: s.label,
-        detail: s.description,
-        value: s.kind === 'toggle' ? (s.value === 'true' ? t('plugins.value.on') : t('plugins.value.off')) : s.kind === 'secret' ? (s.value ? t('plugins.value.saved') : t('plugins.value.notSet')) : s.value || '–',
-        on: s.kind === 'toggle' && s.value === 'true',
-        run: async () => {
-          let value;
-          if (s.kind === 'toggle') value = s.value === 'true' ? 'false' : 'true';
-          else if (s.kind === 'choice') value = await chooseDialog(s.label, s.choices.map((c) => ({ label: c, value: c })), s.value);
-          else value = await openKeyboard({ title: s.label, value: s.kind === 'secret' ? '' : s.value ?? '', secret: s.kind === 'secret' });
-          if (value === undefined) return;
-          // A child's profile: the host asks for the parents' code once (a visit of this plugin's settings); then the change is repeated once.
-          refresh(await attempt(() => withParentGrant(() => api.setPluginSetting(p.id, s.key, value)), t('plugins.notSaved')));
-        }
-      })),
+      ...settingRows(p, refresh),
       ...(p.functions?.length ? [
         { section: t('plugin.fn.title') },
         ...p.functions.map((fn) => ({

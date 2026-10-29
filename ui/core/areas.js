@@ -24,7 +24,9 @@ export const SETTING_AREAS = {
   trailerPreviews: 'games',
   maximizeBrowser: 'browser',
   browserHistory: 'browser',
-  favoritesSites: 'browser'
+  favoritesSites: 'browser',
+  netSaves: 'games',
+  netNews: 'news'
 };
 
 /** Main tabs that belong to an area (by the view's id). Favorites (the home view), downloads, assistant and settings are always there. */
@@ -72,13 +74,3 @@ export const shownTabs = (views) => views.filter((v) => areaOn(TAB_AREAS[v?.id])
 
 /** Setup assistant steps without those of switched off areas (the choice made in the assistant counts, not the stored one). */
 export const shownSteps = (steps, choice) => steps.filter((id) => !WIZARD_STEP_AREAS[id] || choice.includes(WIZARD_STEP_AREAS[id]));
-
-/**
- * The tile at the end of the Home shelf: "All games" with Gaming, else "All apps", else the browser. It always leads somewhere that
- * is on (a shelf is never empty). Returns { id, tab }.
- */
-export function homeEndTile() {
-  if (areaOn('games')) return { id: '__all', tab: 'games' };
-  if (areaOn('apps')) return { id: '__apps', tab: 'apps' };
-  return { id: '__browser', tab: 'browser' };
-}

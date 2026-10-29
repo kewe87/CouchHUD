@@ -12,6 +12,21 @@ export function codeLockHeld(security) {
 }
 
 /**
+ * How the code lock is switched on, from what the CouchHUD service holds (the host decides again with the same rule, CodeFlow.PlanCodeLock):
+ *  - 'keep': a couch code from before is held under a lock mode that is on (the account went back to the app mode, the service kept its
+ *    code). No new code is asked: the code applies again, raising the lock is free. A new one only through "Change code".
+ *  - 'store': a new code cannot come along with the switch (a lock mode is on without a couch code, or a parents' code is held and may be
+ *    an approved one); it is stored first with the approval the service asks for (old code, parents' code, administrator), then the lock goes on.
+ *  - 'default': nothing special (no service, nothing held, a lock of 0.4.0 not confirmed yet): the old flow, a new code goes along.
+ */
+export function codeLockPlan(security) {
+  const held = security?.serviceCodes;
+  if (!security?.codesInService || !held || held.legacy) return 'default';
+  if (held.mode === 'code' || held.mode === 'windows') return held.couch === true ? 'keep' : 'store';
+  return held.parent === true ? 'store' : 'default';
+}
+
+/**
  * Before the console setup changes anything: not on the host's stand-in of broken settings (configFault, from a fresh read of the host,
  * not only from what the page read at its start), and not without the hold that keeps the couch open through the run (its lock step would
  * otherwise lock the HUD half way). readSecurity() and hold() are the host calls; a refusal of either stops the run before its first step.
@@ -78,9 +93,11 @@ export async function admitProtectedChange({ reason, parentReason = reason, pare
  * have opened the couch) takes a new code for the lock that is on (restore).
  *
  * enroll() and restore() resolve to 'on', 'cancelled' or 'failed'; askAgain() to true when a cancelled entry is to be tried again.
- * Resolves to { status: 'ok' | 'skipped' | 'failed', note }, the note being a key below consoleSetup.lock.
+ * Resolves to { status: 'ok' | 'aborted' | 'failed', note }, the note being a key below consoleSetup.lock.
  */
 export async function setupCouchLock({ security, enroll, restore, askAgain }) {
+  // The service's code file is damaged: no lock can be switched on until an administrator resets it (Settings).
+  if (security?.serviceCodes?.damaged) return { status: 'failed', note: 'codesDamaged' };
   if (security?.couchLock === 'windows') return { status: 'ok', note: 'windowsNote' };
   if (codeLockHeld(security)) return { status: 'ok', note: security.accountPassword === false ? 'codeNoPassword' : 'existingActive' };
   const run = security?.couchLock === 'code' ? restore : enroll;
@@ -89,6 +106,8 @@ export async function setupCouchLock({ security, enroll, restore, askAgain }) {
     if (outcome === 'on') return { status: 'ok', note: security?.accountPassword === false ? 'codeNoPassword' : 'codeActive' };
     // A lock of 0.4.0 not confirmed yet takes no single code: an administrator confirms it through the code entry first.
     if (outcome !== 'cancelled') return { status: 'failed', note: run === restore && security?.serviceCodes?.legacy ? 'legacyConfirmFirst' : 'notSaved' };
-    if (!(await askAgain())) return { status: 'skipped', note: 'noCode' };
+    // Not entering the code is not a step that was left out: the shell cannot be set up without the lock, so the person has cancelled the
+    // switch ('aborted' stops the run and the transaction undoes what it did, like B during the run).
+    if (!(await askAgain())) return { status: 'aborted', note: 'noCode' };
   }
 }

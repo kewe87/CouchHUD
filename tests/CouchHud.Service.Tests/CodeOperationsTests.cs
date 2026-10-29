@@ -50,8 +50,10 @@ internal sealed class CodeRig : IDisposable
     public CodeHandlers Handlers { get; private set; } = null!;
 
     /// <summary>Operations the harness answers with "ok" once authorized (the P5 handlers are not part of this rig).</summary>
-    public CodeRig()
+    /// <param name="codeFile">The code file found at the start (a damaged one, for the reset); none by default.</param>
+    public CodeRig(string? codeFile = null)
     {
+        if (codeFile is not null) File.WriteAllText(Path.Combine(_dir.Path, CodeStore.FileName), codeFile);
         Codes = CodeStore.Open(_dir.Path, Log, Clock, () => 1_000_000, Tests.Codes.FastVerify);
         Grants = new GrantStore(Clock, sessionLocked: s => UnknownSessions.Contains(s) ? null : LockedSessions.Contains(s));
         Sessions = new SessionEvents(Clock, Grants, s => SessionUsers.GetValueOrDefault(s), Log);

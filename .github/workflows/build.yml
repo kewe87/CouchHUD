@@ -57,6 +57,7 @@ jobs:
           done
           node scripts/ui-logic-check.mjs
           node scripts/css-check.mjs
+          node scripts/skin-check.mjs
           node scripts/i18n-check.mjs
 
       - name: Publish
@@ -145,6 +146,13 @@ jobs:
             installer/output/*.exe
             installer/output/*.sha256
 
+      # The release page carries this version's section of CHANGELOG.md. GitHub caps the text at 125000
+      # characters; a longer section keeps its German part and links to the full file at the tag.
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: ./scripts/release-notes.ps1 -Tag $env:GITHUB_REF_NAME -Out release-notes.md
+
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -152,4 +160,5 @@ jobs:
           files: |
             installer/output/*.exe
             installer/output/*.sha256
+          body_path: release-notes.md
           generate_release_notes: true

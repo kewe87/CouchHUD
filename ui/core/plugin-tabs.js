@@ -11,8 +11,6 @@ export const MAX_PER_PLUGIN = 2;
 export const MAX_TOTAL = 6;
 /** What fits the tab bar next to six other tabs. */
 export const MAX_TITLE = 14;
-/** More plugin tabs than this: the bar shows no tab icons. */
-export const MAX_TABS_WITH_ICONS = 3;
 /** The glyph shown for a third party's glyph that is one of the HUD's own icons. */
 export const GENERIC_GLYPH = '◆';
 
@@ -164,8 +162,6 @@ export function tabRegistry(make, refresh, drop = () => {}) {
   };
 }
 
-/** Whether the bar shows the icons of the plugin tabs: not when more than MAX_TABS_WITH_ICONS plugin tabs are there. */
-export const showTabIcons = (count) => count <= MAX_TABS_WITH_ICONS;
 
 /**
  * The tab bar: the built-in content tabs, then the plugin tabs, then the closing tabs (assistant, settings), so Settings stays last. The

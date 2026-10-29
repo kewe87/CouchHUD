@@ -41,11 +41,13 @@ export function siteAddress(url) {
  * RECENT_LIMIT, only http(s), never a query or fragment. Returns the same list when nothing changes (a page reports itself several
  * times per load: address, title, history), so the caller can skip storing it.
  */
-export function rememberSite(recent, url, title) {
+export function rememberSite(recent, url, title, at = null) {
   const address = siteAddress(url);
   if (!address) return recent;
-  const entry = { url: address, title: (typeof title === 'string' && title) || host(address) };
-  if (recent[0]?.url === entry.url && recent[0]?.title === entry.title) return recent;
+  // The visit time (ms) lets the Favorites tab apply its time span; entries of older versions have none (at = null).
+  const entry = { url: address, title: (typeof title === 'string' && title) || host(address), ...(Number.isFinite(at) ? { at } : {}) };
+  // The same page reported again within a minute changes nothing (a page reports itself several times).
+  if (recent[0]?.url === entry.url && recent[0]?.title === entry.title && (!Number.isFinite(at) || Math.abs(at - (recent[0].at ?? 0)) < 60_000)) return recent;
   return [entry, ...recent.filter((r) => siteAddress(r?.url) !== address)].slice(0, RECENT_LIMIT);
 }
 
@@ -62,7 +64,7 @@ export function forgetSite(recent, url) {
  */
 export function cleanRecent(list) {
   if (!Array.isArray(list)) return [];
-  return list.slice(0, 50).reverse().reduce((acc, r) => rememberSite(acc, r?.url, r?.title), []);
+  return list.slice(0, 50).reverse().reduce((acc, r) => rememberSite(acc, r?.url, r?.title, Number.isFinite(r?.at) ? r.at : null), []);
 }
 
 /**
@@ -83,6 +85,16 @@ export function visibleRecent(recent, browserState, limit = 4) {
   if (!visibleRecentAllowed(browserState)) return [];
   const known = new Set((browserState.bookmarks ?? []).map((b) => siteAddress(b.url) ?? b.url));
   return (recent ?? []).filter((r) => !known.has(siteAddress(r.url) ?? r.url)).slice(0, limit);
+}
+
+/**
+ * The recent sites inside the Favorites tab's time span (days; 0 or less = unlimited). An entry without a visit time (kept by an
+ * older version) counts as outside a limited span: the safer choice, old history never comes back for a window it cannot prove.
+ */
+export function recentWithin(list, days, now = Date.now()) {
+  if (!(days > 0)) return list ?? [];
+  const since = now - days * 86_400_000;
+  return (list ?? []).filter((r) => Number.isFinite(r?.at) && r.at >= since);
 }
 
 /**

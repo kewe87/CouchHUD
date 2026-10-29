@@ -20,3 +20,18 @@ export function step({ index, offset, count, total }, delta, pageSize) {
   }
   return null;
 }
+
+/**
+ * Where a view's cursor goes on a step of `delta` in a list of `length`, or null when it stays (the caller bumps).
+ * wrap: a horizontal tile row (Home) goes round, right on the last to the first and left on the first to the last, for single
+ * steps only. Everything else stops at its ends.
+ */
+export function cursorStep(index, delta, length, { wrap = false } = {}) {
+  if (!(length > 0) || !delta) return null;
+  const next = index + delta;
+  if (next >= 0 && next < length) return next;
+  // A cursor left outside a list that shrank comes back to its nearest end.
+  if (!(index >= 0 && index < length)) return Math.max(0, Math.min(length - 1, next));
+  if (wrap && Math.abs(delta) === 1 && length > 1) return (next + length) % length;
+  return null;
+}

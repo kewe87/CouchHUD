@@ -53,7 +53,17 @@ public static class ChatProviders
 
     internal static async Task<JsonNode> PostAsync(HttpClient http, HttpRequestMessage request, CancellationToken ct)
     {
-        using var response = await http.SendAsync(request, ct);
+        HttpResponseMessage response;
+        try
+        {
+            response = await http.SendAsync(request, ct);
+        }
+        catch (Net.NetBlockedException ex)
+        {
+            // The privacy settings changed under a running conversation: a plain message, not a crash.
+            throw new AssistantException(ex.Message);
+        }
+        using var _ = response;
         var body = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
         {

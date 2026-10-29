@@ -104,6 +104,9 @@ public sealed record CatalogEntry(
     /// </summary>
     public bool Extra { get; init; }
 
+    /// <summary>The SDK version the plugin needs, when the index says so (the signed statement is what counts at install time). Above <see cref="CouchHud.Sdk.SdkVersion.Current"/>: not installable here.</summary>
+    public int? Sdk { get; init; }
+
     /// <summary>The package statement (Base64 of its exact bytes), its signature and, for a third-party developer, the public key (PEM).</summary>
     public string? Statement { get; init; }
 
@@ -306,6 +309,9 @@ public static class CatalogParser
             icon is not null && IsAllowedUrl(icon, allowLocal) ? icon : null,
             folder, source, problem)
         {
+            // Missing: no statement about it. Present but malformed (text, fraction, below 1, above 1000): counts as newer than any CouchHUD, so it is not installable.
+            Sdk = !item.TryGetProperty("sdk", out var sdkEl) ? null
+                : sdkEl.ValueKind == JsonValueKind.Number && sdkEl.TryGetInt32(out var sdkNumber) && sdkNumber is >= 1 and <= 1000 ? sdkNumber : int.MaxValue,
             Statement = statement,
             Signature = Str(item, "signature"),
             PublisherKey = Str(item, "publisherKey"),
@@ -392,7 +398,10 @@ public static class CatalogRules
     }
 
     public static bool IsCompatible(CatalogEntry entry, SemVer app) =>
-        entry.MinCouchHud is null || (SemVer.TryParse(entry.MinCouchHud, out var min) && min <= app);
+        (entry.MinCouchHud is null || (SemVer.TryParse(entry.MinCouchHud, out var min) && min <= app)) && !NeedsNewerSdk(entry.Sdk);
+
+    /// <summary>The package needs a newer plugin SDK than this CouchHUD implements (it could not load; an older host never offers it).</summary>
+    public static bool NeedsNewerSdk(int? sdk) => sdk is { } needed && needed > CouchHud.Sdk.SdkVersion.Current;
 
     /// <summary>An installed package of unknown version counts as up to date.</summary>
     public static CatalogStatus StatusOf(CatalogEntry entry, bool installed, string? installedVersion, SemVer app)
@@ -419,7 +428,8 @@ public static class CatalogRules
     }
 
     public static string? Reason(CatalogEntry entry, SemVer app) =>
-        entry.Problem ?? (IsCompatible(entry, app) ? null : Strings.Get("catalog.needsVersion", entry.MinCouchHud, app));
+        entry.Problem ?? (NeedsNewerSdk(entry.Sdk) ? Strings.Get("catalog.needsSdk", entry.Sdk)
+            : IsCompatible(entry, app) ? null : Strings.Get("catalog.needsVersion", entry.MinCouchHud, app));
 
     /// <summary>The hash check is mandatory: no expected hash, or a different one, means the file is rejected.</summary>
     public static void VerifySha256(string file, string? expected)

@@ -8,7 +8,7 @@ import { lockStepStatus } from './lock-rules.js';
 
 /** All steps in the order they are asked. Which of them apply right now is decided by applies(). */
 export const SEQUENCE = [
-  'welcome', 'terms', 'areas', 'mode',
+  'welcome', 'terms', 'areas', 'updates', 'mode',
   'revert', 'shell', 'lock', 'autologon', 'launchers', 'services',
   'look', 'sound', 'clientsInfo', 'clients', 'tv',
   'summary', 'result'

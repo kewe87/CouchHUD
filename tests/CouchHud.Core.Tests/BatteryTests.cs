@@ -128,21 +128,21 @@ public class BatteryTests
     [Fact]
     public void One_gamepad_report_fills_the_pad_xinput_does_not_know()
     {
-        var pads = new[] { new PadBattery(0, "unknown") };
-        Assert.Equal(new[] { new PadBattery(0, "medium", 64) }, BatteryRules.FillFromGamepads(pads, [], [Report64]));
+        var pads = new[] { new PadBattery(0, "unknown", null, Ms) };
+        Assert.Equal(new[] { new PadBattery(0, "medium", 64, Ms, "wgi") }, BatteryRules.FillFromGamepads(pads, [], [Report64]));
         // A Steam virtual pad without a battery report next to it does not count.
-        Assert.Equal(new[] { new PadBattery(0, "medium", 64) }, BatteryRules.FillFromGamepads(pads, [], [NoBattery, Report64, new("wired", null, false)]));
+        Assert.Equal(new[] { new PadBattery(0, "medium", 64, Ms, "wgi") }, BatteryRules.FillFromGamepads(pads, [], [NoBattery, Report64, new("wired", null, false)]));
     }
 
     [Fact]
     public void Gamepad_report_prefers_a_slot_that_is_not_steams_virtual_pad()
     {
-        var pads = new[] { new PadBattery(0, "unknown"), new PadBattery(1, "unknown") };
-        Assert.Equal(new[] { new PadBattery(0, "unknown"), new PadBattery(1, "medium", 64) }, BatteryRules.FillFromGamepads(pads, [0], [Report64]));
+        var pads = new[] { new PadBattery(0, "unknown", null, Ms), new PadBattery(1, "unknown", null, Ms) };
+        Assert.Equal(new[] { new PadBattery(0, "unknown", null, Ms), new PadBattery(1, "medium", 64, Ms, "wgi") }, BatteryRules.FillFromGamepads(pads, [0], [Report64]));
         // Two real pads without a level: which one has the battery is not known.
         Assert.Same(pads, BatteryRules.FillFromGamepads(pads, [], [Report64]));
         // Only Steam's virtual pad there (the real one hidden behind it): it gets the report.
-        Assert.Equal(new[] { new PadBattery(2, "medium", 64) }, BatteryRules.FillFromGamepads([new PadBattery(2, "unknown")], [2], [Report64]));
+        Assert.Equal(new[] { new PadBattery(2, "medium", 64, null, "wgi") }, BatteryRules.FillFromGamepads([new PadBattery(2, "unknown")], [2], [Report64]));
         // Two Steam virtual pads: ambiguous again.
         Assert.Same(pads, BatteryRules.FillFromGamepads(pads, [0, 1], [Report64]));
         // A Steam virtual pad next to a pad on its cable: most likely that pad seen twice (WGI may say idle, not charging).
@@ -163,10 +163,10 @@ public class BatteryTests
         var known = new[] { new PadBattery(0, "full"), new PadBattery(1, "unknown") };
         Assert.Same(known, BatteryRules.FillFromGamepads(known, [], [Report64]));
         // A charging report while an XInput pad says wired: that pad on its cable.
-        var wired = new[] { new PadBattery(0, "wired"), new PadBattery(1, "unknown") };
+        var wired = new[] { new PadBattery(0, "wired"), new PadBattery(1, "unknown", null, Ms) };
         Assert.Same(wired, BatteryRules.FillFromGamepads(wired, [], [new("medium", 50, true)]));
         // Not charging, next to a wired pad without a battery: the unknown pad is the one with the battery.
-        Assert.Equal(new[] { new PadBattery(0, "wired"), new PadBattery(1, "medium", 64) }, BatteryRules.FillFromGamepads(wired, [], [Report64]));
+        Assert.Equal(new[] { new PadBattery(0, "wired"), new PadBattery(1, "medium", 64, Ms, "wgi") }, BatteryRules.FillFromGamepads(wired, [], [Report64]));
     }
 
     [Fact]
@@ -175,8 +175,197 @@ public class BatteryTests
         // A PlayStation pad read over HID with an unknown level stays unknown; its own level stays its own.
         var pads = new[] { new PadBattery(4, "unknown"), new PadBattery(5, "low") };
         Assert.Same(pads, BatteryRules.FillFromGamepads(pads, [], [Report64]));
-        var mixed = new[] { new PadBattery(0, "unknown"), new PadBattery(4, "full") };
-        Assert.Equal(new[] { new PadBattery(0, "medium", 64), new PadBattery(4, "full") }, BatteryRules.FillFromGamepads(mixed, [], [Report64]));
+        var mixed = new[] { new PadBattery(0, "unknown", null, Ms), new PadBattery(4, "full") };
+        Assert.Equal(new[] { new PadBattery(0, "medium", 64, Ms, "wgi"), new PadBattery(4, "full") }, BatteryRules.FillFromGamepads(mixed, [], [Report64]));
+    }
+
+    private const int Asus = 0x0B05;
+    private const int Ms = 0x045E;
+
+    [Fact]
+    public void Windows_percent_beats_a_coarse_xinput_level_for_the_same_single_pad()
+    {
+        var pads = new[] { new PadBattery(0, "low", null, Ms) };
+        Assert.Equal(new[] { new PadBattery(0, "full", 80, Ms, "wgi") }, BatteryRules.FillFromGamepads(pads, [], [new("full", 80, false)]));
+        // Two XInput pads or two gamepads: which is which is not known, the coarse level stays.
+        var two = new[] { new PadBattery(0, "low", null, Ms), new PadBattery(1, "full", null, Ms) };
+        Assert.Same(two, BatteryRules.FillFromGamepads(two, [], [new("full", 80, false)]));
+        Assert.Same(pads, BatteryRules.FillFromGamepads(pads, [], [new("full", 80, false), NoBattery]));
+    }
+
+    [Fact]
+    public void Wgi_percent_is_never_taken_for_a_third_party_pad()
+    {
+        // The reported case: an ASUS pad, XInput says low, WGI has one gamepad with a bogus 10 %: nothing is shown.
+        var low = new[] { new PadBattery(0, "low", null, Asus, "xinput") };
+        Assert.Same(low, BatteryRules.FillFromGamepads(low, [], [new("low", 10, false)]));
+        var pad = Assert.Single(BatteryRules.DistrustCoarse(BatteryRules.FillFromGamepads(low, [], [new("low", 10, false)])));
+        Assert.Null(pad.Percent);
+        Assert.Equal("unknown", pad.Level);
+        var unknown = new[] { new PadBattery(0, "unknown", null, Asus) };
+        Assert.Same(unknown, BatteryRules.FillFromGamepads(unknown, [], [new("low", 10, false)]));
+        var noVendor = new[] { new PadBattery(0, "unknown") };
+        Assert.Same(noVendor, BatteryRules.FillFromGamepads(noVendor, [], [Report64]));
+        var both = new[] { new PadBattery(0, "unknown", null, Asus), new PadBattery(1, "unknown", null, Ms) };
+        Assert.Same(both, BatteryRules.FillFromGamepads(both, [], [Report64]));
+    }
+
+    [Fact]
+    public void Asus_pad_with_nothing_from_wgi_and_xinput_low_shows_nothing()
+    {
+        var pads = new[] { new PadBattery(0, "low", null, Asus, "xinput") };
+        var shown = BatteryRules.DistrustCoarse(BatteryRules.FillFromGamepads(pads, [], [NoBattery]));
+        var (matched, devices) = BatteryRules.MatchBluetooth(shown, [], new Dictionary<int, IReadOnlyList<string>>());
+        var result = Assert.Single(matched);
+        Assert.Null(result.Percent);
+        Assert.Null(BatteryRules.Steps(result.Level));
+        Assert.DoesNotContain(LowBatteryLatch.Readings(new BatterySnapshot(null, matched, devices)), x => x.Low);
+    }
+
+    [Fact]
+    public void Coarse_low_of_a_non_microsoft_pad_is_not_believed_alone()
+    {
+        var pads = new[] { new PadBattery(0, "low", null, Asus), new PadBattery(1, "empty", null, Asus), new PadBattery(2, "low", null, Ms), new PadBattery(3, "low"), new PadBattery(4, "low") };
+        var result = BatteryRules.DistrustCoarse(pads);
+        Assert.Equal(["unknown", "unknown", "low", "low", "low"], result.Select(p => p.Level));
+        // With a percent the pad keeps it.
+        var withPercent = new[] { new PadBattery(0, "low", 10, Asus) };
+        Assert.Equal("low", BatteryRules.DistrustCoarse(withPercent)[0].Level);
+        // And an unbelieved pad does not fire the low warning.
+        var snapshot = new BatterySnapshot(null, BatteryRules.DistrustCoarse([new PadBattery(0, "low", null, Asus)]), []);
+        Assert.DoesNotContain(LowBatteryLatch.Readings(snapshot), r => r.Low);
+    }
+
+    // The owner's pad: ROG RAIKIRI PRO over Bluetooth LE, 80 %; a second paired Xbox pad reports 79.
+    private const string RogAddress = "C15AF9554702";
+    private const string XboxAddress = "3CFA06452ED8";
+    private const string HidNode = @"BTHLEDEVICE\{00001812-0000-1000-8000-00805f9b34fb}_DEV_VID&020B05_PID&1ABD_REV&0100_C15AF9554702\8&1d2e&0&0020";
+    private const string HidChild = @"HID\{00001812-0000-1000-8000-00805f9b34fb}&DEV&VID_0B05&PID_1ABD&REV_0100&C15AF9554702&IG_00\9&2a&0&0000";
+    private const string BatteryServiceNode = @"BTHLEDEVICE\{0000180f-0000-1000-8000-00805f9b34fb}_DEV_VID&020B05_PID&1ABD_REV&0100_C15AF9554702\8&1d2e&0&0010";
+    private static readonly DeviceBattery Rog = new("a", "ROG RAIKIRI PRO", "controller", 80) { Address = RogAddress };
+    private static readonly DeviceBattery XboxBt = new("b", "Xbox Wireless Controller", "controller", 79) { Address = XboxAddress };
+    private const int AsusPid = 0x1ABD;
+    private const string HidNodeReal = @"BTHLEDevice\{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&020b05_PID&1abd_REV&0100_c15af9554702\e&79595ef&0&0001";
+    private static IReadOnlyDictionary<int, IReadOnlyList<string>> Hid(int vendor, int product, params string[] addresses) =>
+        new Dictionary<int, IReadOnlyList<string>> { [BatteryRules.PadKey(vendor, product)] = addresses };
+
+    [Fact]
+    public void Hid_instance_ids_give_vendor_and_bluetooth_address()
+    {
+        Assert.Equal((Asus, AsusPid, RogAddress), BatteryRules.HidPadOfInstance(HidNode));
+        Assert.Equal((Asus, AsusPid, RogAddress), BatteryRules.HidPadOfInstance(HidChild));
+        Assert.Null(BatteryRules.HidPadOfInstance(BatteryServiceNode));
+        Assert.Null(BatteryRules.HidPadOfInstance(@"HID\VID_0B05&PID_1ABD\1"));
+        Assert.Null(BatteryRules.HidPadOfInstance(null));
+        Assert.Null(BatteryRules.HidPadOfInstance(new string('A', 400)));
+        Assert.Equal(RogAddress, BatteryRules.AddressOfEndpoint("BluetoothLE#BluetoothLE5c:3a:45:00:11:22-c1:5a:f9:55:47:02"));
+        Assert.Null(BatteryRules.AddressOfEndpoint("BluetoothLE#BluetoothLE5c:3a:45:00:11:22"));
+        Assert.Null(BatteryRules.AddressOfEndpoint(null));
+    }
+
+    [Fact]
+    public void Owner_pad_gets_exactly_its_own_bluetooth_battery_even_with_a_second_connected_pad()
+    {
+        var pads = BatteryRules.DistrustCoarse([new PadBattery(0, "low", null, Asus, "xinput", AsusPid)]);
+        var hid = Hid(Asus, AsusPid, RogAddress);
+        var (matched, devices) = BatteryRules.MatchBluetooth(pads, [XboxBt, Rog], hid);
+        Assert.Equal(new PadBattery(0, "full", 80, Asus, "bluetooth", AsusPid), Assert.Single(matched));
+        Assert.Equal([XboxBt], devices);
+        Assert.DoesNotContain(LowBatteryLatch.Readings(new BatterySnapshot(null, matched, devices)), x => x.Low);
+        // A paired but disconnected ROG pad is not in the device list: no percent, and the Xbox pad's 79 is not taken.
+        var (none, _) = BatteryRules.MatchBluetooth(pads, [XboxBt], hid);
+        Assert.Null(Assert.Single(none).Percent);
+    }
+
+    [Fact]
+    public void Bluetooth_match_is_exact()
+    {
+        var headset = new DeviceBattery("h", "Headset", "headphones", 5) { Address = "AAAAAAAAAAAA" };
+        var onlyAsus = new[] { new PadBattery(0, "unknown", null, Asus, null, AsusPid) };
+        // Without address information a non-Microsoft pad matches nothing, whatever the name says.
+        Assert.Null(BatteryRules.MatchBluetooth(onlyAsus, [Rog]).Pads[0].Percent);
+        Assert.Null(BatteryRules.MatchBluetooth(onlyAsus, [Rog], new Dictionary<int, IReadOnlyList<string>>()).Pads[0].Percent);
+        // Two HID addresses of one vendor (two such pads): ambiguous.
+        Assert.Null(BatteryRules.MatchBluetooth(onlyAsus, [Rog], Hid(Asus, AsusPid, RogAddress, "112233445566")).Pads[0].Percent);
+        // The address belongs to another device than the listed ones; a headset is no partner; names are not enough.
+        Assert.Null(BatteryRules.MatchBluetooth(onlyAsus, [XboxBt, headset], Hid(Asus, AsusPid, RogAddress)).Pads[0].Percent);
+        Assert.Null(BatteryRules.MatchBluetooth(onlyAsus, [new DeviceBattery("n", "ROG RAIKIRI PRO", "controller", 10)], Hid(Asus, AsusPid, RogAddress)).Pads[0].Percent);
+        // Wired, Steam's virtual pad, unknown vendor and PlayStation slots are never matched.
+        var hid = Hid(Asus, AsusPid, RogAddress);
+        Assert.Null(BatteryRules.MatchBluetooth([new PadBattery(0, "wired", null, Asus, null, AsusPid)], [Rog], hid).Pads[0].Percent);
+        Assert.Null(BatteryRules.MatchBluetooth([new PadBattery(0, "unknown", null, 0x28DE)], [Rog], hid).Pads[0].Percent);
+        Assert.Null(BatteryRules.MatchBluetooth([new PadBattery(0, "unknown")], [Rog], hid).Pads[0].Percent);
+        Assert.Null(BatteryRules.MatchBluetooth([new PadBattery(4, "unknown", null, Asus, null, AsusPid)], [Rog], hid).Pads[0].Percent);
+        // Microsoft pads: the address when known, otherwise the "Xbox ..." name; never another vendor's device.
+        var ms = new[] { new PadBattery(0, "medium", null, Ms, null, 0x02FD) };
+        Assert.Equal(79, BatteryRules.MatchBluetooth(ms, [Rog, XboxBt]).Pads[0].Percent);
+        Assert.Null(BatteryRules.MatchBluetooth(ms, [Rog]).Pads[0].Percent);
+        Assert.Equal(79, BatteryRules.MatchBluetooth(ms, [Rog, XboxBt], Hid(Ms, 0x02FD, XboxAddress)).Pads[0].Percent);
+        // Two Xbox pads without an address: ambiguous.
+        var xbox2 = new DeviceBattery("c", "Xbox Wireless Controller", "controller", 30);
+        Assert.Null(BatteryRules.MatchBluetooth(ms, [XboxBt, xbox2]).Pads[0].Percent);
+    }
+
+    [Fact]
+    public void Same_vendor_other_product_neither_blocks_nor_steals_the_match()
+    {
+        var pads = new[] { new PadBattery(0, "unknown", null, Asus, null, AsusPid) };
+        // A same-vendor keyboard (other PID) with its own address does not make the pad ambiguous.
+        var map = new Dictionary<int, IReadOnlyList<string>>
+        {
+            [BatteryRules.PadKey(Asus, AsusPid)] = [RogAddress],
+            [BatteryRules.PadKey(Asus, 0x1866)] = ["AABBCCDDEEFF"]
+        };
+        Assert.Equal(80, BatteryRules.MatchBluetooth(pads, [Rog], map).Pads[0].Percent);
+        // A pad whose product is not in the map, or not known, gets nothing.
+        var otherPid = new[] { new PadBattery(0, "unknown", null, Asus, null, 0x1866) };
+        Assert.Null(BatteryRules.MatchBluetooth(otherPid, [Rog], Hid(Asus, AsusPid, RogAddress)).Pads[0].Percent);
+        var noPid = new[] { new PadBattery(0, "unknown", null, Asus) };
+        Assert.Null(BatteryRules.MatchBluetooth(noPid, [Rog], Hid(Asus, AsusPid, RogAddress)).Pads[0].Percent);
+    }
+
+    [Fact]
+    public void Hid_node_query_uses_the_device_instance_id_property_and_real_ids_parse()
+    {
+        // System.Devices.InstanceId does not support starts-with (ArgumentException); DeviceInstanceId does.
+        Assert.Equal("System.Devices.DeviceInstanceId:~<\"BTHLEDEVICE\\{00001812\"", BatteryRules.HidNodeQuery);
+        Assert.Equal((Asus, AsusPid, RogAddress), BatteryRules.HidPadOfInstance(HidNodeReal));
+        Assert.Null(BatteryRules.AddressOfEndpoint(new string('a', 300) + "-c1:5a:f9:55:47:02"));
+    }
+
+    [Fact]
+    public void A_spoofed_bluetooth_name_cannot_hide_a_low_microsoft_pad_by_vendor_mismatch()
+    {
+        var pads = new[] { new PadBattery(0, "low", null, Ms) };
+        var (p, _) = BatteryRules.MatchBluetooth(pads, [new DeviceBattery("x", "ROG fake", "controller", 100)]);
+        Assert.Equal("low", p[0].Level);
+    }
+
+    [Fact]
+    public void Battery_source_log_says_one_line_per_pad_when_source_or_value_changes()
+    {
+        var log = new BatterySourceLog();
+        Assert.Equal(["[battery] pad 0 source=wgi 87%", "[battery] pad 1 source=none"],
+            log.Update([new PadBattery(0, "full", 87, Ms, "wgi"), new PadBattery(1, "unknown", null, Asus)]));
+        Assert.Empty(log.Update([new PadBattery(0, "full", 87, Ms, "wgi"), new PadBattery(1, "unknown", null, Asus)]));
+        Assert.Equal(["[battery] pad 0 source=wgi 86%"], log.Update([new PadBattery(0, "full", 86, Ms, "wgi"), new PadBattery(1, "unknown", null, Asus)]));
+        Assert.Equal(["[battery] pad 1 source=bluetooth 40%"], log.Update([new PadBattery(0, "full", 86, Ms, "wgi"), new PadBattery(1, "medium", 40, Asus, "bluetooth")]));
+        Assert.Equal(["[battery] pad 4 source=hid level=low"], log.Update([new PadBattery(4, "low", null, null, "hid")]));
+        Assert.Equal(["[battery] pad 2 source=xinput level=wired"], log.Update([new PadBattery(2, "wired", null, Ms, "xinput")]));
+        Assert.Equal(["[battery] pad 4 source=hid level=low"], log.Update([new PadBattery(4, "low", null, null, "hid")]));
+    }
+
+    [Fact]
+    public void Pad_list_follows_the_live_pads_and_only_takes_values_from_the_snapshot_for_a_pad_in_it()
+    {
+        var snapshot = new[] { new PadBattery(0, "full", 80, 0x0B05) };
+        // The last pad was unplugged: nothing is reported, whatever the snapshot still says.
+        Assert.Empty(BatteryRules.LiveWithSnapshot([], snapshot));
+        // A pad that is in the snapshot gets its level and percent; another one keeps its own.
+        var live = new[] { new PadBattery(0, "unknown", null, 0x0B05), new PadBattery(1, "medium", null, 0x045E) };
+        var merged = BatteryRules.LiveWithSnapshot(live, snapshot);
+        Assert.Equal(new PadBattery(0, "full", 80, 0x0B05), merged[0]);
+        Assert.Equal(live[1], merged[1]);
     }
 
     private static BatterySnapshot Snap(int? system = null, string? pad = null, int? bt = null, bool plugged = false) => new(

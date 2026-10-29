@@ -43,7 +43,6 @@ export default {
   'assistant.sugWeather': 'What\'s the weather tomorrow?',
   'assistant.sugSkin': 'Switch to the Neon City skin',
   'assistant.sugUpdates': 'Are there any updates?',
-  'assistant.busy': 'One moment, still working on it …',
   'assistant.done': 'Done.',
   'assistant.title': 'Assistant',
   'assistant.ask': 'Ask a question',

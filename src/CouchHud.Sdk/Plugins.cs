@@ -145,8 +145,9 @@ public interface IPluginContext
 /// they need in plugin.json ("sdk": 1); newer ones are not loaded.
 /// Version 2 adds <see cref="IPluginContext.Locked"/> and <see cref="IPluginEvents.LockChanged"/>; plugins for version 1 keep working unchanged.
 /// Version 3 adds capabilities, richer pages (sections, images, steppers, choices, links), pushed state and the host services.
+/// Version 4 adds page actions (<see cref="PluginPage.Actions"/>): button hints in the footer.
 /// </summary>
 public static class SdkVersion
 {
-    public const int Current = 3;
+    public const int Current = 4;
 }

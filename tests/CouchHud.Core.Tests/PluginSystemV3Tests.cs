@@ -190,7 +190,8 @@ public sealed class PluginSystemV3Tests : IDisposable
     [InlineData("filesystem.everything", "plugin.cap.unknown")]
     public void A_third_party_statement_cannot_ask_for_what_it_may_not_have(string cap, string reason)
     {
-        Refused(reason, () => Verify(Sign(StatementJson(_dev, caps: cap), _dev, Pem(_dev))));
+        // The refusal names the capability that is at fault.
+        Assert.Equal(Strings.Get(reason) + ": " + cap, Assert.Throws<CatalogException>(() => Verify(Sign(StatementJson(_dev, caps: cap), _dev, Pem(_dev)))).Message);
     }
 
     [Fact]

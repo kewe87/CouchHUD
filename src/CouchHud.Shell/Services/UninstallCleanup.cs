@@ -50,6 +50,7 @@ public static class UninstallCleanup
         // Steam's own files are not for an administrator process (see ElevatedGuard): CouchHud puts those back as the user, on
         // quit. Here only the entry that would start the files being deleted goes.
         Step("steam guard run entry", SteamGuardService.RemoveRunEntry);
+        Step("game bar run entry", () => new WindowsRegistry().DeleteValue(CouchHud.Core.Guard.GameBarGuard.RunKey, CouchHud.Core.Guard.GameBarGuard.RunValue));
         Step("sign-in lock entry", SignInLock.RemoveEntry);
         Step("services", StartPausedServices);
         // CouchHud.Service: disabled (no SCM restart, no start by a user), stopped, deleted. Its data ({app}\service\data) goes with

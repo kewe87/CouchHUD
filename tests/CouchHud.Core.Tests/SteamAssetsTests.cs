@@ -180,8 +180,10 @@ public class SteamAssetsTests
         Assert.NotNull(result);
         Assert.Equal($"{Hashed}/cc33/library_capsule_2x.jpg?t=1760000000", result[0].Art.Cover[0]);
         Assert.Equal($"{Legacy}/3905450/library_600x900.jpg", result[0].Art.Cover[^1]);
-        // Steam answered, so SteamGridDB (key set) was not needed.
-        Assert.DoesNotContain(routes.Requests, r => r.Contains("steamgriddb"));
+        // Steam answered, so SteamGridDB (key set) was not needed for cover, banner or logo; only the square (Steam has none) is asked there.
+        Assert.DoesNotContain(routes.Requests, r => r.Contains("heroes/") || r.Contains("logos/") || r.Contains("dimensions=600x900"));
+        // Everything that went to SteamGridDB was about the square (the name search first, then grids or icons).
+        Assert.All(routes.Requests.Where(r => r.Contains("steamgriddb")), r => Assert.True(r.Contains("autocomplete") || r.Contains("dimensions=512x512") || r.Contains("/icons/"), r));
     }
 
     [Fact]

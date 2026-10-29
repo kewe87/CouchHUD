@@ -35,6 +35,7 @@ import { setAudioMode, sound } from '../sound.js';
 import { showTermsIfNeeded, termsAccepted, termsPage } from './legal.js';
 import { consoleRevertPage, consoleSetupPage, hasConsoleSetup } from './console-setup.js';
 import { consoleDeps, enrollCouchCode } from './settings.js';
+import { updateChoices } from '../core/net-rules.js';
 import { AREAS, AREA_DESC_KEYS, AREA_ICONS, AREA_NAME_KEYS, areaOn, enabledAreas, setAreas, toggleArea } from '../core/areas.js';
 import { ensureParentGrant, parental } from '../components/parental.js';
 import { EXPLAINS, applies, parseResume, defaultIndex, freshChoices, isConsoleReady, isFullNow, nextOf, order, prevOf, skippedSetupSteps, summaryFocus, summaryPlan } from '../core/wizard-rules.js';
@@ -174,6 +175,37 @@ function steps(page) {
         })),
         { id: 'continue', row: AREAS.length, line: 1, button: true, title: t('wizard.next'), run: () => page.saveAreas() }
       ]
+    },
+    // What CouchHUD may look for on its own (Settings > Privacy has the rest). Both are independent and can be switched off.
+    updates: {
+      icon: 'update',
+      title: () => t('wizard.updates.title'),
+      lead: () => t('wizard.updates.lead'),
+      later: () => where('settings.cat.privacy'),
+      options: () => {
+        const u = page.updateChoices();
+        const row = (id, line, title, detail, on, extra = {}) => ({
+          id, row: line, line: 0, listRow: true, title, detail, icon: '⟳', pill: on ? t('settings.common.on') : t('settings.common.off'), pillOn: on, ...extra
+        });
+        return [
+          row('upd:self', 0, t('wizard.updates.self'), t('wizard.updates.selfDesc'), u.selfUpdateCheck, {
+            icon: '⬇',
+            run: () => { page.updates = { ...u, selfUpdateCheck: !u.selfUpdateCheck }; }
+          }),
+          row('upd:catalog', 1, t('wizard.updates.catalog'), t('wizard.updates.catalogDesc'), u.catalogUpdateCheck, {
+            run: () => { page.updates = updateChoices({ ...u, catalogUpdateCheck: !u.catalogUpdateCheck }); }
+          }),
+          // The sub-option: only while the plugins are updated at all. The automatic update itself comes later; the choice is kept.
+          row('upd:auto', 2, t('wizard.updates.auto'), t('wizard.updates.autoDesc'), u.pluginAutoUpdate, {
+            sub: true,
+            run: () => {
+              if (!u.catalogUpdateCheck) { toast(t('wizard.updates.autoNeedsCatalog')); return; }
+              page.updates = updateChoices({ ...u, pluginAutoUpdate: !u.pluginAutoUpdate });
+            }
+          }),
+          { id: 'continue', row: 3, line: 1, button: true, title: t('wizard.next'), run: () => page.saveUpdates() }
+        ];
+      }
     },
     mode: {
       icon: 'console',
@@ -450,6 +482,30 @@ function wizardPage({ firstRun = false, startAt = null } = {}) {
       window.dispatchEvent(new CustomEvent('couchhud:areas', { detail: this.areas }));
       // The game clients appear (or go) with Gaming.
       await this.reload();
+      return 'next';
+    },
+    /** The update choices as asked for now (what the host has until the step was touched). */
+    updateChoices() {
+      const s = this.env?.settings ?? {};
+      return this.updates ?? updateChoices({ selfUpdateCheck: s.selfUpdateCheck !== false, catalogUpdateCheck: s.catalogUpdateCheck !== false, pluginAutoUpdate: !!s.pluginAutoUpdate });
+    },
+
+    /**
+     * The updates step's "Next": saves what changed. Like the switches in Settings › Privacy: with parental controls on only with the parents'
+     * code for each (the host asks for the same grant); a refused or failed save keeps the assistant on this step.
+     */
+    async saveUpdates() {
+      const s = this.env?.settings ?? {};
+      const want = this.updateChoices();
+      const before = { selfUpdateCheck: s.selfUpdateCheck !== false, catalogUpdateCheck: s.catalogUpdateCheck !== false, pluginAutoUpdate: !!s.pluginAutoUpdate };
+      // The plugin update search first off, the automatic update after it: the host drops the second one with the first anyway.
+      for (const key of ['selfUpdateCheck', 'catalogUpdateCheck', 'pluginAutoUpdate']) {
+        if (want[key] === before[key]) continue;
+        const reason = t('settings.privacy.parentReason');
+        if (!(await admitProtectedChange({ reason, parentalOn: !!parental.status?.enabled, scope: { action: 'privacy', item: key }, ensureUnlocked, ensureParentGrant }))) return;
+        if (!(await save(key, want[key]))) return;
+        s[key] = want[key];
+      }
       return 'next';
     },
     nextOf(id) {
@@ -883,7 +939,7 @@ function optionNode(o) {
       el('strong', { textContent: o.title }), o.sub ? el('small', { textContent: o.sub }) : null);
   }
   if (o.listRow) {
-    return el('li', { className: 'wizard-option wizard-row' },
+    return el('li', { className: `wizard-option wizard-row${o.sub ? ' wizard-row-sub' : ''}` },
       el('span', { className: 'wizard-row-icon' }, iconEl(o.icon)),
       o.detail ? el('span', { className: 'wizard-row-text' }, el('strong', { textContent: o.title }), el('small', { textContent: o.detail })) : el('strong', { textContent: o.title }),
       el('span', { className: `pill ${o.pillOn ? 'on' : 'off'}`, textContent: o.pill }));

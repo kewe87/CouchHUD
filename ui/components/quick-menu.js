@@ -218,7 +218,7 @@ function batteryLine() {
   const nodes = [];
   const system = systemBadge(state.battery?.system);
   if (system) nodes.push(el('span', { className: `quick-battery${system.low ? ' battery-low' : ''}`, textContent: `${system.icon} ${fmtPercent(system.percent)}` }));
-  for (const b of batteryEntries(quick.pads, state.battery?.devices)) {
+  for (const b of batteryEntries(state.battery?.pads ?? quick.pads, state.battery?.devices)) {
     const icon = KIND_ICON[b.kind] ?? '◉';
     const value = b.percent != null ? `${b.value} ${fmtPercent(b.percent)}` : b.value;
     nodes.push(el('span', { className: `quick-pad${b.low ? ' battery-low' : ''}`, textContent: `${icon} ${b.label}${value ? ` ${value}` : ''}` }));

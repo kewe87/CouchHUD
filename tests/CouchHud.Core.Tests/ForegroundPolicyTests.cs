@@ -107,11 +107,12 @@ public sealed class GameBarGuardTests
 
     [Theory]
     [InlineData(true, false, true, true, true)]
-    [InlineData(false, false, true, true, false)]
+    [InlineData(false, false, true, true, true)]
+    [InlineData(false, true, true, true, false)]
     [InlineData(true, true, true, true, false)]
     [InlineData(true, false, false, true, false)]
     [InlineData(true, false, true, false, false)]
-    public void AppliesOnlyOnTheCouchInFullMode(bool full, bool pc, bool suppress, bool tap, bool expected) =>
+    public void AppliesInAppAndShellModeButNeverInPcMode(bool full, bool pc, bool suppress, bool tap, bool expected) =>
         Assert.Equal(expected, GameBarGuard.ShouldApply(full, pc, suppress, tap));
 
     [Fact]
@@ -151,6 +152,132 @@ public sealed class GameBarGuardTests
         {
             if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
+    }
+
+    [Fact]
+    public void AppModeTakesTheButtonAndGivesItBackWithoutTouchingCapture()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "couchhud-gb-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var reg = new FakeRegistry();
+            reg.WriteDword(Key, GameBarGuard.Value, 1);
+            reg.WriteDword(GameBarGuard.CaptureKey, "AppCaptureEnabled", 1);
+            var guard = new GuardSnapshot(reg, new FileVdfStore(), Path.Combine(dir, "guard.json"));
+            // App mode (full: false), not locked.
+            Assert.True(GameBarGuard.ShouldApply(full: false, pcMode: false, suppressCompetitors: true, guideTapInGame: true));
+            Assert.Empty(guard.Apply([GameBarGuard.Change]));
+            Assert.Equal(0, reg.ReadDword(Key, GameBarGuard.Value));
+            Assert.Equal(1, reg.ReadDword(GameBarGuard.CaptureKey, "AppCaptureEnabled"));
+            // Switched off (option, PC mode or quit): the original is back.
+            Assert.False(GameBarGuard.ShouldApply(full: false, pcMode: false, suppressCompetitors: false, guideTapInGame: true));
+            Assert.Empty(guard.Restore());
+            Assert.Equal(1, reg.ReadDword(Key, GameBarGuard.Value));
+            Assert.Equal(1, reg.ReadDword(GameBarGuard.CaptureKey, "AppCaptureEnabled"));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AppModeCrashLeavesNoLastingChange()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "couchhud-gb-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var reg = new FakeRegistry(); // Windows default: no value
+            var state = Path.Combine(dir, "guard.json");
+            new GuardSnapshot(reg, new FileVdfStore(), state).Apply([GameBarGuard.Change]);
+            Assert.Equal(0, reg.ReadDword(Key, GameBarGuard.Value));
+            // Crash, next start in a state where CouchHud must not own the button: the leftovers go.
+            Assert.Empty(new GuardSnapshot(reg, new FileVdfStore(), state).Restore());
+            Assert.Null(reg.ReadDword(Key, GameBarGuard.Value));
+            Assert.Null(reg.ReadDword(GameBarGuard.CaptureKey, "AppCaptureEnabled"));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RawZeroBeforeTheFirstApplyIsTheRecordedOriginalAndComesBack()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "couchhud-gb-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var reg = new FakeRegistry();
+            reg.WriteDword(Key, GameBarGuard.Value, 1);
+            var guard = new GuardSnapshot(reg, new FileVdfStore(), Path.Combine(dir, "guard.json"));
+            // Hold mode: the choice goes through the snapshot, so the Windows original (1) is recorded before the 0.
+            Assert.True(GameBarGuard.ShouldApply(false, false, false, false, keptOff: true));
+            Assert.False(GameBarGuard.ShouldApply(false, true, false, false, keptOff: true)); // PC mode gives it back
+            Assert.Empty(guard.Apply([GameBarGuard.Change]));
+            Assert.Equal(0, reg.ReadDword(Key, GameBarGuard.Value));
+            // Switching to the tap mode later keeps the recorded original, not the 0.
+            Assert.Empty(guard.Apply([GameBarGuard.Change]));
+            Assert.Empty(guard.Restore()); // the user picks Game Bar, or quits
+            Assert.Equal(1, reg.ReadDword(Key, GameBarGuard.Value));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RunEntryFollowsTheSnapshotAndReleasesOnlyTheGameBarValue()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "couchhud-gb-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var reg = new FakeRegistry();
+            reg.WriteDword(Key, GameBarGuard.Value, 1);
+            var state = Path.Combine(dir, "guard.json");
+            var guard = new GuardSnapshot(reg, new FileVdfStore(), state);
+            guard.Apply([GameBarGuard.Change]);
+            GameBarGuard.SyncRunEntry(reg, guard.HasPending, @"C:\Apps\CouchHud.exe");
+            Assert.Equal(@"""C:\Apps\CouchHud.exe"" --release-game-bar", reg.ReadString(GameBarGuard.RunKey, GameBarGuard.RunValue));
+            // Crash; the entry's process (no CouchHud running) puts the value back and removes itself.
+            Assert.Empty(GameBarGuard.ReleaseFromRunEntry(reg, dir));
+            Assert.Equal(1, reg.ReadDword(Key, GameBarGuard.Value));
+            Assert.Null(reg.ReadString(GameBarGuard.RunKey, GameBarGuard.RunValue));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DevRunsWriteNoRunEntry()
+    {
+        var reg = new FakeRegistry();
+        GameBarGuard.SyncRunEntry(reg, true, @"C:\Program Files\dotnet\dotnet.exe");
+        Assert.Null(reg.ReadString(GameBarGuard.RunKey, GameBarGuard.RunValue));
+    }
+
+    [Theory]
+    [InlineData(false, true, true, false, false, true)]
+    [InlineData(true, true, true, false, false, false)]
+    [InlineData(false, false, true, false, false, false)]
+    [InlineData(false, true, false, false, false, false)]
+    [InlineData(false, true, true, true, false, false)]
+    [InlineData(false, true, true, false, true, false)]
+    public void OldHoldChoiceMigratesOnlyWithoutSnapshot(bool pending, bool zero, bool used, bool tap, bool keptOff, bool expected) =>
+        Assert.Equal(expected, GameBarGuard.NeedsKeptOffMigration(pending, zero, used, tap, keptOff));
+
+    [Fact]
+    public void RunEntryRefusesAnythingButTheGameBarValue()
+    {
+        Assert.True(GameBarGuard.AcceptsRestore(new GuardEntry(GuardKind.RegistryDword, GameBarGuard.Key, GameBarGuard.Value, null, "0")));
+        Assert.True(GameBarGuard.AcceptsRestore(new GuardEntry(GuardKind.RegistryDword, GameBarGuard.Key, GameBarGuard.Value, "1", "0")));
+        Assert.False(GameBarGuard.AcceptsRestore(new GuardEntry(GuardKind.RegistryDword, GameBarGuard.Key, GameBarGuard.Value, "7", "0")));
+        Assert.False(GameBarGuard.AcceptsRestore(new GuardEntry(GuardKind.RegistryDword, GameBarGuard.CaptureKey, "AppCaptureEnabled", "1", "0")));
+        Assert.False(GameBarGuard.AcceptsRestore(new GuardEntry(GuardKind.RegistryString, GameBarGuard.Key, GameBarGuard.Value, null, "0")));
+        Assert.False(GameBarGuard.AcceptsRestore(new GuardEntry(GuardKind.RegistryDword, @"HKLM\Software\Microsoft\GameBar", GameBarGuard.Value, "1", "0")));
     }
 
     [Fact]

@@ -5,9 +5,21 @@ public sealed record SystemBattery(int Percent, bool Charging, bool PluggedIn, b
 
 /// <summary>
 /// A controller: its slot and the level Windows reports ("wired", "full", "medium", "low", "empty", "unknown"). <see cref="Percent"/>
-/// only where a percent is known (an Xbox pad read through Windows.Gaming.Input, <see cref="BatteryRules.FillFromGamepads"/>).
+/// only where a percent is known (an Xbox pad read through Windows.Gaming.Input, <see cref="BatteryRules.FillFromGamepads"/>, or a
+/// Bluetooth battery that clearly belongs to it, <see cref="BatteryRules.MatchBluetooth"/>). <see cref="Vendor"/> is the USB vendor id
+/// XInput reports for the slot (null when not known).
 /// </summary>
-public sealed record PadBattery(int Index, string Level, int? Percent = null);
+public sealed record PadBattery(int Index, string Level, int? Percent = null, int? Vendor = null, string? Source = null, int? Product = null);
+
+/// <summary>The names of the sources a pad's battery can come from (<see cref="PadBattery.Source"/>); the log says them, nothing else uses them.</summary>
+public static class BatterySources
+{
+    public const string XInput = "xinput";
+    public const string Wgi = "wgi";
+    public const string Bluetooth = "bluetooth";
+    public const string Hid = "hid";
+    public const string None = "none";
+}
 
 /// <summary>
 /// The battery report of a Windows.Gaming.Input gamepad (<see cref="BatteryRules.FromGamepadReport"/>): its level, the percent when
@@ -19,7 +31,15 @@ public sealed record GamepadBattery(string Level, int? Percent, bool Charging);
 /// A connected Bluetooth device that tells Windows its battery percent. <see cref="Id"/> is an opaque key
 /// (<see cref="BatteryRules.DeviceKey"/>), never the endpoint id with its Bluetooth addresses.
 /// </summary>
-public sealed record DeviceBattery(string Id, string Name, string Kind, int Percent);
+public sealed record DeviceBattery(string Id, string Name, string Kind, int Percent)
+{
+    /// <summary>
+    /// The device's Bluetooth address (12 upper-case hex digits, <see cref="BatteryRules.AddressOfEndpoint"/>), only to match it with a
+    /// pad's HID node; never sent to the UI.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? Address { get; init; }
+}
 
 /// <summary>Everything the top bar and the guide menu show about batteries; <see cref="System"/> is null on a PC without a battery.</summary>
 public sealed record BatterySnapshot(SystemBattery? System, IReadOnlyList<PadBattery> Pads, IReadOnlyList<DeviceBattery> Devices)
@@ -137,10 +157,24 @@ public static class BatteryRules
         if (usable.Count != 1) return pads;
         var report = usable[0];
         var xinput = pads.Where(p => p.Index is >= 0 and < xinputSlots).ToList();
+        // One XInput pad with only a coarse level and one WGI gamepad in all (every XInput pad is a WGI gamepad too): the same pad,
+        // and Windows' percent wins over the coarse level (some third-party pads report "low" to XInput while nearly full).
+        if (gamepads.Count == 1 && xinput.Count == 1 && xinput[0].Percent is null && Steps(xinput[0].Level) is not null)
+        {
+            // Only a Microsoft pad's report is trusted: a third-party pad's report through its own driver can be anything (an ASUS pad
+            // showed a fixed 10 %), and Windows does not say which pad a report belongs to beyond "the only one".
+            if (xinput[0].Vendor != MicrosoftVendor) return pads;
+            return pads.Select(p => ReferenceEquals(p, xinput[0]) ? p with { Level = report.Level, Percent = report.Percent, Source = BatterySources.Wgi } : p).ToList();
+        }
         if (xinput.Any(p => Steps(p.Level) is not null)) return pads;
         if (report.Charging && xinput.Any(p => p.Level == "wired")) return pads;
         var unknown = xinput.Where(p => p.Level == "unknown").ToList();
+        // A third-party pad (or one whose vendor is not known) is never filled from WGI, see above; Steam's virtual pad is the exception
+        // (the report is the pad behind it).
         var real = unknown.Where(p => !steamVirtual.Contains(p.Index)).ToList();
+        var others = real.Count;
+        real = real.Where(p => p.Vendor == MicrosoftVendor).ToList();
+        if (others > real.Count) return pads;
         PadBattery target;
         if (real.Count == 1) target = real[0];
         else if (real.Count > 1) return pads;
@@ -152,8 +186,111 @@ public static class BatteryRules
             if (steam.Count != 1 || xinput.Any(p => p.Level == "wired")) return pads;
             target = steam[0];
         }
-        return pads.Select(p => ReferenceEquals(p, target) ? p with { Level = report.Level, Percent = report.Percent } : p).ToList();
+        return pads.Select(p => ReferenceEquals(p, target) ? p with { Level = report.Level, Percent = report.Percent, Source = BatterySources.Wgi } : p).ToList();
     }
+
+    /// <summary>USB vendor id of Microsoft: only an Xbox pad's own XInput battery level is trusted as it is.</summary>
+    public const int MicrosoftVendor = 0x045E;
+
+    private const int SteamVendor = 0x28DE;
+
+    /// <summary>
+    /// A coarse XInput "low" or "empty" of a pad that is not from Microsoft is not believed on its own (some third-party pads report
+    /// "low" all the time): it becomes "unknown", shown without a level and never warned about. A pad without a known vendor keeps its
+    /// level (nothing to doubt it with), and a pad with a percent keeps both (the percent says it).
+    /// </summary>
+    public static IReadOnlyList<PadBattery> DistrustCoarse(IReadOnlyList<PadBattery> pads) =>
+        pads.Select(p => p.Index is >= 0 and < 4 && p.Percent is null && PadLow(p.Level) && p.Vendor is { } v && v != MicrosoftVendor
+            ? p with { Level = "unknown" } : p).ToList();
+
+    /// <summary>The AQS query for the HID service nodes of Bluetooth LE devices (property DeviceInstanceId: InstanceId does not support starts-with).</summary>
+    public const string HidNodeQuery = "System.Devices.DeviceInstanceId:~<\"BTHLEDEVICE\\{00001812\"";
+
+    /// <summary>The key of <c>hidAddresses</c> in <see cref="MatchBluetooth"/>: USB vendor and product id.</summary>
+    public static int PadKey(int vendor, int product) => (vendor << 16) | (product & 0xFFFF);
+
+    /// <summary>
+    /// The Bluetooth address of a device endpoint id ("BluetoothLE#BluetoothLE5c:3a:45:00:11:22-c1:5a:f9:55:47:02": the part after the
+    /// PC's own address) as 12 upper-case hex digits; null when the id has no such part.
+    /// </summary>
+    public static string? AddressOfEndpoint(string? endpointId)
+    {
+        if (endpointId is null || endpointId.Length > 200) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(endpointId, @"-(?<a>[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})$", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromMilliseconds(50));
+        return m.Success ? m.Groups["a"].Value.Replace(":", "").ToUpperInvariant() : null;
+    }
+
+    /// <summary>
+    /// The USB vendor id and the Bluetooth address of a gamepad's HID node on Bluetooth LE: the BTHLEDEVICE node of the HID service
+    /// (00001812) "..._DEV_VID&amp;020B05_PID&amp;1ABD_REV&amp;0100_C15AF9554702" or the HID child "HID\{00001812-...}&amp;DEV&amp;VID_0B05&amp;PID_1ABD&amp;REV_0100&amp;C15AF9554702&amp;IG_00"
+    /// (IG_ marks an XInput-compatible gamepad). Null for anything else (the battery service node, other devices, bad ids).
+    /// </summary>
+    public static (int Vendor, int Product, string Address)? HidPadOfInstance(string? instanceId)
+    {
+        if (instanceId is null || instanceId.Length > 300 || !instanceId.Contains("00001812-", StringComparison.OrdinalIgnoreCase)) return null;
+        var timeout = TimeSpan.FromMilliseconds(50);
+        var m = System.Text.RegularExpressions.Regex.Match(instanceId, @"^BTHLEDEVICE\\\{00001812-[0-9A-Fa-f-]+\}_DEV_VID&02(?<v>[0-9A-Fa-f]{4})_PID&(?<p>[0-9A-Fa-f]{4})_REV&[0-9A-Fa-f]{4}_(?<a>[0-9A-Fa-f]{12})(\\|$)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase, timeout);
+        if (!m.Success)
+            m = System.Text.RegularExpressions.Regex.Match(instanceId, @"^HID\\\{00001812-[0-9A-Fa-f-]+\}&DEV&VID_(?<v>[0-9A-Fa-f]{4})&PID_(?<p>[0-9A-Fa-f]{4})&REV_[0-9A-Fa-f]{4}&(?<a>[0-9A-Fa-f]{12})&IG_[0-9A-Fa-f]{2}(\\|$)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase, timeout);
+        return m.Success ? (Convert.ToInt32(m.Groups["v"].Value, 16), Convert.ToInt32(m.Groups["p"].Value, 16), m.Groups["a"].Value.ToUpperInvariant()) : null;
+    }
+
+    private static bool XboxName(string name) => name.TrimStart().StartsWith("Xbox", StringComparison.OrdinalIgnoreCase);
+
+    private static bool SonyName(string name) =>
+        name.Contains("Wireless Controller", StringComparison.OrdinalIgnoreCase) || name.Contains("DualSense", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("DualShock", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Windows knows the real battery of a Bluetooth controller (DEVPKEY_Bluetooth_Battery); XInput only a coarse level. A Bluetooth
+    /// controller's percent goes to an XInput pad only when the two clearly belong together: the pad (slot 0 to 3, no percent yet, not
+    /// wired, not Steam's virtual pad, vendor known) and the device (kind "controller") must be each other's only possible partner. A
+    /// Microsoft pad can only be an "Xbox ..." device; any other vendor's pad only a device that is neither named "Xbox ..." nor looks
+    /// like a PlayStation pad (those bring their own battery). Two candidates on either side: nothing is matched. A matched device
+    /// leaves the device list (the pad carries its percent, so it is shown and warned about once). The pad's level becomes
+    /// <see cref="PercentLevel"/> of the percent.
+    /// </summary>
+    public static (IReadOnlyList<PadBattery> Pads, IReadOnlyList<DeviceBattery> Devices) MatchBluetooth(IReadOnlyList<PadBattery> pads, IReadOnlyList<DeviceBattery> devices,
+        IReadOnlyDictionary<int, IReadOnlyList<string>>? hidAddresses = null)
+    {
+        var candidates = pads.Where(p => p.Index is >= 0 and < 4 && p.Percent is null && p.Level != "wired" && p.Vendor is not null and not SteamVendor).ToList();
+        var controllers = devices.Where(d => d.Kind == "controller").ToList();
+        if (candidates.Count == 0 || controllers.Count == 0) return (pads, devices);
+        // Exact: the pad's HID node of that vendor and product sits on exactly one Bluetooth address (hidAddresses), and that connected device is the
+        // one. A non-Microsoft pad is matched only that way (a name proves nothing about which pad it is); a Microsoft pad also by its
+        // "Xbox ..." name when no address is known.
+        bool Exact(PadBattery p, out IReadOnlyList<string> addresses)
+        {
+            addresses = [];
+            return hidAddresses is not null && p.Vendor is { } v && p.Product is { } pr && hidAddresses.TryGetValue(PadKey(v, pr), out addresses!) && addresses.Count > 0;
+        }
+        bool Fits(PadBattery p, DeviceBattery d)
+        {
+            if (Exact(p, out var addresses)) return addresses.Count == 1 && d.Address is not null && string.Equals(d.Address, addresses[0], StringComparison.OrdinalIgnoreCase);
+            return p.Vendor == MicrosoftVendor && XboxName(d.Name);
+        }
+        var matched = new Dictionary<PadBattery, DeviceBattery>();
+        foreach (var p in candidates)
+        {
+            var fits = controllers.Where(d => Fits(p, d)).ToList();
+            if (fits.Count != 1) continue;
+            if (candidates.Count(c => Fits(c, fits[0])) != 1) continue;
+            matched[p] = fits[0];
+        }
+        if (matched.Count == 0) return (pads, devices);
+        var newPads = pads.Select(p => matched.TryGetValue(p, out var d) ? p with { Level = PercentLevel(d.Percent), Percent = d.Percent, Source = BatterySources.Bluetooth } : p).ToList();
+        var used = matched.Values.Select(d => d.Id).ToHashSet();
+        return (newPads, devices.Where(d => !used.Contains(d.Id)).ToList());
+    }
+
+    /// <summary>
+    /// The pads as they are connected right now (<paramref name="live"/>, so an unplugged pad is gone at once) with the level and percent of
+    /// the battery snapshot for a pad that is in it (a Bluetooth percent that was matched to it).
+    /// </summary>
+    public static IReadOnlyList<PadBattery> LiveWithSnapshot(IReadOnlyList<PadBattery> live, IReadOnlyList<PadBattery> snapshot) =>
+        live.Select(p => snapshot.FirstOrDefault(x => x.Index == p.Index) is { } known ? p with { Level = known.Level, Percent = known.Percent, Source = known.Source } : p).ToList();
 
     /// <summary>The 4-step icon of a pad's level: 0 (empty) to 3 (full); null for wired and unknown (no icon).</summary>
     public static int? Steps(string level) => level switch
@@ -193,6 +330,40 @@ public static class BatteryRules
     /// </summary>
     public static string DeviceKey(string endpointId) =>
         Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(endpointId)))[..16];
+}
+
+/// <summary>
+/// One log line per pad when the source or the value of its battery changes (the next report then says where a number came from).
+/// Only the slot, the source name and the level or percent: no device names. Not thread-safe: one caller (the battery monitor's poll).
+/// </summary>
+public sealed class BatterySourceLog
+{
+    private readonly Dictionary<int, string> _last = [];
+
+    /// <summary>The line of a pad: "[battery] pad 0 source=wgi 87%", "source=xinput level=full", "source=none".</summary>
+    public static string Describe(PadBattery p)
+    {
+        if (p.Percent is { } percent) return $"[battery] pad {p.Index} source={p.Source ?? "unknown"} {percent}%";
+        var source = p.Source ?? (Steps(p.Level) is not null || p.Level == "wired" ? BatterySources.XInput : BatterySources.None);
+        return source == BatterySources.None ? $"[battery] pad {p.Index} source=none" : $"[battery] pad {p.Index} source={source} level={p.Level}";
+    }
+
+    /// <summary>The lines for pads whose line changed since the last call; a pad that went away is forgotten (it logs again when it returns).</summary>
+    public IReadOnlyList<string> Update(IReadOnlyList<PadBattery> pads)
+    {
+        var lines = new List<string>();
+        foreach (var p in pads)
+        {
+            var line = Describe(p);
+            if (_last.TryGetValue(p.Index, out var old) && old == line) continue;
+            _last[p.Index] = line;
+            lines.Add(line);
+        }
+        foreach (var gone in _last.Keys.Where(k => pads.All(p => p.Index != k)).ToList()) _last.Remove(gone);
+        return lines;
+    }
+
+    private static int? Steps(string level) => BatteryRules.Steps(level);
 }
 
 /// <summary>

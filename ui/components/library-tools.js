@@ -442,6 +442,18 @@ async function startOptionsMenu(item) {
 }
 
 /**
+ * "Reload artwork": looks for this entry's pictures again, whatever the cache says. It changes nothing but the picture cache
+ * (a picked image stays), so it needs no code, like renaming. The host sends the new library; the tile and the banner follow.
+ */
+async function reloadArtwork(item) {
+  toast(t('artworkReload.running'));
+  const result = await attempt(() => api.reloadArtwork(item.id), t('artworkReload.failed'));
+  if (result === undefined) return;
+  // i18n-used: artworkReload.found artworkReload.nothing artworkReload.failed artworkReload.busy
+  toast(t(result === 'found' ? 'artworkReload.found' : result === 'nothing' ? 'artworkReload.nothing' : result === 'busy' ? 'artworkReload.busy' : 'artworkReload.failed'));
+}
+
+/**
  * Edit menu on the detail page: name, artwork, texts and store entry in both modes; startup options (parameters, folder, own start target)
  * are technical, so expert mode only, for every source that has any. Then game/app, hiding, and what only own entries have.
  */
@@ -457,6 +469,7 @@ export async function editItemMenu(item) {
       }
     },
     { label: t('artworkPicker.action'), icon: '🖼', run: guarded(t('artworkPicker.title'), () => push(artworkPickerPage(item))) },
+    { label: t('artworkReload.action'), detail: t('artworkReload.detail'), icon: '↻', run: () => reloadArtwork(item) },
     { label: t('itemInfo.action'), detail: t('itemInfo.actionDetail'), icon: 'ℹ', run: () => infoMenu(item) },
     ...(item.source !== 'steam'
       ? [{ label: t('itemInfo.store.action'), detail: t('itemInfo.store.actionDetail'), icon: '🛒', run: () => storeMatchMenu(item) }]

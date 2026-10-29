@@ -54,10 +54,10 @@ const library = [
   steam(292030, 'The Witcher 3: Wild Hunt', null),
   steam(1817070, "Marvel's Spider-Man Remastered", null),
   { id: 'epic:fortnite', source: 'epic', type: 'game', name: 'Fortnite', lastPlayed: Date.now() - 3 * day, favorite: false, art: { cover: [], hero: [], logo: [] } },
-  { id: 'custom:youtube', source: 'custom', type: 'app', name: 'YouTube', lastPlayed: 0, favorite: false, art: { cover: [], hero: [], logo: [] } },
-  { id: 'custom:netflix', source: 'custom', type: 'app', name: 'Netflix', lastPlayed: 0, favorite: false, art: { cover: [], hero: [], logo: [] } },
+  { id: 'custom:youtube', source: 'custom', type: 'app', name: 'YouTube', lastPlayed: Date.now() - 5 * day, favorite: false, art: { cover: [], hero: [], logo: [] } },
+  { id: 'custom:netflix', source: 'custom', type: 'app', name: 'Netflix', lastPlayed: Date.now() - 20 * day, favorite: false, art: { cover: [], hero: [], logo: [] } },
   { id: 'custom:spotify', source: 'custom', type: 'app', name: 'Spotify', lastPlayed: 0, favorite: false, art: { cover: [], hero: [], logo: [], icon: ['data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2730%27 fill=%27%231db954%27/%3E%3Cpath d=%27M16 24q16-5 32 3M18 33q14-4 28 3M20 41q12-3 24 2%27 stroke=%27%23000%27 stroke-width=%274%27 fill=%27none%27 stroke-linecap=%27round%27/%3E%3C/svg%3E'] } },
-  { id: 'custom:kodi', source: 'custom', type: 'app', name: 'Kodi', lastPlayed: 0, favorite: false, art: { cover: [], hero: [], logo: [], icon: ['data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Cpath d=%27M32 4l28 28-28 28L4 32z%27 fill=%27%2317b2e7%27/%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2710%27 fill=%27%23fff%27/%3E%3C/svg%3E'] } }
+  { id: 'custom:kodi', source: 'custom', type: 'app', name: 'Kodi', lastPlayed: Date.now() - 200 * day, favorite: false, art: { cover: [], hero: [], logo: [], icon: ['data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Cpath d=%27M32 4l28 28-28 28L4 32z%27 fill=%27%2317b2e7%27/%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2710%27 fill=%27%23fff%27/%3E%3C/svg%3E'] } }
 ];
 library[0].favorite = true;
 // Favorites in the order they were marked. Preview: ?favs=demo marks a few more (games, apps and a website).
@@ -68,6 +68,12 @@ if (new URLSearchParams(location.search).get('favs') === 'demo') {
 }
 // Preview: ?demo shows made-up games with generated artwork (README screenshots, no store covers).
 if (demoMode) applyDemo(library);
+// Square pictures (SteamGridDB) for a few entries; the others have none and show their cover cropped on square tiles.
+const squareArt = (name, hue) => `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="100%" height="100%" fill="hsl(${hue} 60% 32%)"/><circle cx="256" cy="210" r="120" fill="hsl(${hue} 70% 55%)"/><text x="50%" y="440" fill="white" font-family="sans-serif" font-size="46" font-weight="700" text-anchor="middle">${name}</text></svg>`)}`;
+for (const [id, hue] of [['steam:1245620', 40], ['steam:1091500', 55], ['steam:1145360', 350], ['custom:youtube', 0]]) {
+  const item = library.find((i) => i.id === id);
+  item.art = { ...item.art, square: [squareArt(item.name.slice(0, 14), hue)] };
+}
 // Preview: ?many=400 adds that many generated entries (scroll performance checks).
 for (let i = 0, n = +(new URLSearchParams(location.search).get('many') || 0); i < n; i++) {
   library.push(lz({ id: `gen:${i}`, source: i % 2 ? 'epic' : 'gog', type: 'game', lastPlayed: Date.now() - (i + 5) * day, favorite: false, art: { cover: [], hero: [], logo: [] } }, { name: () => t('mock.generated', { n: i + 1 }) }));
@@ -78,6 +84,12 @@ const collections = [
   lz({ id: 'rpg', items: ['steam:1245620', 'steam:1086940', 'steam:292030', 'steam:374320'], onHome: false }, { name: () => t('mock.collAdventures') })
 ];
 
+// Preview: ?nofavs shows a fresh install (no favorites, nothing played) for the empty Favorites tab.
+if (new URLSearchParams(location.search).has('nofavs')) {
+  favoriteOrder = [];
+  for (const i of library) { i.lastPlayed = 0; i.favorite = false; }
+  for (const c of collections) c.onHome = false;
+}
 let isShell = false;
 let session = null;
 const audio = {
@@ -169,6 +181,15 @@ const downloadCenter = () => {
     { id: 'steam:1091500', kind: 'game', source: 'steam', name: 'Cyberpunk 2077', state: 'downloading', progress: dl, bytesDone: Math.round(dl * 18_400_000_000), bytesTotal: 18_400_000_000, isUpdate: true, detail: null, updatedAt: now },
     { id: 'update:windows', kind: 'windows', source: 'windows', name: t('mock.dlWindows'), state: 'installing', progress: 0.62, bytesDone: 0, bytesTotal: 0, isUpdate: true, detail: null, updatedAt: now },
     ...[...requestedDownloads.values()],
+    // ?appprogress=download|install|prepare: an app update with winget's own step (preview of "App 1 of 2 · Name · 45 %")
+    ...(batteryQuery.get('appprogress') ? [(() => {
+      const phase = batteryQuery.get('appprogress');
+      const install = phase === 'install';
+      const known = phase === 'download';
+      return { id: 'update:apps', kind: 'app', source: 'winget', name: t('mock.dlApps'), state: install ? 'installing' : 'downloading', progress: known ? 0.45 : null,
+        bytesDone: known ? 18_900_000 : 0, bytesTotal: known ? 42_000_000 : 0, isUpdate: true, detail: null, updatedAt: now,
+        step: { index: install ? 2 : 1, total: 2, name: install ? 'Discord' : 'Mozilla Firefox (x64 de)', phase } };
+    })()] : []),
     { id: 'steam:1086940', kind: 'game', source: 'steam', name: "Baldur's Gate 3", state: 'queued', progress: 0, bytesDone: 0, bytesTotal: 2_100_000_000, isUpdate: true, detail: null, updatedAt: now },
     { id: 'steam:2358720', kind: 'game', source: 'steam', name: 'Black Myth: Wukong', state: 'paused', progress: 0.42, bytesDone: 54_000_000_000, bytesTotal: 128_000_000_000, isUpdate: false, detail: null, updatedAt: now }
   ];
@@ -176,7 +197,7 @@ const downloadCenter = () => {
     ...finishedDownloads,
     { id: 'catalog:plugin:wand', kind: 'plugin', source: 'plugin', name: 'Wand', state: 'done', progress: 1, bytesDone: 0, bytesTotal: 0, isUpdate: true, detail: null, updatedAt: now - 3_600_000 },
     { id: 'update:apps', kind: 'app', source: 'winget', name: t('mock.dlApps'), state: 'failed', progress: null, bytesDone: 0, bytesTotal: 0, isUpdate: true, detail: t('mock.dlAppsFailed'), updatedAt: now - 7_200_000 }
-  ].filter((e) => !dismissedDownloads.has(e.id));
+  ].filter((e) => !dismissedDownloads.has(e.id) && !(e.id === 'update:apps' && batteryQuery.get('appprogress')));
   const active = running.filter((e) => ['waiting', 'downloading', 'installing', 'inClient'].includes(e.state));
   const known = active.filter((e) => e.progress != null);
   return {
@@ -252,6 +273,20 @@ const plugins = [
     pages: [lz({ id: 'main', icon: '💡' }, { title: () => 'Lumen', description: () => t('mock.plug.lumenPageDesc') })],
     settings: [], tools: []
   }, { description: () => t('mock.plug.lumenDesc'), functions: () => fnList('lumen'), restrictionsPossible }),
+  lz({
+    folder: 'CouchHud.Plugin.HomeAssistant', id: 'homeassistant', name: 'Home Assistant', version: '1.1.1', author: 'kewe87', homepage: null,
+    enabled: true, loaded: true, error: null, userInstalled: true, origin: 'firstParty', publisher: null, revoked: false, revokedReason: null,
+    capabilities: ['pages', 'tabs', 'network:lan'],
+    pages: [lz({ id: 'home', icon: '🏠' }, { title: () => 'Smart Home' })],
+    // SDK 4: entries that open the plugin's own pages (kind "page", no value).
+    settings: [
+      lz({ key: 'url', kind: 'text', choices: [], value: 'http://homeassistant.local:8123' }, { label: () => t('mock.ha.url'), description: () => t('mock.ha.urlDesc') }),
+      lz({ key: 'open.devices', kind: 'page', choices: [], value: null }, { label: () => t('mock.ha.devices'), description: () => t('mock.ha.devicesDesc') }),
+      lz({ key: 'open.order', kind: 'page', choices: [], value: null }, { label: () => t('mock.ha.order'), description: () => t('mock.ha.orderDesc') }),
+      lz({ key: 'open.guide', kind: 'page', choices: [], value: null }, { label: () => t('mock.ha.guide'), description: () => t('mock.ha.guideDesc') })
+    ],
+    tools: []
+  }, { description: () => t('mock.ha.desc'), functions: () => fnList('homeassistant'), restrictionsPossible }),
   lz({
     folder: 'Kodi', id: 'kodi', name: 'Kodi', version: '0.3.0', author: 'community', homepage: null, enabled: false, loaded: false, error: null, userInstalled: true,
     origin: 'thirdParty', publisher: 'a1b2-c3d4-e5f6-7890', revoked: false, revokedReason: null, capabilities: ['library', 'network:loopback'], pages: [], settings: [], tools: []
@@ -339,6 +374,8 @@ const saveTotalBytes = () => saveBackups.reduce((sum, b) => sum + b.sizeBytes, 0
 const notes = [
   lz({ id: 'n1', source: 'windows', app: demoMode ? 'Messenger' : 'WhatsApp', time: Date.now() - 12 * 60_000, read: false }, { title: () => t('mock.noteMomTitle'), body: () => t('mock.noteMomBody') }),
   lz({ id: 'n2', source: 'couchhud', app: 'CouchHUD', title: library[0].name, time: Date.now() - 3 * 3_600_000, read: true }, { body: () => t('mock.notePlayed') }),
+  lz({ id: 'n9', source: 'couchhud', app: 'Updates', target: 'downloads', time: Date.now() - 20 * 60_000, read: false }, { title: () => t('mock.noteUpdateTitle'), body: () => t('mock.noteUpdateBody') }),
+  lz({ id: 'n10', source: 'couchhud', app: 'Plugins', target: 'downloads', time: Date.now() - 8 * 60_000, read: false }, { title: () => t('mock.noteAutoTitle'), body: () => t('mock.noteAutoBody') }),
   lz({ id: 'n3', source: 'windows', app: demoMode ? 'Chat' : 'Discord', time: Date.now() - 5 * 3_600_000, read: true }, { title: () => t('mock.noteLenaTitle'), body: () => t('mock.noteLenaBody') })
 ];
 // Preview: a WhatsApp message arrives a few seconds after start (not in ?demo, it would cover the screenshots).
@@ -372,6 +409,13 @@ const browser = {
 
 const security = { policies: 'none', couchLock: 'code', hasPasscode: true, blockTaskManager: true, asShell: true, autoLogon: true, autoLogonUser: 'player', passwordlessOnly: false, accountPassword: true, user: 'player', service: { state: 'running', label: 'running', version: '0.4.1', expected: true, healthy: true, alarm: false, problem: false, repair: false, repairScript: true } };
 let passcode = null;
+// ?codeheld=couch|parent: the service still holds a code from before while the config says "no lock" (back in the app mode); drives the
+// lock dialogs of 0.6.2 ("couch": the code applies again, "parent": a new couch code needs the parents' code).
+const codeHeld = new URLSearchParams(location.search).get('codeheld');
+if (codeHeld) {
+  Object.assign(security, { couchLock: 'off', asShell: false, codesInService: true, hasPasscode: codeHeld === 'couch',
+    serviceCodes: { couch: codeHeld === 'couch', parent: codeHeld === 'parent', mode: 'code', legacy: false } });
+}
 let unlockedUntil = 0;
 // The page's state as the host reports it, with the lock state (the recent sites show only at the open couch).
 let recentShown = false;
@@ -433,7 +477,7 @@ let selfUpdate = {
 };
 const setSelfUpdate = (u) => emit('selfUpdate', (selfUpdate = { ...selfUpdate, ...u }));
 const setUpdates = (u) => emit('updates', (updates = { ...updates, ...u }));
-const settings = { padGlyphs: new URLSearchParams(location.search).get('glyphs') ?? 'auto', areas: new URLSearchParams(location.search).get('areas')?.split(',') ?? ['games', 'apps', 'browser', 'news'], language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, browserHistory: true, favoritesMode: new URLSearchParams(location.search).get('favmode') ?? 'combined', favoritesSites: new URLSearchParams(location.search).has('favsites'), guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, artworkCacheBytes: 42_000_000, tvInGuide: true, tvOnWithCouchHud: false, tvOffWithPc: false, bluetoothAutoOn: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: new URLSearchParams(location.search).has('pauseInMenu'), screenshotCombo: true, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
+const settings = { padGlyphs: new URLSearchParams(location.search).get('glyphs') ?? 'auto', areas: new URLSearchParams(location.search).get('areas')?.split(',') ?? ['games', 'apps', 'browser', 'news'], language: ['auto', 'de', 'en'].includes(previewLanguage()) ? previewLanguage() : 'auto', weatherPlace: lz({ name: 'Berlin', latitude: 52.52, longitude: 13.41 }, { region: () => t('mock.regionBerlin') }), sounds: true, audioMode: 'music', musicVolume: 35, maximizeBrowser: true, browserHistory: true, favoritesMode: new URLSearchParams(location.search).get('favmode') ?? 'combined', favoritesRecentDays: Number(new URLSearchParams(location.search).get('favdays') ?? 30), favoritesSites: new URLSearchParams(location.search).has('favsites'), guideTapInGame: true, integrationMode: 'full', closeExplorerInLight: false, selfUpdateCheck: true, onlineArtwork: true, offline: new URLSearchParams(location.search).has('offline'), netCatalog: true, netSystemUpdates: true, netSaves: true, netWeather: true, netNews: true, netAssistant: true, catalogUpdateCheck: true, pluginAutoUpdate: false, artworkCacheBytes: 42_000_000, tvInGuide: true, tvOnWithCouchHud: false, tvOffWithPc: false, bluetoothAutoOn: true, reduceMotion: new URLSearchParams(location.search).has("calm"), pointer: new URLSearchParams(location.search).get('pointer') ?? 'skin', mouseUnlocked: new URLSearchParams(location.search).has('mouse'), acceptedTerms: new URLSearchParams(location.search).has('terms') ? 0 : 99, setupWizardDone: ['terms', 'wizard'].some((k) => new URLSearchParams(location.search).has(k)) ? 0 : 99, screensaverMinutes: 5, screensaverStyle: 'art', displayOffMinutes: 0, pixelShift: true, pauseGameInMenu: new URLSearchParams(location.search).has('pauseInMenu'), screenshotCombo: true, gameBarButton: false, suppressCompetitors: true, rumble: true, autoSwitchHeadphones: true, trailerPreviews: true, returnHoldMs: 1000, runStartupApps: true, killExplorerOnReturn: false, steamGridDbKeySet: false,
   aiProvider: 'anthropic', aiModel: '', anthropicKeySet: true, openAiKeySet: false,
   aiModels: { anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'], openai: ['gpt-5', 'gpt-5-mini'] },
   mcpEnabled: true, mcpLan: true, mcpPort: 8765, mcpToken: '3f9c1e7a5b2d48e6a0c4f1b7d9e2a6c8b5f0e3d1a7c9b2e4',
@@ -729,6 +773,8 @@ window.couchhud = {
     else if (key === 'anthropicApiKey') settings.anthropicKeySet = !!value;
     else if (key === 'openAiApiKey') settings.openAiKeySet = !!value;
     else settings[key] = value;
+    // The host drops the automatic plugin update with the plugin update search (ConfigStore.NormalizeNet).
+    if ((key === 'catalogUpdateCheck' || key === 'netCatalog') && !value) settings.pluginAutoUpdate = false;
     if (key === 'language') { try { localStorage.setItem('couchhud-preview-language', value); } catch { /* storage unavailable */ } }
     // The host couples these two: only one of them may own the Xbox button.
     if (key === 'guideTapInGame' && value) settings.gameBarButton = false;
@@ -875,15 +921,23 @@ window.couchhud = {
       cover: merge('cover', [...(steamId ? variants(['library_600x900.jpg', 'header.jpg', 'capsule_616x353.jpg'], 'Steam') : []), ...(hasKey ? fake(600, 900, 9) : [])]),
       hero: merge('hero', [...(steamId ? variants(['library_hero.jpg', 'header.jpg'], 'Steam') : []), ...(hasKey ? fake(1920, 620, 5) : [])]),
       logo: merge('logo', [...(steamId ? variants(['logo.png'], 'Steam') : []), ...(hasKey ? fake(640, 360, 4) : [])]),
+      // Steam has no square picture; they come from SteamGridDB only.
+      square: merge('square', hasKey ? fake(512, 512, 8) : []),
       hasKey,
       note: null
     };
+  },
+  reloadArtwork: async (id) => {
+    log('reloadArtwork', id);
+    await sleep(600);
+    const item = library.find((i) => i.id === id);
+    return item?.art?.hero?.length ? 'nothing' : 'found';
   },
   setArtwork: async (id, slot, value) => {
     const item = library.find((i) => i.id === id);
     log('setArtwork', id, slot, value);
     item.autoArt ??= item.art;
-    item.art = { ...item.art, [slot]: value ? [value, ...item.art[slot].filter((u) => u !== value)] : item.autoArt?.[slot] ?? item.art[slot] };
+    item.art = { ...item.art, [slot]: value ? [value, ...(item.art[slot] ?? []).filter((u) => u !== value)] : item.autoArt?.[slot] ?? item.art[slot] ?? [] };
     return { ...item };
   },
   getCollections: async () => collections.map((c) => ({ ...c, items: [...c.items] })),
@@ -939,6 +993,8 @@ window.couchhud = {
     const mode = ['favorites', 'recent', 'combined'].includes(settings.favoritesMode) ? settings.favoritesMode : 'combined';
     const areas = settings.areas;
     const shown = (i) => !i.hidden && areas.includes(i.type === 'game' ? 'games' : 'apps');
+    const days = [7, 30, 90, 365, 0].includes(settings.favoritesRecentDays) ? settings.favoritesRecentDays : 30;
+    const since = days > 0 ? Date.now() - days * 86_400_000 : -Infinity;
     const byId = new Map(library.filter(shown).map((i) => [i.id, i]));
     const entries = [];
     if (mode !== 'recent') {
@@ -951,13 +1007,13 @@ window.couchhud = {
       }
     }
     if (mode !== 'favorites') {
-      library.filter((i) => byId.has(i.id) && i.lastPlayed > 0 && (mode === 'recent' || !favoriteOrder.includes(i.id)))
+      library.filter((i) => byId.has(i.id) && i.lastPlayed > 0 && i.lastPlayed >= since && (mode === 'recent' || !favoriteOrder.includes(i.id)))
         .sort((a, b) => b.lastPlayed - a.lastPlayed).slice(0, 24)
         .forEach((i) => entries.push({ kind: 'item', id: i.id, name: i.name, favorite: favoriteOrder.includes(i.id) }));
     }
     return { mode, sites: !!settings.favoritesSites && areas.includes('browser'), entries, blocked: [] };
   },
-  systemInfo: async () => ({ platform: 'browser', version: 'preview', dev: true, nativeInput: false, padKind: new URLSearchParams(location.search).get('pad') === 'ps' ? 'playstation' : 'xbox', padGlyphs: settings.padGlyphs, isShell, sounds: true, skin, skinRestore: new URLSearchParams(location.search).get('skinRestore') ? { skin, state: new URLSearchParams(location.search).get('skinRestore') } : null, language: settings.language, weather: true, trailerPreviews: true, assistant: !!settings.aiProvider, uiHdr: settings.uiHdr, hdrOn: new URLSearchParams(location.search).has('hdr'), soundVolume: settings.soundVolume, soundSet: settings.soundSet, audioMode: settings.audioMode, musicVolume: settings.musicVolume, integrationMode: settings.integrationMode, acceptedTerms: settings.acceptedTerms, setupWizardDone: settings.setupWizardDone, areas: [...settings.areas], screensaverMinutes: settings.screensaverMinutes, screensaverStyle: settings.screensaverStyle, displayOffMinutes: settings.displayOffMinutes, pixelShift: settings.pixelShift, reduceMotion: settings.reduceMotion, pointer: settings.pointer, mouseUnlocked: settings.mouseUnlocked }),
+  systemInfo: async () => ({ platform: 'browser', version: 'preview', dev: true, nativeInput: false, padKind: ['ps', 'playstation'].includes(new URLSearchParams(location.search).get('pad')) ? 'playstation' : 'xbox', padGlyphs: settings.padGlyphs, isShell, sounds: true, skin, skinRestore: new URLSearchParams(location.search).get('skinRestore') ? { skin, state: new URLSearchParams(location.search).get('skinRestore') } : null, language: settings.language, weather: true, trailerPreviews: true, assistant: !!settings.aiProvider, uiHdr: settings.uiHdr, hdrOn: new URLSearchParams(location.search).has('hdr'), soundVolume: settings.soundVolume, soundSet: settings.soundSet, audioMode: settings.audioMode, musicVolume: settings.musicVolume, integrationMode: settings.integrationMode, acceptedTerms: settings.acceptedTerms, setupWizardDone: settings.setupWizardDone, areas: [...settings.areas], screensaverMinutes: settings.screensaverMinutes, screensaverStyle: settings.screensaverStyle, displayOffMinutes: settings.displayOffMinutes, pixelShift: settings.pixelShift, reduceMotion: settings.reduceMotion, pointer: settings.pointer, mouseUnlocked: settings.mouseUnlocked }),
   // Skins the preview server serves from CATALOG_SKINS (scripts/preview-server.js), shaped like the host's list; none without it.
   listSkins: async () => {
     try {
@@ -968,6 +1024,8 @@ window.couchhud = {
         name: pick(manifest.name, folder),
         description: pick(manifest.description, ''),
         glyphs: manifest.glyphs ?? {},
+        glyphsXbox: manifest.glyphsXbox ?? {},
+        glyphsPlayStation: manifest.glyphsPlayStation ?? {},
         css: `/__catalog-skins/${folder}/skin.css`,
         sounds: {},
         soundSet: manifest.soundSet ?? null
@@ -985,6 +1043,10 @@ window.couchhud = {
   },
   enterPcMode: async () => log('enterPcMode'),
   power: async (action) => log('power', action),
+  restartCouchHud: async () => {
+    log('restartCouchHud');
+    emit('toast', t('mock.previewRestart'));
+  },
   quit: async () => log('quit'),
   onInput: noop,
   onNav: noop,
@@ -1084,7 +1146,7 @@ window.couchhud = {
     { url: fakeShot('Baldur\'s Gate 3', 30), name: 'bg3_0042', source: 'Windows', video: false, time: Date.now() - 6 * 86_400_000, size: 5_000_000 },
     { url: fakeShot('Hollow Knight', 250), name: 'hk_boss', source: 'Steam', video: false, time: Date.now() - 9 * 86_400_000, size: 1_100_000 }
   ],
-  getPlugins: async () => structuredClone(plugins),
+  getPlugins: async () => structuredClone(plugins).map((p) => ({ ...p, pausedOffline: !!settings.offline && (p.capabilities ?? []).includes('network:internet') })),
   getPluginGate: async (change, _origin, plugin, fn) => {
     if (change === 'use') {
       const level = fnList(plugin).find((f) => f.id === fn)?.level ?? 'admin';
@@ -1093,6 +1155,13 @@ window.couchhud = {
     return { refused: parentalUnlocked() ? null : t('mock.unlockFirst') };
   },
   endPluginVisit: async () => true,
+  // A settings entry that opens a page of the same plugin: the host answers with the page to open (only a registered page of that plugin).
+  openPluginSettingPage: async (id, key) => {
+    const entry = plugins.find((p) => p.id === id)?.settings.find((s) => s.key === key && s.kind === 'page');
+    const page = { 'open.devices': 'devices', 'open.order': 'order', 'open.guide': 'guide' }[key];
+    if (!entry || !page) throw new Error(t('plugins.notLoaded'));
+    return { id: page, title: entry.label, description: entry.description };
+  },
   setPluginFunctionLevel: async (plugin, fn, level) => {
     if (!parentalUnlocked()) throw new Error(t('mock.unlockFirst'));
     if (!fnDefs[plugin]?.some(([id]) => id === fn) || !['admin', 'restricted', 'off'].includes(level)) throw new Error(t('plugin.fn.unknown'));
@@ -1132,13 +1201,24 @@ window.couchhud = {
       area: 'apps', glyph: null, image: png(60 + i * 40, '', 48, 48), origin: owners[i] === 'retrobar' ? 'other' : 'firstParty' }))];
   },
   onPluginTabs: noop,
-  getPluginPage: async (id, page) => (id === 'homeassistant'
+  getPluginPage: async (id, page) => (id === 'homeassistant' && page === 'devices'
+    ? { title: t('mock.ha.devices'), description: t('mock.ha.devicesDesc'), origin: 'FirstParty', sections: [{ id: 'all', title: null, kind: 'list' }], rows: [
+      { id: 'light.sofa', label: 'Sofa', icon: '💡', detail: t('mock.ha.light'), section: 'all', kind: 'toggle', on: true },
+      { id: 'light.kitchen', label: t('mock.ha.kitchen'), icon: '💡', detail: t('mock.ha.light'), section: 'all', kind: 'toggle', on: true },
+      { id: 'cover.garage', label: 'Garage', icon: '🪟', detail: t('mock.ha.cover'), section: 'all', kind: 'toggle', on: false },
+      { id: 'climate.living', label: t('mock.ha.living'), icon: '🌡', detail: t('mock.ha.climate'), section: 'all', kind: 'toggle', on: false }] }
+    : id === 'homeassistant' && (page === 'order' || page === 'guide')
+    ? { title: t(page === 'order' ? 'mock.ha.order' : 'mock.ha.guide'), description: t(page === 'order' ? 'mock.ha.orderDesc' : 'mock.ha.guideDesc'), origin: 'FirstParty', sections: [{ id: 'all', title: null, kind: 'list' }], rows: [
+      { id: 'a', label: 'Sofa', icon: '💡', section: 'all', kind: 'action' }, { id: 'b', label: 'Garage', icon: '🪟', section: 'all', kind: 'action' }] }
+    : id === 'homeassistant'
     ? { title: 'Smart Home', description: null, origin: 'FirstParty', sections: [{ id: 'devices', title: null, kind: 'tiles' }, { id: 'manage', title: null, kind: 'list' }], rows: [
       { id: 'light.sofa', label: 'Sofa', icon: '💡', detail: 'On', section: 'devices', kind: 'toggle', on: true, allowedWhileLocked: true },
       { id: 'cover.garage', label: 'Garage', icon: '🪟', detail: 'Closed', section: 'devices', kind: 'toggle', allowedWhileLocked: true },
       { id: 'connection', label: 'Connection', icon: '🔗', section: 'manage', kind: 'link', page: 'connection' }] }
     : id === 'lumen'
-    ? { title: page === 'displays' ? t('mock.plug.displays') : 'Lumen', description: t('mock.plug.lumenPageDesc'), rows: lumenRows(page), sections: page === 'displays' ? [] : lumenSections(), origin: 'FirstParty' }
+    ? { title: page === 'displays' ? t('mock.plug.displays') : 'Lumen', description: t('mock.plug.lumenPageDesc'), rows: lumenRows(page), sections: page === 'displays' ? [] : lumenSections(), origin: 'FirstParty',
+      // Footer actions (page actions): X opens a sub page, Y resets the scene. The host sends only cleaned, allowed ones (X and Y, at most three).
+      actions: page === 'displays' ? [] : [{ button: 'X', label: t('mock.plug.actionDisplays'), kind: 'link' }, { button: 'Y', label: t('mock.plug.actionReset'), kind: 'action' }] }
     : { title: 'Wand', description: t('mock.wandPageDesc'), rows: wandRows(), sections: [], origin: 'FirstParty' }),
   activatePluginRow: async (id, page, row) => {
     if (id !== 'lumen') return { message: row === 'open' ? t('mock.wandOpening') : null, navigate: null, rows: wandRows() };
@@ -1147,6 +1227,11 @@ window.couchhud = {
     if (row === 'power') lumen.on = !lumen.on;
     if (row === 'night') lumen.night = !lumen.night;
     return { message: row.startsWith('scene:') ? t('mock.plug.sceneSet', { name: lumenScenes().find(([sid]) => `scene:${sid}` === row)?.[1] }) : null, navigate: null, rows: lumenRows(page) };
+  },
+  activatePluginAction: async (id, page, button) => {
+    if (button === 'X') return { message: null, navigate: { id: 'displays', title: t('mock.plug.displays'), description: t('mock.plug.displaysDetail') }, rows: lumenRows(page) };
+    lumen.scene = 'cinema';
+    return { message: t('mock.plug.sceneReset'), navigate: null, rows: lumenRows(page) };
   },
   changePluginRow: async (id, page, row, value) => {
     if (row === 'brightness') lumen.brightness = Number(value);
@@ -1326,13 +1411,17 @@ window.couchhud = {
   checkUpdates: async () => {
     setUpdates({ busy: t('mock.updChecking') });
     await new Promise((r) => setTimeout(r, 1200));
+    // Offline (?offline): the host answers with the plain refusal instead of a result.
+    if (settings.offline) { setUpdates({ busy: null, windowsError: t('mock.offlineRefused', { host: 'Windows Update' }) }); return structuredClone(updates); }
     setUpdates({ busy: null, checkedAt: Date.now() });
     return structuredClone(updates);
   },
   getSelfUpdate: async () => structuredClone(selfUpdate),
+  refreshUpdates: async () => null,
   checkSelfUpdate: async () => {
     setSelfUpdate({ busy: t('mock.selfChecking') });
     await new Promise((r) => setTimeout(r, 900));
+    if (settings.offline) { setSelfUpdate({ busy: null, error: t('mock.offlineRefused', { host: 'github.com' }) }); return structuredClone(selfUpdate); }
     setSelfUpdate({ busy: null, checkedAt: Date.now() });
     return structuredClone(selfUpdate);
   },
@@ -1472,6 +1561,12 @@ window.couchhud = {
   getSecurity: async () => ({ ...security, unlocked: security.couchLock === 'off' || !security.asShell || Date.now() < unlockedUntil }),
   getServiceStatus: async () => security.service,
   repairService: async () => ((security.service = { ...security.service, state: 'running', label: 'running', healthy: true, alarm: false, problem: false, repair: false }), security.service),
+  // Like the host: only a damaged code store is reset; afterwards the service holds no codes.
+  resetCodeStore: async () => {
+    if (!security.serviceCodes?.damaged) throw new Error(t('mock.codesNotDamaged'));
+    security.serviceCodes = { ...security.serviceCodes, couch: false, parent: false, damaged: false };
+    return { ...security };
+  },
   unlock: async (code, _asNewCode = false) => {
     if (security.couchLock === 'windows') {
       setTimeout(() => { unlockedUntil = Date.now() + 120_000; listeners.unlocked.forEach((cb) => cb()); }, 1500);
@@ -1491,8 +1586,10 @@ window.couchhud = {
   // Like the host with the service: the Windows lock or no lock drops the couch code.
   // The code lock without a code that survives the switch is refused, like the host (the service drops a code set at the open couch).
   setCouchLock: async (mode, code = null) => {
-    if (mode === 'code' && !code && security.couchLock !== 'code') throw new Error(t('mock.setCodeFirst'));
+    const keeps = security.serviceCodes?.couch === true && ['code', 'windows'].includes(security.serviceCodes.mode);
+    if (mode === 'code' && !code && security.couchLock !== 'code' && !keeps) throw new Error(t('mock.setCodeFirst'));
     security.couchLock = mode;
+    if (security.serviceCodes) security.serviceCodes = { ...security.serviceCodes, couch: mode === 'code', mode };
     if (mode !== 'code') (passcode = null), (security.hasPasscode = false);
     if (code) (passcode = code), (security.hasPasscode = true);
     return window.couchhud.getSecurity();

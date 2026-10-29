@@ -50,8 +50,10 @@ public static class PluginCapabilities
     public const string Registry = "registry";
     /// <summary>Sockets or HTTP to this PC only.</summary>
     public const string NetworkLoopback = "network:loopback";
-    /// <summary>Sockets or HTTP to the internet or the home network.</summary>
+    /// <summary>Sockets or HTTP to the internet, also together with the home network. A plugin that needs both may declare both and is then paused while Offline mode is on.</summary>
     public const string NetworkInternet = "network:internet";
+    /// <summary>Sockets or HTTP to the home network only (a TV, a hub). Offline mode (Settings › Privacy) keeps such a plugin running; a plugin with <see cref="NetworkInternet"/> is paused, also when it declares both. This is the author's declaration; the host cannot check where a plugin's own sockets go.</summary>
+    public const string NetworkLan = "network:lan";
     /// <summary>Loading or generating code at run time (Assembly.Load*, Reflection.Emit). Never for third-party plugins.</summary>
     public const string DynamicCode = "dynamicCode";
 
@@ -59,7 +61,7 @@ public static class PluginCapabilities
     public static readonly IReadOnlyList<string> All =
     [
         Library, Pages, QuickActions, Assistant, Notify, Browser, Downloads, NetworkState, Process, Tabs, SetupRun, LockRestrict, StartupArgs, BrowserSignIn,
-        Native, Registry, NetworkLoopback, NetworkInternet, DynamicCode
+        Native, Registry, NetworkLoopback, NetworkLan, NetworkInternet, DynamicCode
     ];
 }
 

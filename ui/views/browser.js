@@ -18,7 +18,7 @@ import { quick } from '../components/quick-menu.js';
 import { sound } from '../sound.js';
 import { ensureUnlocked } from '../components/passcode.js';
 import { holdScreensaver, screensaverActivity } from '../core/screensaver.js';
-import { cleanRecent, closeCountdown, dialogKind, fileSize, forgetRecent, forgetSite, host, initial, reconcileFocus, recentNote, rememberable, rememberSite, shortHost, siteHost, visibleRecent } from '../core/browser-logic.js';
+import { cleanRecent, closeCountdown, dialogKind, fileSize, forgetRecent, forgetSite, host, initial, reconcileFocus, recentNote, rememberable, rememberSite, recentWithin, shortHost, siteHost, visibleRecent } from '../core/browser-logic.js';
 import { ensureParentGrant } from '../components/parental.js';
 import { favorites, toggleFavoriteSite } from '../core/favorites.js';
 
@@ -53,7 +53,7 @@ let recent = loadRecent();
  * The recent sites the start page may show right now (none while hidden, locked or unknown), for the Favorites tab. Computed from the
  * current state on every call, no copy: a lock, a profile switch or switching the history off shows no address, not even for one render.
  */
-export const recentSitesNow = (limit = 4) => visibleRecent(recent, browserState, limit);
+export const recentSitesNow = (limit = 4, days = 0) => visibleRecent(recentWithin(recent, days), browserState, limit);
 
 /** Asks the host for the browser's state when none arrived yet (the recent sites need it to know whether they may show). */
 export async function ensureBrowserState() {
@@ -78,7 +78,7 @@ function loadRecent() {
 }
 
 function remember(url, title) {
-  storeRecent(rememberSite(recent, url, title));
+  storeRecent(rememberSite(recent, url, title, Date.now()));
 }
 
 function storeRecent(next) {

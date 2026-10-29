@@ -169,7 +169,7 @@ public static class ProfilePolicy
     public static readonly IReadOnlySet<string> OpenWhileHeld = new HashSet<string>(OpenWhileLocked)
     {
         "parentalAuth", "confirmWindowsUnlock", "getParental", "getSecurity", "getProfile", "systemInfo", "listSkins",
-        "getSession", "getPads", "getBattery", "getBluetooth", "rumble", "getAudio", "setVolume", "setMute", "setAudioOutput", "power", "quit",
+        "getSession", "getPads", "getBattery", "getBluetooth", "rumble", "getAudio", "setVolume", "setMute", "setAudioOutput", "power", "quit", "restartCouchHud",
         "displayOn", "displayOff",
         // The code entry and the pairing code tell the host they are on screen, so Guide + Y refuses the screenshot there too.
         "codeEntryState", "pairingState"

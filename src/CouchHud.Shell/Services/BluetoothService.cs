@@ -146,13 +146,46 @@ public sealed class BluetoothService(Func<string, Task<bool>> confirm) : IBlueto
             var kind = BluetoothDeviceKind.IsController(categories, Number(props, "System.Devices.Aep.Bluetooth.Cod.Major"), Number(props, "System.Devices.Aep.Bluetooth.Cod.Minor"),
                 Number(props, "System.Devices.Aep.Bluetooth.Le.Appearance"), d.Name) ? "controller" : BluetoothDeviceKind.Kind(d.Name);
             // The endpoint id holds Bluetooth addresses; the UI gets an opaque key instead.
-            result.Add(new DeviceBattery(BatteryRules.DeviceKey(d.Id), d.Name ?? "", kind, percent));
+            result.Add(new DeviceBattery(BatteryRules.DeviceKey(d.Id), d.Name ?? "", kind, percent) { Address = BatteryRules.AddressOfEndpoint(d.Id) });
         }
         return result
             .Where(b => b.Name.Length > 0)
             .OrderByDescending(b => b.Kind == "controller")
             .ThenBy(b => b.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>
+    /// The Bluetooth addresses behind the gamepad HID nodes of Bluetooth LE devices, per USB vendor id (the HID service 00001812 node
+    /// carries the vendor and the device's address in its instance id). With the connected devices of <see cref="BatteriesAsync"/> this
+    /// ties an XInput pad to exactly one Bluetooth device. Read-only; a failed query gives an empty result (no match, no percent).
+    /// </summary>
+    private static bool _hidWarned;
+
+    public static async Task<IReadOnlyDictionary<int, IReadOnlyList<string>>> HidPadAddressesAsync()
+    {
+        var map = new Dictionary<int, List<string>>();
+        try
+        {
+            var nodes = await DeviceInformation.FindAllAsync(BatteryRules.HidNodeQuery, [], DeviceInformationKind.Device);
+            foreach (var n in nodes)
+            {
+                if (BatteryRules.HidPadOfInstance(n.Id) is not { } hid) continue;
+                var key = BatteryRules.PadKey(hid.Vendor, hid.Product);
+                if (!map.TryGetValue(key, out var list)) map[key] = list = [];
+                if (!list.Contains(hid.Address)) list.Add(hid.Address);
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or System.Text.RegularExpressions.RegexMatchTimeoutException)
+        {
+            // Said once, not on every poll.
+            if (!_hidWarned)
+            {
+                _hidWarned = true;
+                Console.Error.WriteLine($"[battery] hid nodes: {ex.GetType().Name}");
+            }
+        }
+        return map.ToDictionary(e => e.Key, e => (IReadOnlyList<string>)e.Value);
     }
 
     /// <summary>

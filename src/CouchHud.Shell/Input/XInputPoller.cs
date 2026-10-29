@@ -38,6 +38,8 @@ public sealed class XInputPoller : IDisposable
     {
         public bool Connected;
         public volatile bool SteamVirtual;
+        public int Vendor = -1;
+        public int Product = -1;
         public DateTime LastCheck = DateTime.MinValue;
     }
 
@@ -87,7 +89,7 @@ public sealed class XInputPoller : IDisposable
     /// An XInput pad without a known battery may get one, with a percent, from Windows.Gaming.Input
     /// (<see cref="BatteryRules.FillFromGamepads"/>: only when it is unambiguous which pad the report belongs to).
     /// </summary>
-    public IReadOnlyList<(int Index, string Battery, int? Percent)> Pads()
+    public IReadOnlyList<(int Index, string Battery, int? Percent, int? Vendor, string? Source, int? Product)> Pads()
     {
         var result = new List<PadBattery>();
         var steamVirtual = new List<int>();
@@ -108,19 +110,20 @@ public sealed class XInputPoller : IDisposable
             catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
             {
             }
-            result.Add(new PadBattery(i, battery));
+            result.Add(new PadBattery(i, battery, null, _pads[i].Vendor is >= 0 and var vendor ? vendor : null, BatteryRules.Steps(battery) is not null || battery == "wired" ? BatterySources.XInput : null, _pads[i].Product is >= 0 and var product ? product : null));
             if (_pads[i].SteamVirtual) steamVirtual.Add(i);
         }
         var playStation = _playStation.Snapshot();
         for (var i = 0; i < playStation.Length; i++)
         {
-            if (playStation[i].Battery is { } level) result.Add(new PadBattery(XInputSlots + i, level));
+            if (playStation[i].Battery is { } level) result.Add(new PadBattery(XInputSlots + i, level, null, null, BatterySources.Hid));
         }
         // WGI is only asked when an XInput pad needs it.
-        var filled = result.Any(p => p.Index < XInputSlots && p.Level == "unknown")
+        var filled = result.Any(p => p.Index < XInputSlots && p.Level != "wired")
             ? BatteryRules.FillFromGamepads(result, steamVirtual, _gamepads.Reports())
             : result;
-        return filled.Select(p => (p.Index, p.Level, p.Percent)).ToList();
+        // What XInput still says only coarsely (a third-party pad's "low") is not believed without a percent.
+        return BatteryRules.DistrustCoarse(filled).Select(p => (p.Index, p.Level, p.Percent, p.Vendor, p.Source, p.Product)).ToList();
     }
 
     /// <summary>
@@ -232,7 +235,10 @@ public sealed class XInputPoller : IDisposable
             if (!pad.Connected)
             {
                 // Steam's virtual pad is known before the slot counts as connected (Pads() reads both from any thread).
-                var steamVirtual = IsSteamVirtual(i);
+                var vendor = VendorOf(i);
+                var steamVirtual = vendor == 0x28DE;
+                pad.Vendor = vendor;
+                pad.Product = ProductOf(i);
                 pad.SteamVirtual = steamVirtual;
                 lock (_mirrorLock) _mirrors.MarkSteamVirtual(i, steamVirtual);
                 pad.Connected = true;
@@ -305,15 +311,29 @@ public sealed class XInputPoller : IDisposable
     }
     private readonly List<(int, bool, bool)> pendingConnection = [];
 
-    private static bool IsSteamVirtual(int slot)
+    /// <summary>The USB vendor id XInput reports for a slot, or -1 when it is not known.</summary>
+    private static int VendorOf(int slot)
     {
         try
         {
-            return NativeMethods.XInputGetCapabilitiesEx(1, (uint)slot, 0, out var caps) == NativeMethods.ErrorSuccess && caps.VendorId == 0x28DE;
+            return NativeMethods.XInputGetCapabilitiesEx(1, (uint)slot, 0, out var caps) == NativeMethods.ErrorSuccess ? caps.VendorId : -1;
         }
         catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
         {
-            return false;
+            return -1;
+        }
+    }
+
+    /// <summary>The USB product id XInput reports for a slot, or -1 when it is not known.</summary>
+    private static int ProductOf(int slot)
+    {
+        try
+        {
+            return NativeMethods.XInputGetCapabilitiesEx(1, (uint)slot, 0, out var caps) == NativeMethods.ErrorSuccess ? caps.ProductId : -1;
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        {
+            return -1;
         }
     }
 

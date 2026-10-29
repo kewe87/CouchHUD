@@ -49,14 +49,9 @@ export default {
 
   // home.js
   'home.name': 'Favorites',
-  'home.allGames': 'All games',
-  'home.allApps': 'All apps',
-  'home.openBrowser': 'Open the browser',
   'home.badge.paused': '❚❚ Paused',
   'home.badge.running': '▶ Playing',
   'home.meta.collection': 'Collection · {entries}',
-  'home.library': 'Library',
-  'home.meta.installed': { one: '1 game installed', other: '{count} games installed' },
   'home.meta.pausedSince': 'Paused for {duration} · A: resume',
   'home.meta.runningSince': 'Running for {duration} · A: resume',
   'home.resumeFailed': 'Could not bring the game to the front',
@@ -71,6 +66,12 @@ export default {
   'home.hint.favorite': 'Favorite',
   'home.hint.power': 'Power',
   'home.continue.title': 'Continue playing',
+  'home.recent.title': 'Recently used',
+  'home.empty.hint': 'No favorites yet – mark entries in the {tabs} tab with {y}',
+  'home.empty.hintMany': 'No favorites yet – mark entries in the {tabs} tabs with {y}',
+  'home.empty.hintPlain': 'No favorites yet – mark entries with {y}',
+  'home.empty.title': 'Nothing here yet',
+  'home.empty.recent': 'Nothing was used within the chosen time span',
   'home.continue.lastSession': 'last session {time}',
   'home.hint.openCollection': 'Open collection',
   'home.hint.menu': 'Menu',
@@ -100,6 +101,7 @@ export default {
   'notifications.tip': 'Tip: under Settings › Notifications you can show WhatsApp, Discord and more from Windows here.',
   'notifications.empty': 'No notifications.',
   'notifications.hint.clear': 'Clear all',
+  'notifications.hint.open': 'Open',
   'notifications.hint.back': 'Back',
 
   // phone.js

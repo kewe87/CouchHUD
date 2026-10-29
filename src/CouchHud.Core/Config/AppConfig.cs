@@ -50,6 +50,7 @@ public sealed class ItemOverride
     public string? Cover { get; set; }
     public string? Hero { get; set; }
     public string? Logo { get; set; }
+    public string? Square { get; set; }
     /// <summary>Startup parameters instead of the scanned ones (an exe start, or the own start target). Null: automatic.</summary>
     public List<string>? LaunchArgs { get; set; }
     /// <summary>Working folder instead of the scanned one. Null: automatic.</summary>
@@ -89,7 +90,7 @@ public sealed class ItemOverride
     public bool HasStore => StoreMatch is not null || StoreAgeFloor is not null;
 
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsEmpty => Name is null && Type is null && !Hidden && Cover is null && Hero is null && Logo is null && !HasLaunch && !HasInfo && !HasStore;
+    public bool IsEmpty => Name is null && Type is null && !Hidden && Cover is null && Hero is null && Logo is null && Square is null && !HasLaunch && !HasInfo && !HasStore;
 }
 
 /// <summary>A user-made list of games and apps ("Couch Koop", "Kinder").</summary>
@@ -120,6 +121,12 @@ public sealed class AppConfig
     /// entry back, the next CouchHud start does (see ShellManager.RestartIntoPcMode).
     /// </summary>
     public bool PendingShellRestore { get; set; }
+
+    /// <summary>
+    /// The App/Shell mode switch in progress (what it changed, to undo it): empty when none. Written before the first step and cleared when
+    /// the switch ended or was rolled back, so a crash in the middle is found at the next start. See <see cref="ModeSwitchJournal"/>.
+    /// </summary>
+    public string ModeSwitchJournal { get; set; } = "";
 
     /// <summary>Why the recovery removed the shell entry; the next start tells the user once, then clears it.</summary>
     public string ShellRemovedReason { get; set; } = "";
@@ -249,6 +256,12 @@ public sealed class AppConfig
 
     /// <summary>The one-time upgrade from the blind Game Bar change to the snapshot has run.</summary>
     public bool GameBarMigrated { get; set; }
+
+    /// <summary>
+    /// The user chose "hold" (the Game Bar stays off, the tap does nothing): CouchHud keeps the button off while it runs, through
+    /// the snapshot, so the Windows original is recorded and comes back on quit.
+    /// </summary>
+    public bool GameBarKeptOff { get; set; }
 
     /// <summary>The "Xbox button is CouchHUD's now" notice was shown once.</summary>
     public bool GameBarHintShown { get; set; }
@@ -614,6 +627,33 @@ public sealed class AppConfig
     /// <summary>Look on GitHub for a newer CouchHUD in the background (never while a game runs). Installing always needs a confirmation.</summary>
     public bool SelfUpdateCheck { get; set; } = true;
 
+    // Privacy (Settings > Privacy, NetPolicy): which outbound connections CouchHUD may make. Everything on and Offline off unless the user
+    // changes it, so an older config.json without these keys changes nothing. The switches for CouchHUD updates (SelfUpdateCheck), artwork and
+    // game info (OnlineArtwork) and the plugin update search (CatalogUpdateCheck) are above and keep their values.
+    /// <summary>Offline mode: CouchHUD makes no connection to the internet at all. The local network (TV, Home Assistant, phone pairing) stays allowed.</summary>
+    public bool Offline { get; set; }
+
+    /// <summary>Plugins and skins: the catalog index, the update search, package and media downloads.</summary>
+    public bool NetCatalog { get; set; } = true;
+
+    /// <summary>Windows and app updates: CouchHUD's own search (automatic and manual).</summary>
+    public bool NetSystemUpdates { get; set; } = true;
+
+    /// <summary>Save-game detection: the download of the save location list.</summary>
+    public bool NetSaves { get; set; } = true;
+
+    /// <summary>Weather in the header.</summary>
+    public bool NetWeather { get; set; } = true;
+
+    /// <summary>News feeds.</summary>
+    public bool NetNews { get; set; } = true;
+
+    /// <summary>The AI assistant at a cloud provider.</summary>
+    public bool NetAssistant { get; set; } = true;
+
+    /// <summary>Install plugin updates by themselves when their rights do not change. Only the setting: the automatic update itself is not built yet.</summary>
+    public bool PluginAutoUpdate { get; set; }
+
     // LEGACY (CaseHUD is a plugin now): CaseHudGamingLease is only read, once, for the plugin's first settings (PluginSettingSeeds). Nothing writes it any more.
     /// <summary>LEGACY, read only for the plugin's first settings. Tell CaseHUD while a game runs (its displays can switch to the gaming scene).</summary>
     public bool CaseHudGamingLease { get; set; } = true;
@@ -654,6 +694,12 @@ public sealed class AppConfig
     /// Existing installs have no value and land on the combined view, which is what Home showed before.
     /// </summary>
     public string FavoritesMode { get; set; } = Library.FavoritesShelf.ModeCombined;
+
+    /// <summary>
+    /// How far back "recently used" reaches on the Favorites tab: 7, 30, 90, 365 days or 0 (unlimited). Household-wide like the mode;
+    /// a missing value is 30 days, an unknown one is repaired on load.
+    /// </summary>
+    public int FavoritesRecentDays { get; set; } = Library.FavoritesShelf.DefaultRecentDays;
 
     /// <summary>Websites (bookmarks marked as favorite) show in the Favorites tab. Off by default: a website is added on purpose.</summary>
     public bool FavoritesSites { get; set; }
@@ -1421,8 +1467,15 @@ public sealed class ConfigStore
         MigrateSkinIds(config);
         MigrateAgeRatingSystem(config, json);
         MigrateFavorites(config);
+        NormalizeNet(config);
         if (!HasProperty(json, nameof(AppConfig.PluginTrustAdopted))) config.PluginTrustAdopted = false;
         return config;
+    }
+
+    /// <summary>The automatic plugin update only means something while plugins are searched for updates at all.</summary>
+    public static void NormalizeNet(AppConfig config)
+    {
+        if (!config.CatalogUpdateCheck || !config.NetCatalog) config.PluginAutoUpdate = false;
     }
 
     /// <summary>The skin of the household and the one each profile has set for itself (null where it follows the household).</summary>
@@ -1435,6 +1488,7 @@ public sealed class ConfigStore
     internal static void MigrateFavorites(AppConfig config)
     {
         config.FavoritesMode = Library.FavoritesShelf.NormalizeMode(config.FavoritesMode);
+        config.FavoritesRecentDays = Library.FavoritesShelf.NormalizeRecentDays(config.FavoritesRecentDays);
         if (config.Favorites is not null) config.Favorites = Library.FavoritesShelf.Clean(config.Favorites);
         foreach (var profile in config.Profiles ?? [])
         {

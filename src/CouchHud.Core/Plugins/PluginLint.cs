@@ -66,6 +66,9 @@ public static class PluginLint
         ("System.Runtime.CompilerServices", "UnsafeAccessorTypeAttribute", Reflection),
         ("System.Runtime.CompilerServices", "Unsafe", Reflection),
         ("System.Reflection", "DispatchProxy", Reflection),
+        // Page actions need SDK 4: code that uses them must say so in plugin.json (SdkActions).
+        ("CouchHud.Sdk", "PluginPageAction", SdkActions),
+        ("CouchHud.Sdk", "PluginPageButton", SdkActions),
         // The user's DPAPI: every plugin runs as the same Windows user, so a plugin that calls it can open anything CouchHUD or another
         // plugin protected for that user. Only CouchHUD's own plugins (the host does the encrypting for the others via SetSecret).
         ("System.Security.Cryptography", "ProtectedData", Dpapi),
@@ -97,7 +100,15 @@ public static class PluginLint
         ("System", "Delegate", ["CreateDelegate"], Reflection),
         ("System", "Type", ["GetField", "GetFields", "GetProperty", "GetProperties", "GetMethod", "GetMethods", "GetMember", "GetMembers", "GetConstructor", "GetConstructors", "GetNestedType", "GetNestedTypes", "GetDefaultMembers", "FindMembers", "get_TypeInitializer"], Reflection),
         ("Microsoft.VisualBasic", "Interaction", ["CallByName", "CreateObject", "GetObject"], Reflection),
+        ("CouchHud.Sdk", "PluginPage", ["set_Actions"], SdkActions),
+        ("CouchHud.Sdk", "PluginSetting", ["set_Page"], SdkActions),
     ];
+
+    /// <summary>
+    /// Stands for "uses page actions (SDK 4)". A finding counts when the SDK the package declares is below <see cref="PluginPageAction.MinSdk"/>:
+    /// the host ignores the actions of such a plugin, so it is told at install time instead of finding nothing in the footer.
+    /// </summary>
+    public const string SdkActions = "SDK 4 (page actions)";
 
     /// <summary>Stands for "any network capability" (loopback or internet).</summary>
     private const string Network = "network";
@@ -118,15 +129,15 @@ public static class PluginLint
     /// third-party package may not contain, unreadable code, or code that needs a capability the package did not declare.
     /// </summary>
     /// <param name="legacy">A package without a statement from before SDK 3 (catalog without statement): only the file types are checked.</param>
-    public static void CheckZip(string zipPath, PluginOrigin origin, IReadOnlyCollection<string> capabilities, bool legacy = false)
+    public static void CheckZip(string zipPath, PluginOrigin origin, IReadOnlyCollection<string> capabilities, bool legacy = false, int sdk = int.MaxValue)
     {
         // Nobody may write to the file while it is read.
         using var file = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        CheckZip(file, origin, capabilities, legacy);
+        CheckZip(file, origin, capabilities, legacy, sdk);
     }
 
     /// <summary>The same from an open stream, so the caller can check and unpack one and the same handle.</summary>
-    public static void CheckZip(Stream zipStream, PluginOrigin origin, IReadOnlyCollection<string> capabilities, bool legacy = false)
+    public static void CheckZip(Stream zipStream, PluginOrigin origin, IReadOnlyCollection<string> capabilities, bool legacy = false, int sdk = int.MaxValue)
     {
         using var zip = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: true);
         var findings = new List<LintFinding>();
@@ -156,11 +167,11 @@ public static class PluginLint
             ScanInto(buffer.ToArray(), name, findings, problems, refs, defs);
         }
         CheckReferences(refs, defs, origin, problems);
-        Throw(Evaluate(findings, origin, capabilities), problems);
+        Throw(Evaluate(findings, origin, capabilities, sdk), problems);
     }
 
     /// <summary>The same for an unpacked folder (a package installed by hand and approved in expert mode).</summary>
-    public static void CheckFolder(string dir, PluginOrigin origin, IReadOnlyCollection<string> capabilities)
+    public static void CheckFolder(string dir, PluginOrigin origin, IReadOnlyCollection<string> capabilities, int sdk = int.MaxValue)
     {
         var findings = new List<LintFinding>();
         var problems = new List<string>();
@@ -184,7 +195,7 @@ public static class PluginLint
             ScanInto(File.ReadAllBytes(file), name, findings, problems, refs, defs);
         }
         CheckReferences(refs, defs, origin, problems);
-        Throw(Evaluate(findings, origin, capabilities), problems);
+        Throw(Evaluate(findings, origin, capabilities, sdk), problems);
     }
 
     private static void Throw(IReadOnlyList<LintFinding> undeclared, List<string> problems)
@@ -237,12 +248,13 @@ public static class PluginLint
     }
 
     /// <summary>The findings that the declared capabilities do not cover (any network capability covers "network"). Run-time code is never covered for a third party.</summary>
-    public static IReadOnlyList<LintFinding> Evaluate(IEnumerable<LintFinding> findings, PluginOrigin origin, IReadOnlyCollection<string> capabilities) =>
+    public static IReadOnlyList<LintFinding> Evaluate(IEnumerable<LintFinding> findings, PluginOrigin origin, IReadOnlyCollection<string> capabilities, int sdk = int.MaxValue) =>
         findings.Where(f => f.Capability switch
         {
-            Network => !capabilities.Contains(PluginCapabilities.NetworkLoopback) && !capabilities.Contains(PluginCapabilities.NetworkInternet),
+            Network => !capabilities.Contains(PluginCapabilities.NetworkLoopback) && !capabilities.Contains(PluginCapabilities.NetworkLan) && !capabilities.Contains(PluginCapabilities.NetworkInternet),
             Reflection => origin == PluginOrigin.ThirdParty,
             Dpapi => origin == PluginOrigin.ThirdParty,
+            SdkActions => sdk < PluginPageAction.MinSdk,
             PluginCapabilities.DynamicCode when origin == PluginOrigin.ThirdParty => true,
             var cap => !capabilities.Contains(cap)
         }).Select(f => f.Capability == Reflection ? f with { Capability = PluginCapabilities.DynamicCode } : f).ToList();

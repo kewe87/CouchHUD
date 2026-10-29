@@ -35,6 +35,17 @@ public class RateLimiterTests
     }
 
     [Fact]
+    public void Resetting_the_code_store_has_its_own_small_budget()
+    {
+        // Refused resets (the store works, no approval) never use up the budget the codes and the lock mode need.
+        var limiter = new RateLimiter(new FakeClock());
+        for (var i = 0; i < 3; i++) Assert.Equal(RateVerdict.Allow, limiter.TryAcquire(Sid, Operation.ResetCodeStore).Verdict);
+        Assert.Equal(RateVerdict.RateLimited, limiter.TryAcquire(Sid, Operation.ResetCodeStore).Verdict);
+        Assert.Equal(RateVerdict.Allow, limiter.TryAcquire(Sid, Operation.SetLockMode).Verdict);
+        Assert.Equal(RateVerdict.Allow, limiter.TryAcquire(Sid, Operation.EnrollPasscode).Verdict);
+    }
+
+    [Fact]
     public void Accounts_have_their_own_budgets()
     {
         var limiter = new RateLimiter(new FakeClock());

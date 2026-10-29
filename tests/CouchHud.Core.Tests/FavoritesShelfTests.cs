@@ -16,7 +16,7 @@ public class FavoritesShelfTests
     private static readonly Bookmark[] Marks = [new() { Name = "Tube", Url = "https://tube.example/" }];
 
     private static List<ShelfEntry> Build(IEnumerable<LibraryItem> lib, string[] favs, string mode, bool sites = false, AreaSet? areas = null, Func<LibraryItem, bool>? allowed = null) =>
-        FavoritesShelf.Build(lib, favs, Marks, mode, sites, areas ?? AreaSet.AllOn, allowed ?? (_ => true));
+        FavoritesShelf.Build(lib, favs, Marks, mode, sites, areas ?? AreaSet.AllOn, allowed ?? (_ => true), recentDays: 0);
 
     private static readonly LibraryItem[] Lib =
     [
@@ -151,6 +151,73 @@ public class FavoritesShelfTests
         for (var i = 0; list.Count < FavoritesShelf.MaxFavorites; i++) list.Add("x" + i);
         Assert.False(FavoritesShelf.TryAdd(list, "one-too-many"));
         Assert.Equal(FavoritesShelf.MaxFavorites, list.Count);
+    }
+
+    // ----- time span of "recently used" -----
+
+    private const long Day = 86_400_000L;
+    private const long Now = 1_800_000_000_000L;
+
+    private static List<ShelfEntry> Windowed(IEnumerable<LibraryItem> lib, string[] favs, string mode, int days) =>
+        FavoritesShelf.Build(lib, favs, Marks, mode, false, AreaSet.AllOn, _ => true, recentDays: days, nowMs: Now);
+
+    [Fact]
+    public void Recent_entries_outside_the_window_drop_off_and_the_boundary_is_inside()
+    {
+        var lib = new[]
+        {
+            Item("in", played: Now - 29 * Day), Item("edge", played: Now - 30 * Day), Item("out", played: Now - 30 * Day - 1),
+            Item("app", ItemType.App, played: Now - 31 * Day), Item("appIn", ItemType.App, played: Now - Day)
+        };
+        foreach (var mode in new[] { "recent", "combined" })
+            Assert.Equal(["appIn", "in", "edge"], Ids(Windowed(lib, [], mode, 30)));
+    }
+
+    [Fact]
+    public void Favorites_are_never_cut_by_the_window_and_the_favorites_mode_ignores_it()
+    {
+        var lib = new[] { Item("old", played: Now - 900 * Day), Item("new", played: Now - Day), Item("never") };
+        Assert.Equal(["old", "never", "new"], Ids(Windowed(lib, ["old", "never"], "combined", 7)));
+        Assert.Equal(["old", "never"], Ids(Windowed(lib, ["old", "never"], "favorites", 7)));
+    }
+
+    [Fact]
+    public void The_unlimited_choice_keeps_every_played_entry()
+    {
+        var lib = new[] { Item("ancient", played: 1), Item("new", played: Now) };
+        Assert.Equal(["new", "ancient"], Ids(Windowed(lib, [], "recent", 0)));
+    }
+
+    [Fact]
+    public void Combined_mode_with_no_favorites_and_nothing_in_the_window_is_empty()
+    {
+        Assert.Empty(Windowed([Item("old", played: Now - 400 * Day)], [], "combined", 365));
+        Assert.Single(Windowed([Item("old", played: Now - 364 * Day)], [], "combined", 365));
+    }
+
+    [Fact]
+    public void Config_defaults_to_30_days_and_repairs_unknown_values_on_load()
+    {
+        Assert.Equal(30, new AppConfig().FavoritesRecentDays);
+        Assert.Equal(30, ConfigStore.Parse("{ }")!.FavoritesRecentDays);
+        foreach (var bad in new[] { "-5", "8", "366", "99999" })
+            Assert.Equal(30, ConfigStore.Parse("{ \"favoritesRecentDays\": " + bad + " }")!.FavoritesRecentDays);
+        foreach (var good in new[] { 7, 30, 90, 365, 0 })
+            Assert.Equal(good, ConfigStore.Parse("{ \"favoritesRecentDays\": " + good + " }")!.FavoritesRecentDays);
+        Assert.Equal(30, FavoritesShelf.NormalizeRecentDays(12));
+    }
+
+    [Fact]
+    public void The_build_default_is_the_30_day_window_and_a_guest_may_change_the_setting()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var lib = new[] { Item("fresh", played: now - Day), Item("old", played: now - 40 * Day) };
+        Assert.Equal(["fresh"], Ids(FavoritesShelf.Build(lib, [], Marks, "recent", false, AreaSet.AllOn, _ => true)));
+        Assert.True(CouchHud.Core.Guard.LockPolicy.IsHarmlessSetting("favoritesRecentDays", profilesGuarded: false));
+        Assert.True(CouchHud.Core.Guard.LockPolicy.IsHarmlessSetting("favoritesRecentDays", profilesGuarded: true));
+        // The host refuses a value that is not a choice (Hud checks RecentDaysChoices; the normalizer repairs the rest).
+        Assert.DoesNotContain(12, FavoritesShelf.RecentDaysChoices);
+        Assert.Equal(30, FavoritesShelf.NormalizeRecentDays(12));
     }
 
     // ----- migration -----

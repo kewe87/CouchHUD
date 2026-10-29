@@ -1,6 +1,17 @@
 // What the code prompt says when no controller can type the code: keyboard and mouse work too, and where Bluetooth stands.
 // Pure (keys only, no DOM), checked by scripts/ui-logic-check.mjs.
 
+/** The on-screen code buttons show when no controller is connected; an unknown pad list (null) counts as none, so the fallback is never lost. */
+export const shouldShowCodeKeys = (padCount) => !(Number.isInteger(padCount) && padCount > 0);
+
+/** The answer of `promise`, or `fallback` when it does not come within `ms` or fails (the code buttons must not wait for a silent controller list). */
+export function withTimeout(promise, ms, fallback = null) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    Promise.resolve(promise).then((value) => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(fallback); });
+  });
+}
+
 /** The code buttons in the order of the on-screen row (same set as the controller and the keyboard). */
 export const CODE_KEYS = ['a', 'b', 'x', 'y', 'lb', 'rb', 'up', 'down', 'left', 'right'];
 

@@ -28,7 +28,10 @@ export const isPlayStationLabel = (label) => PLAYSTATION_LABELS.has(String(label
  * The text of a button for a kind of pad: a skin's label for that button when it belongs to this kind, else the kind's own name
  * (PlayStation) or the button itself (Xbox).
  */
-export function glyphFor(btn, kind, skinGlyphs) {
+export function glyphFor(btn, kind, skinGlyphs, skin = null) {
+  // A list made for exactly this kind of pad (skin.json glyphsXbox / glyphsPlayStation) is taken as it is; "glyphs" is the fallback.
+  const family = skin?.[kind === 'playstation' ? 'glyphsPlayStation' : 'glyphsXbox'];
+  if (family && Object.hasOwn(family, btn) && typeof family[btn] === 'string') return family[btn];
   const own = skinGlyphs && Object.hasOwn(skinGlyphs, btn) && typeof skinGlyphs[btn] === 'string' ? skinGlyphs[btn] : null;
   const playstation = kind === 'playstation';
   if (own !== null && isPlayStationLabel(own) === playstation) return own;

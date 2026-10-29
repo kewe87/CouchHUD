@@ -72,6 +72,7 @@ export default {
   'passcode.approve.release': 'release the Windows restrictions',
   'passcode.approve.firewall': 'open the firewall for the remote',
   'passcode.approve.update': 'update without signing the session out',
+  'passcode.approve.resetCodes': 'reset the damaged code store',
   'passcode.approve.legacyCode': 'Once after the update: this couch lock comes from CouchHUD 0.4.0. Its code was kept in a file any program of this account could change. An administrator now confirms that the code just entered becomes the lock\'s code. Every other code this account had (a parent code too) no longer counts afterwards. Windows will now ask for an administrator (program: sc.exe, service control). If the prompt shows anything other than "sc.exe", or you do not know the code that was entered, cancel.',
   'passcode.approve.legacyWindows': 'Once after the update: this couch lock comes from CouchHUD 0.4.0. An administrator now confirms that the lock opens with this account\'s Windows sign-in (Windows mode). Every code this account had (a parent code too) no longer counts afterwards. Windows will now ask for an administrator (program: sc.exe, service control). If the prompt shows anything other than "sc.exe", cancel.',
   'passcode.legacyOldCode': 'The old code lay readable in the configuration – set a new code in the settings.',

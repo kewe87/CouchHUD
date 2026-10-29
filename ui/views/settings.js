@@ -27,25 +27,26 @@ import { skinMenu } from '../components/skin-menu.js';
 import { choosePasscode, ensureParentCode, ensureUnlocked, ensureWindowsSignIn, guarded, isLocked } from '../components/passcode.js';
 import { addEntryFlow, gameFoldersPage, hiddenItemsPage, scanFolderFlow } from '../components/library-tools.js';
 import { refreshWeather } from '../core/weather.js';
-import { updateCount, updatesPage } from './updates.js';
 import { cleanupStuckPoliciesDialog, launchersPage, servicesPage, startupPage } from './system-tools.js';
 import { transparencyPage } from './transparency.js';
 import { disclaimerPage, privacyPage } from './legal.js';
 import { openSetupWizard } from './setup-wizard.js';
 import { pairingPage } from './phone.js';
-import { pluginsPage } from './plugins.js';
+import { pluginSettingsPage, pluginsPage } from './plugins.js';
+import { pluginsWithSettings } from '../core/plugin-rules.js';
 import { networkPage } from './network.js';
 import { setTvInGuide, tvHint, tvLine, tvPage } from './tv.js';
 import { chooseSleepTimer, powerEntries, sleepTimerDetail } from '../core/power.js';
 import { displayItems } from './display.js';
 import { nightModeItems } from './deck.js';
 import { categoryIcon } from './settings-icons.js';
-import { consoleRevertPage, consoleSetupPage, hasConsoleSetup, isConsoleReady, openSetupSteps } from './console-setup.js';
+import { consoleRevertPage, consoleSetupPage, hasConsoleSetup, isConsoleReady, openSetupSteps, resolveInterruptedSwitch } from './console-setup.js';
 import { saveSettingsItems } from '../components/savegames.js';
 import { ensureParentGrant, formatRemaining, lockedGamesPage, parental, refreshParental } from '../components/parental.js';
 import { openProfilesPage } from '../components/profiles.js';
 import { refreshMotion } from '../core/motion.js';
-import { admitProtectedChange, codeLockHeld } from '../core/lock-rules.js';
+import { admitProtectedChange, codeLockHeld, codeLockPlan } from '../core/lock-rules.js';
+import { privacyAfter, privacyDisabled, privacyDisabledReason, privacyShown } from '../core/net-rules.js';
 import { HISTORY_OFF_ACTION, historyOffNeedsParent } from '../core/browser-logic.js';
 import { AREAS, AREA_DESC_KEYS, AREA_ICONS, AREA_NAME_KEYS, areaOfSetting, areaOn, enabledAreas, setAreas, shownRows, toggleArea } from '../core/areas.js';
 import { RATING_CHOICES, activeSystem, ageChoices, ageLabels, limitText, shownLimit } from '../core/age-rating-rules.js';
@@ -59,6 +60,8 @@ const audioModes = () => [
 let settings = null;
 let feeds = null;
 let security = null;
+/** The installed plugins (Settings > Plugins lists those with settings). */
+let installedPlugins = [];
 // Titles of the console setup steps that are not in place (null: not known yet). Filled in the background.
 let consoleOpen = null;
 // Tasks or policy files of the setup that are still there (also in the light mode): the way back stays offered for them.
@@ -86,6 +89,11 @@ const lockGrant = (reason, action) => (parental.status?.enabled ? ensureParentGr
 const protectedGrant = (reason, scope, parentalOn = !!parental.status?.enabled) =>
   admitProtectedChange({ reason, parentalOn, scope, ensureUnlocked, ensureParentGrant });
 
+const heldCodeChoices = () => [
+  { label: t('settings.lock.heldKeep'), detail: t('settings.lock.heldKeepDetail'), value: 'keep' },
+  { label: t('settings.lock.heldChange'), detail: t('settings.lock.heldChangeDetail'), value: 'change' }
+];
+
 async function chooseLock(preset) {
   const mode = preset ?? await chooseDialog(t('settings.lock.title'), lockModes(), security?.couchLock ?? 'off');
   if (mode === undefined) return 'cancelled';
@@ -101,12 +109,29 @@ async function chooseLock(preset) {
     && !(await confirmDialog(t('settings.lock.windowsDropsCodeTitle'), t('settings.common.continue'), { message: t('settings.lock.windowsDropsCode') }))) return 'cancelled';
   // The code lock needs a code the CouchHUD service holds: a new one goes along with the switch, in one step (a code set on its own at an
   // open couch would not survive the lock being switched on). Entered before the approval, which then names it ("lockModeCode").
+  const plan = mode === 'code' ? codeLockPlan(security) : 'default';
   let code = null;
-  if (mode === 'code' && (!security?.hasPasscode || security?.couchLock === 'off' || security?.serviceCodes?.couch === false)) {
+  if (plan === 'keep') {
+    // The service still holds the couch code from before (back in the app mode, the lock was only switched off in the settings): say so
+    // instead of asking for a new code the service would refuse. The code applies again; a new one goes through "Change code" first.
+    const choice = await chooseDialog(t('settings.lock.heldTitle'), heldCodeChoices(), 'keep');
+    if (choice === undefined) return 'cancelled';
+    // A new code goes along with the switch (the host stores it with the approval the service asks for, then raises the lock): one
+    // approval, no second prompt after a separate change. The config mark is empty while the lock is off, so "Change code" would not ask.
+    if (choice === 'change') {
+      code = await choosePasscode();
+      if (!code) return 'cancelled';
+    }
+  } else if (mode === 'code' && (!security?.hasPasscode || security?.couchLock === 'off' || security?.serviceCodes?.couch === false)) {
+    // A parents' code is held: a new couch code needs it (or an administrator), never next to it without proof. Said before the entry.
+    if (plan === 'store' && security?.serviceCodes?.parent
+      && !(await confirmDialog(t('settings.lock.parentHeldTitle'), t('settings.common.continue'), { message: t('settings.lock.parentHeld') }))) return 'cancelled';
     code = await choosePasscode();
     if (!code) return 'cancelled';
   }
-  if (!(await lockGrant(t('settings.lock.changeReason'), code ? 'lockModeCode' : 'lockMode'))) return 'cancelled';
+  const reason = t('settings.lock.changeReason');
+  const parentOnly = plan !== 'default' && !!code && !!security?.serviceCodes?.parent && !parental.status?.enabled;
+  if (!(await (parentOnly ? ensureParentCode(reason, { action: 'lockModeCode' }) : lockGrant(reason, code ? 'lockModeCode' : 'lockMode')))) return 'cancelled';
   // From the Windows sign-in back to a code: the service takes the new code with that lock's own proof, the Windows sign-in seen by it
   // (the open couch alone does not prove who is in front of it). Asked right here, so nobody needs an administrator for it (finding H1).
   // With parental controls the parents' code above is the proof. Whether a Windows grant is there is asked after that step (it may have
@@ -115,10 +140,13 @@ async function chooseLock(preset) {
     const now = await attempt(() => api.getSecurity());
     if (!now?.windowsGrant && !(await ensureWindowsSignIn(t('settings.lock.codeAfterWindowsReason')))) return 'cancelled';
   }
-  const updated = await attempt(() => api.setCouchLock(mode, code), code ? t('settings.lock.codeNotSaved') : t('settings.common.notSaved'));
+  // A parents' code held without parental controls may have been set freely at the open couch: the service drops those when the lock goes on.
+  const parentMayExpire = mode === 'code' && plan === 'store' && !!code && !!security?.serviceCodes?.parent && !parental.status?.enabled;
+  const updated = await attempt(() => api.setCouchLock(mode, code), code ? t('settings.lock.codeNotSaved') : t('settings.common.notSaved'), { onCodesDamaged: offerCodesReset });
   if (!updated) return 'failed';
   security = updated;
-  toast(mode === 'off' ? t('settings.lock.off') : t('settings.lock.on'));
+  toast(mode === 'off' ? t('settings.lock.off') : plan === 'keep' && !code ? t('settings.lock.heldOn') : t('settings.lock.on'), plan === 'keep' && !code ? 8000 : undefined);
+  if (parentMayExpire) toast(t('settings.lock.parentMayExpire'), 9000);
   if (mode === 'code' && security?.accountPassword === false) toast(t('settings.lock.codeNoPasswordWarn'), 9000);
   render();
   return 'done';
@@ -140,7 +168,7 @@ async function changePasscode() {
   const code = await choosePasscode();
   if (!code) return 'cancelled';
   if (parental.status?.enabled && !(await lockGrant(t('settings.passcode.saveReason'), 'passcode'))) return 'cancelled';
-  const updated = await attempt(() => api.setPasscode(code), t('settings.lock.codeNotSaved'));
+  const updated = await attempt(() => api.setPasscode(code), t('settings.lock.codeNotSaved'), { onCodesDamaged: offerCodesReset });
   if (!updated) return 'failed';
   security = updated;
   toast(t('settings.passcode.saved'));
@@ -250,6 +278,7 @@ async function loadSettings() {
   // The feeds belong to News: not asked for while it is off (the host would refuse).
   feeds = areaOn('news') ? (await attempt(() => api.getFeeds())) ?? feeds ?? [] : [];
   security = (await attempt(() => api.getSecurity())) ?? security;
+  installedPlugins = (await attempt(() => api.getPlugins())) ?? installedPlugins;
   await refreshParental();
   refreshConsoleOpen();
 }
@@ -576,68 +605,38 @@ function parentalItems() {
   ];
 }
 
-const integrationInfo = () => t('settings.integration.fullInfo');
-
 /**
- * Expert mode only (Settings › Console › Mode): the integration level alone, without the guided setup or its way back. Every
- * confirmation and the unlock for the step down stay here, wherever it is started from.
- */
-async function chooseIntegration(mode) {
-  const current = settings.integrationMode ?? 'light';
-  if (mode === undefined || mode === current) return;
-  if (mode === 'full' && !(await confirmDialog(integrationInfo(), t('settings.integration.fullOn')))) return;
-  if (mode === 'light') {
-    if (!(await confirmDialog(t('settings.integration.lightConfirm'), t('settings.integration.toLight')))) return;
-    if (!(await ensureUnlocked(t('settings.integration.changeReason')))) return;
-  }
-  const result = await attempt(() => api.setIntegrationMode(mode), t('settings.integration.notSwitched'));
-  if (!result) return;
-  settings.integrationMode = result.mode;
-  state.info.integrationMode = result.mode;
-  if (mode === 'light') {
-    settings.isShell = false;
-    state.info.isShell = false;
-    security = (await attempt(() => api.getSecurity())) ?? security;
-  }
-  toast(result.undone?.length ? result.undone.join(' · ') : mode === 'full' ? t('settings.integration.fullDone') : t('settings.integration.lightDone'), 6000);
-  render();
-}
-
-/**
- * Settings › Console › Mode: one row for the level, light (a normal app) or the console. Both modes get the guided runs, the console
- * setup and its way back (every step on those pages asks for the unlock itself); expert mode adds switching the level alone.
+ * Settings › Console › Mode: exactly two options, App and Shell, the current one preselected. Shell always opens the guided run, which
+ * does only what is missing (sets up, finishes, or checks and repairs); App goes to the guided way back (or cleans up helper leftovers).
+ * Every step on those pages asks for the unlock itself.
  */
 async function chooseMode() {
+  // A switch that was cut off comes first: undo it or finish it, then the mode can be chosen.
+  if (state.info?.modeSwitchPending && (await checkInterruptedSwitch({ manual: true }))) return;
   const s = settings ?? {};
   const full = !isLight(s);
   const { ready, incomplete, open } = consoleState(s);
   const undo = hasConsoleSetup(s, security);
   const options = [
     {
-      label: incomplete ? t('settings.console.retry') : ready ? t('settings.console.check') : t('settings.console.setup'),
+      label: t('settings.mode.console'),
       detail: incomplete ? t('settings.console.openDesc', { steps: open.join(', ') }) : ready ? t('settings.console.checkingDesc') : t('settings.console.setupDesc'),
       icon: '📺',
       value: 'console'
     },
     {
-      label: undo ? t('settings.console.revert') : helperLeftovers ? t('settings.console.cleanup') : t('settings.integration.light'),
+      label: t('settings.integration.light'),
       detail: undo ? t('settings.console.revertDesc') : helperLeftovers ? t('settings.console.cleanupDesc') : t('settings.integration.lightDetail'),
       icon: '▭',
       value: 'app'
-    },
-    ...(s.expertMode ? [full
-      ? { label: t('settings.mode.onlyLight'), detail: t('settings.mode.onlyLightDetail'), icon: '›', value: 'only-light' }
-      : { label: t('settings.mode.onlyFull'), detail: t('settings.integration.fullDetail'), icon: '›', value: 'only-full' }] : [])
+    }
   ];
   const pick = await chooseDialog(t('settings.mode.title'), options, full ? 'console' : 'app');
   if (pick === 'console') return openPage(consoleSetupPage(consoleDeps), t('settings.cat.console'));
   if (pick === 'app') {
     if (undo) return openPage(consoleRevertPage(consoleDeps, !!s.isShell), t('settings.cat.console'));
     if (helperLeftovers) return openPage(consoleRevertPage(consoleDeps, false), t('settings.cat.console'));
-    return;
   }
-  if (pick === 'only-full') return chooseIntegration('full');
-  if (pick === 'only-light') return chooseIntegration('light');
 }
 
 function modeLabel(s) {
@@ -730,6 +729,54 @@ const toggle = (key, label, desc, after) => ({
 });
 
 /**
+ * Settings › Privacy (rules in core/net-rules.js, enforced by the host's NetGate). Changing any of them is a protected change: only from the
+ * unlocked couch and, with parental controls on, with the parents' code for exactly this switch (the host asks for the same grant).
+ */
+async function privacyGrant(key) {
+  const status = parental.status ?? (await refreshParental());
+  if (!status?.enabled) return true;
+  return protectedGrant(t('settings.privacy.parentReason'), { action: 'privacy', item: key }, true);
+}
+
+const PRIVACY_REASON_KEYS = { offline: 'settings.privacy.offlineFirst', search: 'settings.privacy.searchFirst', catalog: 'settings.privacy.catalogFirst' };
+
+const privacyToggle = (key, label, desc) => ({
+  ...toggle(key, label, desc),
+  // Offline overrides every switch below it: they show as off and cannot be changed until Offline is off.
+  value: () => privacyShown(settings, key),
+  disabled: () => privacyDisabled(settings, key),
+  run: async () => {
+    if (privacyDisabled(settings, key)) {
+      // i18n-used: settings.privacy.offlineFirst settings.privacy.searchFirst settings.privacy.catalogFirst
+      toast(t(PRIVACY_REASON_KEYS[privacyDisabledReason(settings, key)] ?? 'settings.privacy.offlineFirst'));
+      return;
+    }
+    if (!(await privacyGrant(key))) return;
+    const next = !settings[key];
+    await change(key, next);
+    for (const [dependent, value] of Object.entries(privacyAfter(key, next))) settings[dependent] = value;
+    render();
+  }
+});
+
+function privacyItems() {
+  return [
+    privacyToggle('offline', t('settings.privacy.offline'), t('settings.privacy.offlineDesc')),
+    privacyToggle('selfUpdateCheck', t('settings.privacy.self'), t('settings.privacy.selfDesc')),
+    privacyToggle('netCatalog', t('settings.privacy.catalog'), t('settings.privacy.catalogDesc')),
+    privacyToggle('catalogUpdateCheck', t('settings.privacy.catalogUpdates'), t('settings.privacy.catalogUpdatesDesc')),
+    privacyToggle('pluginAutoUpdate', t('settings.privacy.autoUpdate'), t('settings.privacy.autoUpdateDesc')),
+    privacyToggle('netSystemUpdates', t('settings.privacy.system'), t('settings.privacy.systemDesc')),
+    privacyToggle('onlineArtwork', t('settings.privacy.artwork'), t('settings.privacy.artworkDesc')),
+    privacyToggle('netSaves', t('settings.privacy.saves'), t('settings.privacy.savesDesc')),
+    privacyToggle('netWeather', t('settings.privacy.weather'), t('settings.privacy.weatherDesc')),
+    privacyToggle('netNews', t('settings.privacy.news'), t('settings.privacy.newsDesc')),
+    privacyToggle('netAssistant', t('settings.privacy.assistant'), t('settings.privacy.assistantDesc')),
+    info(t('settings.privacy.localTitle'), t('settings.privacy.localDesc'))
+  ];
+}
+
+/**
  * The browser's history: switching it off deletes the remembered sites, with parental controls only with the parents' code for
  * exactly this (the host asks for the same grant). Switching it on is free.
  */
@@ -756,7 +803,7 @@ const favoritesModes = () => [
  * own switch (a Browser setting, hidden with the browser area). The host arranges the tab and applies the child's rules.
  */
 const favoritesModeRow = () => {
-  const current = () => favoritesModes().find((m) => m.value === settings.favoritesMode) ?? favoritesModes()[2];
+  const current = () => favoritesModes().find((m) => m.value === settings?.favoritesMode) ?? favoritesModes()[2];
   return {
     kind: 'choice',
     area: areaOfSetting('favoritesMode'),
@@ -770,6 +817,29 @@ const favoritesModeRow = () => {
       refreshFavorites();
     }
   };
+};
+
+/** Time spans for "recently used" on the Favorites tab (days; 0 = unlimited). Only offered while the mode shows recent entries. */
+// i18n-used: settings.favorites.days.7 settings.favorites.days.30 settings.favorites.days.90 settings.favorites.days.365 settings.favorites.days.0
+const daysKey = (d) => `settings.favorites.days.${d}`;
+const favoritesDaysRows = () => {
+  // The page can be built while the settings are (re)loading; nothing is known then, and the rows come with the load.
+  if (!settings || settings.favoritesMode === 'favorites') return [];
+  const options = [7, 30, 90, 365, 0].map((d) => ({ value: d, label: t(daysKey(d)) }));
+  const current = () => options.find((o) => o.value === settings?.favoritesRecentDays) ?? options[1];
+  return [{
+    kind: 'choice',
+    area: areaOfSetting('favoritesRecentDays'),
+    label: t('settings.favorites.days'),
+    desc: t('settings.favorites.daysDesc'),
+    value: () => current().label,
+    run: async () => {
+      const v = await chooseDialog(t('settings.favorites.daysTitle'), options, current().value);
+      if (v === undefined) return;
+      await change('favoritesRecentDays', v);
+      refreshFavorites();
+    }
+  }];
 };
 
 const action = (label, desc, run, icon = '›', hint) => ({ kind: 'action', label, desc, icon, run, hint });
@@ -810,7 +880,7 @@ async function chooseXboxButton() {
   const set = (key, value) => saveSetting(key, value);
   if (mode === 'couchhud') {
     await set('guideTapInGame', true);
-    // Light leaves the Game Bar alone by itself; choosing this explicitly turns its button off.
+    // Light mode takes the button too while CouchHUD runs (original restored on quit); choosing this explicitly also turns it off.
     if (isLight(settings)) await set('gameBarButton', false);
   } else if (mode === 'gamebar') await set('gameBarButton', true);
   else {
@@ -826,6 +896,35 @@ function holdLabel(ms) {
   return t('settings.hold', { count: seconds, n: fmtNumber(seconds) });
 }
 
+/**
+ * At start: a mode switch the last run did not end (the host kept its record). After the unlock: undo it, finish it, or decide later.
+ * Nothing happens without a record, and nothing is changed before the person chose.
+ */
+let askedAboutSwitch = false;
+export async function checkInterruptedSwitch({ manual = false } = {}) {
+  if (!state.info?.modeSwitchPending) return;
+  // At start: once, and only on an idle HUD (never over the setup assistant, a dialog or any page), without a code prompt of its own on a
+  // locked couch (a hint instead; the mode row in Settings asks later). "Later" leaves the record and does not come back until the next start.
+  if (!manual) {
+    if (askedAboutSwitch || state.overlay || state.stack.length) return;
+    askedAboutSwitch = true;
+    if (await isLocked()) {
+      toast(t('consoleSetup.recover.hint'), 9000);
+      return;
+    }
+  }
+  if (!(await ensureUnlocked(t('consoleSetup.recover.title')))) return;
+  const current = await attempt(() => api.getSettings());
+  const outcome = await resolveInterruptedSwitch(consoleDeps, current?.modeSwitchJournal ?? '', { chooseDialog });
+  if (outcome === 'undone') state.info.modeSwitchPending = false;
+  if (manual && outcome !== 'undone' && !outcome?.choice) return 'later';
+  if (outcome?.choice === 'finish') {
+    const carriedEntries = outcome.record.entries;
+    openPage(outcome.record.from === 'shell' ? consoleRevertPage(consoleDeps, !!current?.isShell, { carriedEntries }) : consoleSetupPage(consoleDeps, { carriedEntries }), t('settings.cat.console'));
+    return 'finish';
+  }
+}
+
 /** Also used by the setup assistant: it hands off to the same console setup and way back as the Console category. */
 export const consoleDeps = {
   setupAutoLogon: () => setupAutoLogon(),
@@ -834,6 +933,10 @@ export const consoleDeps = {
   // The code lock is on but no code opens it: a new code for the lock that is on.
   restoreCodeLock: () => codeLockOutcome(changePasscode),
   autoLogonError: () => lastAutoLogonError,
+  // The reset of a damaged code store, offered by the setup's lock step (true when it was offered), and how many resets went through.
+  offerCodesReset: (message) => offerCodesReset(message),
+  codesResets: () => codesResets,
+  codesResetOffers: () => codesResetOffers,
   async refresh() {
     await loadSettings();
     state.info.isShell = !!settings?.isShell;
@@ -924,6 +1027,8 @@ function consoleItems(s) {
     }] : []),
     // The service itself: a clear warning and the repair for everyone when something is wrong (its details are in Windows integration).
     ...(security?.service?.problem ? [repairServiceItem()] : []),
+    // The service's code file is damaged (it cannot be read): only then the reset, with an administrator's approval.
+    ...(security?.serviceCodes?.damaged ? [action(t('settings.console.resetCodes'), t('settings.console.resetCodesDesc'), () => offerCodesReset(), '⚠')] : []),
     ...(policiesStuck ? [action(t('systemTools.services.stuckTitle'), t('systemTools.services.stuckDetail'), async () => {
       if (await cleanupStuckPoliciesDialog()) {
         policiesStuck = false;
@@ -986,6 +1091,42 @@ async function repairService() {
   security = (await attempt(() => api.getSecurity())) ?? security;
   toast(t('settings.console.repairDone'));
   render();
+}
+
+// The reset of the service's damaged code file: one at a time, how often it was offered and how many went through (the shell mode setup
+// offers it once per step and tells "reset, try again").
+let codesResetRunning = null;
+let codesResetOffers = 0;
+let codesResets = 0;
+
+/** Where the reset is offered: the settings themselves and the shell mode setup (and its way back), nowhere else. */
+const offersCodesReset = () => {
+  const view = currentView();
+  return view === settingsView || view?.id === 'console-setup' || view?.id === 'console-revert';
+};
+
+/**
+ * Offers the reset of the service's damaged code file (set aside, never deleted; Windows asks for an administrator): from the button, or with
+ * the message of a refusal (`message`). Only in the settings and the shell mode setup (false elsewhere: the caller shows the message), never
+ * twice at once. After a reset only the settings list is drawn again; the setup page says it itself.
+ */
+function offerCodesReset(message) {
+  if (!offersCodesReset()) return Promise.resolve(false);
+  codesResetRunning ??= resetCodeStore(message).finally(() => { codesResetRunning = null; });
+  return codesResetRunning.then(() => true);
+}
+
+async function resetCodeStore(message) {
+  const question = message ? `${message} ${t('settings.console.resetCodesQuestion')}` : t('settings.console.resetCodesQuestion');
+  codesResetOffers++;
+  if (!(await confirmDialog(question, t('settings.console.resetCodesConfirm')))) return;
+  toast(t('settings.common.confirmWindowsPrompt'), 4000);
+  const result = await attempt(() => api.resetCodeStore(), t('settings.console.resetCodesFailed'));
+  if (!result) return;
+  security = result;
+  codesResets++;
+  toast(t('settings.console.resetCodesDone'), 8000, { long: true });
+  if (state.stack.length === 0 && currentView() === settingsView) render();
 }
 
 function displayCategoryItems(s) {
@@ -1204,6 +1345,7 @@ function categories() {
           action(t('settings.library.folders'), t('settings.library.foldersDesc'), () => openPage(gameFoldersPage(), t('settings.cat.library'))),
           action(t('settings.library.clients'), t('settings.library.clientsDesc'), () => openPage(launchersPage(), t('settings.cat.library')))),
         favoritesModeRow(),
+        ...favoritesDaysRows(),
         toggle('favoritesSites', t('settings.favorites.sites'), t('settings.favorites.sitesDesc'), () => refreshFavorites()),
         toggle('maximizeBrowser', t('settings.library.maximizeBrowser'), t('settings.library.maximizeBrowserDesc')),
         browserHistoryToggle(),
@@ -1228,7 +1370,6 @@ function categories() {
               render();
             }
           },
-          toggle('onlineArtwork', t('settings.library.onlineArt'), t('settings.library.onlineArtDesc')),
           action(t('settings.library.clearArt'), t('settings.library.clearArtDesc', { size: formatSize(s.artworkCacheBytes) ?? '0 MB' }), async () => {
             if ((await saveSetting('clearArtworkCache', true)) === undefined) return;
             settings.artworkCacheBytes = 0;
@@ -1397,17 +1538,8 @@ function categories() {
         ...expert(info(t('settings.parental.status'), ({ allowed: t('settings.notifications.allowed'), denied: t('settings.notifications.denied'), unavailable: t('settings.notifications.unavailable'), unspecified: t('settings.notifications.unspecified'), off: t('settings.common.off') })[s.notificationStatus] ?? t('settings.common.off')))
       ]
     },
-    {
-      id: 'updates',
-      icon: 'update',
-      name: t('settings.cat.updates'),
-      badge: updateCount(),
-      items: [
-        action(t('settings.updates.open'), updateCount() ? t('settings.updates.available', { count: updateCount() }) : t('settings.updates.openDesc'), () => openPage(updatesPage(), t('settings.cat.updates'))),
-        info(t('settings.updates.auto'), t('settings.updates.autoDesc')),
-        toggle('selfUpdateCheck', t('settings.updates.self'), t('settings.updates.selfDesc'))
-      ]
-    },
+    // Privacy: every connection CouchHUD makes to the internet, one switch each, and Offline above all of them (core/net-rules.js).
+    { id: 'privacy', icon: 'privacy', name: t('settings.cat.privacy'), items: privacyItems() },
     {
       id: 'power',
       icon: 'power',
@@ -1458,6 +1590,12 @@ function categories() {
       ]
     },
     {
+      id: 'plugins',
+      icon: 'plugin',
+      name: t('settings.cat.plugins'),
+      items: pluginItems()
+    },
+    {
       id: 'expert',
       icon: 'expert',
       name: t('settings.cat.expert'),
@@ -1470,17 +1608,25 @@ function categories() {
     },
     { id: 'windows', icon: 'shield', name: t('settings.cat.windows'), expertOnly: true, items: windowsItems(s) },
     { id: 'startup', icon: 'startup', name: t('settings.cat.startup'), expertOnly: true, items: startupItems(s) },
-    { id: 'ai', icon: 'ai', name: t('settings.cat.ai'), expertOnly: true, items: aiItems(s) },
-    {
-      id: 'plugins',
-      icon: 'plugin',
-      name: t('settings.cat.plugins'),
-      expertOnly: true,
-      items: [
-        action(t('settings.plugins.manage'), t('settings.plugins.manageDesc'), () => openPage(pluginsPage(0, { expert: !!settings?.expertMode }), t('settings.cat.plugins'))),
-        info(t('settings.plugins.own'), t('settings.plugins.ownDesc'))
-      ]
-    }
+    { id: 'ai', icon: 'ai', name: t('settings.cat.ai'), expertOnly: true, items: aiItems(s) }
+  ];
+}
+
+/**
+ * Settings > Plugins: every running plugin with settings has its own entry here that opens its settings page (its switches, values and the pages it
+ * links to, e.g. a device picker); the manager, the catalog and building your own are expert rows below.
+ */
+function pluginItems() {
+  const withSettings = pluginsWithSettings(installedPlugins);
+  const entries = withSettings.map((p) => action(
+    p.name,
+    t('settings.plugins.entryDesc', { count: p.settings.length }),
+    () => openPage(pluginSettingsPage(p, (list) => { if (list) installedPlugins = list; }, { expert: !!settings?.expertMode }), t('settings.cat.plugins'))
+  ));
+  return [
+    ...(entries.length ? entries : [info(t('settings.plugins.none'), t('settings.plugins.noneDesc'))]),
+    { ...action(t('settings.plugins.manage'), t('settings.plugins.manageDesc'), () => openPage(pluginsPage(0, { expert: !!settings?.expertMode }), t('settings.cat.plugins'))), expert: true },
+    { ...info(t('settings.plugins.own'), t('settings.plugins.ownDesc')), expert: true }
   ];
 }
 
@@ -1694,7 +1840,7 @@ export const settingsView = {
         expertShown = true;
         nodes.push(divider(t('settings.expertDivider')));
       }
-      const row = el('li', { className: `setting setting-${item.kind}${item.primary ? ' setting-primary' : ''}` },
+      const row = el('li', { className: `setting setting-${item.kind}${item.primary ? ' setting-primary' : ''}${item.disabled?.() ? ' setting-disabled' : ''}` },
         el('div', { className: 'setting-text' },
           el('strong', { textContent: item.label }),
           el('p', { textContent: item.desc })),

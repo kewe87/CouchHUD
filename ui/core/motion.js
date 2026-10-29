@@ -1,4 +1,4 @@
-// Depth and motion: parallax between backdrop, logo and shelf on focus changes, and a
+// Depth and motion: parallax between backdrop, logo and shelf on focus changes between tiles, and a
 // gentle 3D tilt with a light reflection on the focused tile.
 //
 // Everything here only writes `transform` / `rotate` / `opacity` (compositor-only), never
@@ -8,21 +8,12 @@
 
 import { $ } from './dom.js';
 import { state } from './state.js';
+import { LAYERS, PARALLAX_CLAMP, PARALLAX_SPRING, nudgeVelocity, nudgesParallax, stepDirection } from './motion-rules.js';
 
 const FOCUS_TARGETS = '.tile, .action';
 const TILT_MAX = 7; // degrees, hard limit
 
 const query = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-
-// Parallax layers: [selector, x rem per unit, y rem per unit]. The backdrop moves
-// against the focus direction, the foreground a bit with it.
-const LAYERS = [
-  ['#bg', -0.85, -0.5],
-  ['.hero-info', 0.7, 0.3],
-  ['.shelf-wrap', 0.35, 0.2],
-  ['.detail-main', 0.5, 0.3],
-  ['.detail-info', 0.3, 0.2]
-];
 
 const par = { x: 0, y: 0, vx: 0, vy: 0 };
 const tiles = new Map(); // tile -> tilt state
@@ -107,19 +98,12 @@ function applyLayers() {
   }
 }
 
-/** Direction (-1/0/1 per axis) from the old to the new focused element, from sibling order only. */
+/** Direction (-1/0/1 per axis) from the old to the new focused element, from sibling order only; null for no single step (see stepDirection). */
 function direction(from, to) {
   if (!from || !from.isConnected || from.parentElement !== to.parentElement) return null;
   const siblings = [...to.parentElement.children];
-  const a = siblings.indexOf(from);
-  const b = siblings.indexOf(to);
   const cols = parseInt(to.parentElement.style.getPropertyValue('--cols'), 10) || 0;
-  if (cols > 1) {
-    const dy = Math.floor(b / cols) - Math.floor(a / cols);
-    const dx = (b % cols) - (a % cols);
-    return { x: Math.sign(dx), y: Math.sign(dy) };
-  }
-  return { x: Math.sign(b - a), y: 0 };
+  return stepDirection(siblings.indexOf(from), siblings.indexOf(to), cols);
 }
 
 function tileState(tile) {
@@ -144,10 +128,12 @@ function onFocused(node) {
   if (!enabled) return;
   const dir = direction(lastFocused, node);
   lastFocused = node;
-  if (dir) {
+  if (dir && nudgesParallax(document.body.dataset.view, node.classList.contains('tile') ? 'tile' : 'action')) {
     // Nudge the parallax layers in the focus direction; the spring brings them back.
-    par.vx += dir.x * 16;
-    par.vy += dir.y * 16;
+    // Not on the detail page: moving between its buttons must not swing the picture.
+    // A wrap (last tile to first) is no single step and gives none; fast steps fill only the room left (nudgeVelocity).
+    par.vx = nudgeVelocity(par.vx, par.x, dir.x);
+    par.vy = nudgeVelocity(par.vy, par.y, dir.y);
     layerNodes = null;
   }
   if (node.classList.contains('tile')) {
@@ -180,9 +166,9 @@ function frame(now) {
   last = now;
 
   // Parallax springs
-  [par.x, par.vx] = spring(par.x, par.vx, 0, dt, 70, 11);
-  [par.y, par.vy] = spring(par.y, par.vy, 0, dt, 70, 11);
-  const clamp = (v) => Math.max(-1.6, Math.min(1.6, v));
+  [par.x, par.vx] = spring(par.x, par.vx, 0, dt, PARALLAX_SPRING.k, PARALLAX_SPRING.d);
+  [par.y, par.vy] = spring(par.y, par.vy, 0, dt, PARALLAX_SPRING.k, PARALLAX_SPRING.d);
+  const clamp = (v) => Math.max(-PARALLAX_CLAMP, Math.min(PARALLAX_CLAMP, v));
   par.x = clamp(par.x);
   par.y = clamp(par.y);
   const parMoving = Math.abs(par.x) + Math.abs(par.y) > 0.01 || Math.abs(par.vx) + Math.abs(par.vy) > 0.1;

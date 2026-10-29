@@ -17,6 +17,9 @@ public sealed record ArtworkChoices(
     IReadOnlyList<ArtChoice> Hero,
     IReadOnlyList<ArtChoice> Logo)
 {
+    /// <summary>Square pictures (SteamGridDB square grids, then icons); without any the UI crops the cover.</summary>
+    public IReadOnlyList<ArtChoice> Square { get; init; } = [];
+
     /// <summary>Whether a SteamGridDB key is set; without one the picker points to it.</summary>
     public bool HasKey { get; init; }
 
@@ -31,7 +34,7 @@ public sealed partial class ArtworkResolver
     /// <summary>Every candidate from SteamGridDB (with key) and the Steam CDN, for the "change artwork" picker.</summary>
     public async Task<ArtworkChoices> GetChoicesAsync(LibraryItem item, CancellationToken ct = default)
     {
-        List<ArtChoice> cover = [], hero = [], logo = [];
+        List<ArtChoice> cover = [], hero = [], logo = [], square = [];
         string? note = null;
 
         if (!Online)
@@ -39,14 +42,15 @@ public sealed partial class ArtworkResolver
             AddCurrent(cover, item.Art.Cover);
             AddCurrent(hero, item.Art.Hero);
             AddCurrent(logo, item.Art.Logo);
-            return new ArtworkChoices(MarkCurrent(cover, item.Art.Cover), MarkCurrent(hero, item.Art.Hero), MarkCurrent(logo, item.Art.Logo)) { HasKey = _apiKey.Length > 0, Note = Strings.Get("artwork.onlineOff") };
+            AddCurrent(square, item.Art.Square);
+            return new ArtworkChoices(MarkCurrent(cover, item.Art.Cover), MarkCurrent(hero, item.Art.Hero), MarkCurrent(logo, item.Art.Logo)) { Square = MarkCurrent(square, item.Art.Square), HasKey = _apiKey.Length > 0, Note = Strings.Get("artwork.onlineOff") };
         }
 
         if (_apiKey.Length > 0)
         {
             try
             {
-                await CollectSteamGridDb(item, cover, hero, logo, ct);
+                await CollectSteamGridDb(item, cover, hero, logo, square, ct);
             }
             catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
@@ -72,9 +76,11 @@ public sealed partial class ArtworkResolver
         AddCurrent(cover, item.Art.Cover);
         AddCurrent(hero, item.Art.Hero);
         AddCurrent(logo, item.Art.Logo);
+        AddCurrent(square, item.Art.Square);
 
         return new ArtworkChoices(MarkCurrent(Distinct(cover), item.Art.Cover), MarkCurrent(Distinct(hero), item.Art.Hero), MarkCurrent(Distinct(logo), item.Art.Logo))
         {
+            Square = MarkCurrent(Distinct(square), item.Art.Square),
             HasKey = _apiKey.Length > 0,
             Note = note
         };
@@ -107,6 +113,7 @@ public sealed partial class ArtworkResolver
         {
             var url = entry.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString() : null;
             if (string.IsNullOrEmpty(url) || !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) continue;
+            if (IsIco(url, entry.TryGetProperty("mime", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null)) continue;
             var thumb = entry.TryGetProperty("thumb", out var t) && t.ValueKind == JsonValueKind.String && t.GetString() is { Length: > 0 } th ? th : url;
             list.Add(new ArtChoice(url, thumb, "SteamGridDB"));
             if (list.Count >= MaxChoices) break;
@@ -114,7 +121,7 @@ public sealed partial class ArtworkResolver
         return list;
     }
 
-    private async Task CollectSteamGridDb(LibraryItem item, List<ArtChoice> cover, List<ArtChoice> hero, List<ArtChoice> logo, CancellationToken ct)
+    private async Task CollectSteamGridDb(LibraryItem item, List<ArtChoice> cover, List<ArtChoice> hero, List<ArtChoice> logo, List<ArtChoice> square, CancellationToken ct)
     {
         string route;
         if (SteamStore.AppIdOf(item) is { } appId) route = $"steam/{appId}";
@@ -129,6 +136,9 @@ public sealed partial class ArtworkResolver
         cover.AddRange(await ListChoices($"{SteamGridDb}/grids/{route}?dimensions={dims}", ct));
         hero.AddRange(await ListChoices($"{SteamGridDb}/heroes/{route}", ct));
         logo.AddRange(await ListChoices($"{SteamGridDb}/logos/{route}", ct));
+        // Square: the square grids first, SteamGridDB icons after them.
+        square.AddRange(await ListChoices($"{SteamGridDb}/grids/{route}?dimensions={SquareDimensions}", ct));
+        square.AddRange(await ListChoices($"{SteamGridDb}/icons/{route}", ct));
     }
 
     private async Task<List<ArtChoice>> ListChoices(string url, CancellationToken ct)
@@ -142,6 +152,14 @@ public sealed partial class ArtworkResolver
         {
             return [];
         }
+    }
+
+    /// <summary>An .ico file (by its address or the answer's mime type): no good as a tile picture, never offered or used.</summary>
+    internal static bool IsIco(string url, string? mime)
+    {
+        if (mime is not null && (mime.Contains("icon", StringComparison.OrdinalIgnoreCase) || mime.Contains("ico", StringComparison.OrdinalIgnoreCase) && !mime.Contains("jpeg", StringComparison.OrdinalIgnoreCase))) return true;
+        var path = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.AbsolutePath : url.Split('?', '#')[0];
+        return path.EndsWith(".ico", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddCurrent(List<ArtChoice> target, IReadOnlyList<string> current)
