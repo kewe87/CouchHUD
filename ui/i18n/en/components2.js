@@ -1,6 +1,7 @@
 // en texts: components2.
 export default {
   'overlay.cancel': 'Cancel',
+  'overlay.ok': 'Got it',
   'overlay.count': '{current} of {total}',
   'parental.minutes': '{count} min',
   'parental.timeUp': 'Play time is up',

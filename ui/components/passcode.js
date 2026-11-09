@@ -291,6 +291,7 @@ async function askForCode(reason) {
     }
     sound.bump();
     let resetDone = false;
+    let adminBlocked = '';
     // The service's code file is damaged: no code can open. The administrator's reset right here (UAC); the host opens the couch for two
     // minutes afterwards when the service holds no code then, so the new code can be set.
     if (result?.codesDamaged) {
@@ -313,11 +314,11 @@ async function askForCode(reason) {
         toast(t('passcode.adminUnlockDone'), 12000, { long: true });
         return true;
       }
-      if (viaAdmin?.blocked) toast(viaAdmin.blocked, 6000);
+      adminBlocked = viaAdmin?.blocked ?? '';
     }
     // The host refuses to open while the CouchHUD service is missing or blocked (fail-closed): its reason, not "wrong code".
     // After a reset that did not open the couch the "store damaged" text is stale: the store is reset, the entry says so.
-    error = resetDone ? t('passcode.resetCodesDone') : result?.blocked ? result.blocked : result?.waitSeconds ? t('passcode.wrongWait', { count: result.waitSeconds }) : t('passcode.wrong');
+    error = adminBlocked || (resetDone ? t('passcode.resetCodesDone') : result?.blocked ? result.blocked : result?.waitSeconds ? t('passcode.wrongWait', { count: result.waitSeconds }) : t('passcode.wrong'));
   }
 }
 
@@ -423,6 +424,7 @@ export async function ensureParentCode(reason = '', scope = {}) {
     if (!code) return false;
     let result = await attempt(() => api.parentalAuth(code, action, item));
     let resetDone = false;
+    let adminBlocked = '';
     if (result?.ok) {
       sound.select();
       return true;
@@ -449,10 +451,10 @@ export async function ensureParentCode(reason = '', scope = {}) {
         sound.select();
         return true;
       }
-      if (viaAdmin?.blocked) toast(viaAdmin.blocked, 6000);
+      adminBlocked = viaAdmin?.blocked ?? '';
     }
     // The CouchHUD service checks the parents' code too: when it cannot, its reason, not "wrong code".
-    error = result?.blocked ? result.blocked : result?.waitSeconds ? t('passcode.wrongWait', { count: result.waitSeconds }) : t('passcode.wrong');
+    error = adminBlocked || (result?.blocked ? result.blocked : result?.waitSeconds ? t('passcode.wrongWait', { count: result.waitSeconds }) : t('passcode.wrong'));
   }
 }
 

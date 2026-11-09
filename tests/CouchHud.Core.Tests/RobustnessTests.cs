@@ -79,8 +79,12 @@ public class RobustnessTests
         try
         {
             var scan = library.ScanAsync();
-            // The working providers have answered and the hanging one is stuck: only now does time pass.
-            await WaitFor(() => hanging.Entered.IsSet && works.Ran && timesOut.Ran);
+            // The working providers have answered and the hanging one is stuck: only now does time pass. "Ran" is set inside the
+            // provider, before its task is back in the scan, so it is not enough: a clock moved in that gap would time out a provider
+            // that works. A scan arms two timers per provider (the token source and the wait); the hanging one keeps at most two,
+            // and as long as a working provider's wait is still armed there are at least three. Only a token timer left over from a
+            // finished provider can be armed at two, and firing that one cancels a token nobody waits for.
+            await WaitFor(() => hanging.Entered.IsSet && works.Ran && timesOut.Ran && clock.PendingTimers <= 2);
             await WaitFor(() =>
             {
                 clock.Advance(TimeSpan.FromMinutes(1));

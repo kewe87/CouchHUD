@@ -31,6 +31,12 @@ public sealed record CatalogRow(
 
     public bool ThirdParty => Origin == "thirdParty";
 
+    /// <summary>The folder name the catalog index gives this entry (validated when the index is read). The page matches an installed plugin to the entry by it, the way <c>CatalogRegistry.Lookup</c> does.</summary>
+    public string? Folder { get; init; }
+
+    /// <summary>The plugin or skin this entry names is installed from another source: the entry may not manage it (the page offers no action).</summary>
+    public bool OtherSource { get; init; }
+
     /// <summary>The short form of the publisher key's fingerprint (third-party), shown next to the author.</summary>
     public string? Publisher { get; init; }
 
@@ -331,6 +337,8 @@ public sealed class CatalogManager
                 originProblem ?? (sdkTooNew ? Strings.Get("catalog.needsSdk", verified!.Statement.Sdk) : installed && word == "installed" ? null : CatalogRules.Reason(e, app)), e.Homepage, IconOf(e), e.MinCouchHud, e.Unsigned)
             {
                 Extra = e.Extra,
+                Folder = e.Folder,
+                OtherSource = originProblem is not null,
                 Category = e.Category,
                 CategoryLabel = CatalogCategories.Label(e.Category),
                 Origin = verified?.Origin switch { PluginOrigin.FirstParty => "firstParty", PluginOrigin.ThirdParty => "thirdParty", _ => e.Extra && e.Kind == CatalogKind.Plugin ? "thirdParty" : "local" },

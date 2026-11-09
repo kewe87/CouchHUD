@@ -18,6 +18,8 @@ import { downloadsQuickDetail } from '../views/downloads.js';
 import { chooseDialog, confirmDialog } from './overlay.js';
 import { sound } from '../sound.js';
 import { withParentGrant } from '../core/parent-retry.js';
+import { withUnlock } from '../core/downloads-rules.js';
+import { ensureUnlocked } from './passcode.js';
 import { t, fmtNumber, fmtPercent, fmtTime, fmtDate } from '../core/i18n.js';
 import { powerRows } from '../core/power.js';
 import { weatherLine } from '../core/weather.js';
@@ -178,7 +180,7 @@ function rows() {
       label: a.label,
       detail: a.detail,
       run: async () => {
-        const message = await attempt(() => withParentGrant(() => api.runQuickAction(a.plugin, a.id)), a.label);
+        const message = await attempt(() => withUnlock(() => withParentGrant(() => api.runQuickAction(a.plugin, a.id)), () => ensureUnlocked(t('plugins.codeReason'))), a.label);
         if (message) toast(message);
       }
     });

@@ -11,6 +11,8 @@ import { chooseDialog } from '../components/overlay.js';
 import { settler } from '../core/settle.js';
 import { sound } from '../sound.js';
 import { withParentGrant } from '../core/parent-retry.js';
+import { withUnlock } from '../core/downloads-rules.js';
+import { ensureUnlocked } from '../components/passcode.js';
 import { t } from '../core/i18n.js';
 import { pageSync, currentOption, formatStepper, groupRows, layoutLines, parseStepper, pressKind, safeImage, stepValue, tileColumns } from '../core/plugin-rules.js';
 
@@ -24,6 +26,13 @@ api.onPluginPageChanged?.(({ plugin, page }) => {
  * `asTab`: the page is a main tab (plugin-tabs.js): it reads itself again when the tab is entered, shows an unavailable note instead of a toast
  * when the plugin does not answer, and tells the tab bar to ask the host again (a tab whose plugin is gone disappears).
  */
+/**
+ * A press the host may refuse because the couch lock closed meanwhile: the parents' code where the host asks for it, and on a locked
+ * couch the existing unlock (code entry or Windows sign-in), then the same call once more. Cancelled, nothing is sent again. The host
+ * checks the lock and the rights on both calls; this only asks.
+ */
+const pressCall = (call) => withUnlock(() => withParentGrant(call), () => ensureUnlocked(t('plugins.codeReason')));
+
 export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
   /** Latest answer of the host: { title, description, rows, sections }. */
   let data = null;
@@ -240,7 +249,7 @@ export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
       if (next === now.number) return sound.bump();
       sound.move();
       s.set(row.id, next, (value) => sync.send(async () => {
-        const result = await attempt(() => withParentGrant(() => api.changePluginRow(plugin.id, pageInfo.id, row.id, String(value))), plugin.name);
+        const result = await attempt(() => pressCall(() => api.changePluginRow(plugin.id, pageInfo.id, row.id, String(value))), plugin.name);
         // Only the rows: a step made while this was on its way stays pending and keeps showing. The page is drawn (or read again after a
         // push that came meanwhile) by sync once nothing is waiting or on its way.
         if (result?.message) toast(result.message);
@@ -260,16 +269,16 @@ export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
           if (!options.length) return sound.bump();
           const value = await chooseDialog(row.label, options, currentOption(row));
           if (value === undefined) return;
-          return this.applyResult(await attempt(() => withParentGrant(() => api.changePluginRow(plugin.id, pageInfo.id, row.id, value)), plugin.name));
+          return this.applyResult(await attempt(() => pressCall(() => api.changePluginRow(plugin.id, pageInfo.id, row.id, value)), plugin.name));
         }
         case 'link': {
           // The host opens only a page of the same plugin and hands it back; the plugin's code is not called for it.
-          const result = await attempt(() => withParentGrant(() => api.activatePluginRow(plugin.id, pageInfo.id, row.id)), plugin.name);
+          const result = await attempt(() => pressCall(() => api.activatePluginRow(plugin.id, pageInfo.id, row.id)), plugin.name);
           if (result?.navigate) push(declarativePage(plugin, result.navigate));
           return;
         }
         default:
-          return this.applyResult(await attempt(() => withParentGrant(() => api.activatePluginRow(plugin.id, pageInfo.id, row.id)), plugin.name));
+          return this.applyResult(await attempt(() => pressCall(() => api.activatePluginRow(plugin.id, pageInfo.id, row.id)), plugin.name));
       }
     },
     /**
@@ -280,7 +289,7 @@ export function declarativePage(plugin, pageInfo, { asTab = false } = {}) {
       const entry = this.actions().find((a) => a.button === button);
       if (!entry) return sound.bump();
       sound.select();
-      const result = await attempt(() => withParentGrant(() => api.activatePluginAction(plugin.id, pageInfo.id, button)), plugin.name);
+      const result = await attempt(() => pressCall(() => api.activatePluginAction(plugin.id, pageInfo.id, button)), plugin.name);
       if (result?.navigate) return push(declarativePage(plugin, result.navigate));
       return this.applyResult(result);
     },

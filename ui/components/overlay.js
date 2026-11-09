@@ -80,6 +80,16 @@ export function confirmDialog(title, confirmLabel, { danger = false, message = '
   });
 }
 
+/**
+ * A refusal the person must be able to read in peace (a toast is gone before one looks up from the couch): title, reason and one answer.
+ * B or the button close it; resolves when it is closed.
+ */
+export function noticeDialog(title, message) {
+  return new Promise((resolve) => {
+    openOverlay({ title, message, index: 0, onCancel: () => resolve(), entries: [{ label: t('overlay.ok'), run: () => resolve() }] });
+  });
+}
+
 /** Choose one of several values; resolves to the chosen value or undefined. */
 export function chooseDialog(title, options, current) {
   return new Promise((resolve) => {

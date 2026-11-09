@@ -4,6 +4,7 @@ using CouchHud.Core.Updates;
 
 namespace CouchHud.Core.Tests;
 
+[Collection("Language")]
 public class WingetProgressTests
 {
     // The shapes winget prints with stdout redirected: a spinner drawn with backspaces, bars redrawn with carriage returns, sizes

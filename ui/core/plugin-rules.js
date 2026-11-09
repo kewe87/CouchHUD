@@ -58,16 +58,34 @@ export function entryState(entry, installed) {
 }
 
 /** An installed plugin that came from a catalog but is not listed any more (the entry was taken out). Only once a catalog has loaded. */
-export function isDelisted(plugin, catalogEntries) {
+export function isDelisted(plugin, catalogEntries, { error = null } = {}) {
   if (!plugin || !Array.isArray(catalogEntries) || !catalogEntries.length) return false;
   if (plugin.origin === 'local' || !plugin.userInstalled) return false;
-  const id = String(plugin.id).toLowerCase();
-  const folder = String(plugin.folder).toLowerCase();
-  return !catalogEntries.some((e) => e.kind !== 'skin' && [id, folder].includes(String(e.id).toLowerCase()));
+  // The host reports an error when any source failed (down, offline, bad signature, served from the cache). The UI does not know which source a plugin
+  // came from, and a source from the developer list is not marked as added, so while any source has a problem nobody is called delisted: a missing
+  // badge is better than a false "removed".
+  if (error) return false;
+  // An entry that belongs to another source than the one that installed the plugin does not list it.
+  return !catalogEntries.some((e) => !e.otherSource && isEntryOf(plugin, e));
 }
 
+// Whole values, case folded for A-Z only: the host compares with OrdinalIgnoreCase, which does not fold e.g. the Kelvin sign (U+212A) to "k".
+const fold = (s) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a !== '' && fold(a) === fold(b);
+
+/**
+ * The one definition of "this installed plugin is this catalog entry". It is the rule of the host (CatalogRegistry.Lookup): the folder the catalog
+ * index names for the entry equals the plugin's folder, or the entry id equals the plugin id. Whole values only (ignoring case, as Windows folders do),
+ * never a prefix or a suffix. A skin is never a plugin. A plugin id such as "CouchHud.Plugin.Weather" is not the entry id "weather": the folder links them.
+ * `entry` is a catalog row or a catalog update (both carry id, kind and folder).
+ */
+export const isEntryOf = (plugin, entry) => !!plugin && !!entry && entry.kind !== 'skin' && (same(entry.folder, plugin.folder) || same(entry.id, plugin.id));
+
 /** The installed plugin that belongs to a catalog entry. */
-export const installedFor = (entry, plugins) => (entry.kind === 'skin' ? undefined : (plugins ?? []).find((p) => [String(p.id).toLowerCase(), String(p.folder).toLowerCase()].includes(String(entry.id).toLowerCase())));
+export const installedFor = (entry, plugins) => (entry.kind === 'skin' ? undefined : (plugins ?? []).find((p) => isEntryOf(p, entry)));
+
+/** The catalog update (from the background check) that belongs to an installed plugin. */
+export const updateOf = (plugin, updates) => (updates ?? []).find((u) => u.kind === 'plugin' && isEntryOf(plugin, u));
 
 /**
  * The catalog entries as they are once a plugin was uninstalled: the entry of that plugin is "not installed" again at once (the list the page holds
@@ -89,6 +107,8 @@ export function entryActions(entry, installed, { expert = false } = {}) {
   const actions = [];
   // Uninstalled, files still held: cut off for good, gone at the next start. Nothing to offer (no install, no switch, no second uninstall).
   if (state === 'removing') return [];
+  // The entry belongs to another source than the one that installed this: it manages nothing of it (the host refuses as well).
+  if (entry.otherSource) return [];
   const own = !!installed && entry.kind !== 'skin';
   if (state === 'revoked') actions.push('acceptRevoked');
   else if (state === 'new') {
@@ -382,4 +402,18 @@ export function categoryGroups(entries, filter = 'all') {
   return categoriesIn(entries)
     .filter((c) => wanted === 'all' || c.id === wanted)
     .map((c) => ({ id: c.id, label: c.label, entries: (entries ?? []).filter((e) => categoryOf(e) === c.id).sort(byName) }));
+}
+
+/**
+ * The page's gate question with the lock handled: `ask()` gives the host's { refused, locked }. Only the lock refusal (the host's own flag) opens
+ * the unlock (`unlock()` -> true/false) and asks again; any other refusal is returned as it is, without a code entry. Cancelled unlock:
+ * { ok: false, cancelled: true }. The host refuses the change itself again; this only decides whether to ask.
+ */
+export async function openGate(ask, unlock) {
+  let gate = await ask();
+  if (gate?.refused && gate.locked === true) {
+    if (!(await unlock())) return { ok: false, cancelled: true };
+    gate = await ask();
+  }
+  return gate?.refused ? { ok: false, refused: gate.refused } : { ok: true };
 }

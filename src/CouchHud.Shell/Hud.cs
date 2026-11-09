@@ -4306,21 +4306,21 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         if (change == "functionLevel")
         {
             var why = PluginPolicy.DecideLevelChange(PluginGateContext()).Refused;
-            return new { refused = why is null ? null : Strings.Get(why) };
+            return new { refused = why is null ? null : Strings.Get(why), locked = why == "lock.unlockFirst" };
         }
         if (change == "use")
         {
             var level = plugin is null ? null : plugins.LevelOf(plugin, function);
             var access = level is { } lv ? PluginFunctionRules.Access(lv, Locked, ChildNow) : default;
             // needsParentCode: an admin function in a child's profile is allowed with the parents' code, so the page asks instead of showing a refusal.
-            return new { refused = access.Refused is null ? null : Strings.Get(access.Refused), needsParentCode = access.Refused is null && access.ParentCode };
+            return new { refused = access.Refused is null ? null : Strings.Get(access.Refused), locked = access.Refused == "lock.unlockFirst", needsParentCode = access.Refused is null && access.ParentCode };
         }
         // Only a defined name (a number or a list of names parses too); the input is never echoed back.
         if (!Enum.TryParse<PluginChange>(change, ignoreCase: true, out var ch) || !Enum.IsDefined(ch) || !string.Equals(ch.ToString(), change, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Not a change of a plugin setting.", "change");
         var org = origin switch { "thirdParty" => PluginOrigin.ThirdParty, "firstParty" => PluginOrigin.FirstParty, "skin" => PluginOrigin.FirstParty, _ => PluginOrigin.Local };
         var gate = PluginGateContext();
         var refused = origin == "skin" ? PluginPolicy.SkinChangeRefusal(gate) : PluginPolicy.Decide(gate, ch, org, null).Refused;
-        return new { refused = refused is null ? null : Strings.Get(refused) };
+        return new { refused = refused is null ? null : Strings.Get(refused), locked = refused == "lock.unlockFirst" };
     }
 
     /// <summary>Skin install or update: the unlocked couch, not a child's profile (SECURITY.md).</summary>

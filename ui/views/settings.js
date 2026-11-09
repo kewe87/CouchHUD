@@ -21,7 +21,7 @@ import { SOUND_SETS, setAudioMode, setMusicVolume, setSoundSet, setSoundVolume, 
 import { setHdrMode } from '../core/hdr.js';
 import { setPointer } from '../components/mouse.js';
 import { SCREENSAVER_STYLES, configureScreensaver, startScreensaver } from '../core/screensaver.js';
-import { chooseDialog, confirmDialog, openOverlay } from '../components/overlay.js';
+import { chooseDialog, confirmDialog, noticeDialog, openOverlay } from '../components/overlay.js';
 import { openKeyboard } from '../components/keyboard.js';
 import { skinMenu } from '../components/skin-menu.js';
 import { choosePasscode, ensureParentCode, ensureUnlocked, ensureWindowsSignIn, guarded, isLocked } from '../components/passcode.js';
@@ -507,7 +507,7 @@ async function setParentalValue(key, value, message) {
     ? !!(await attempt(() => api.parentalAuth(null, action, null)))?.ok
     : await ensureParentGrant(t('settings.parental.changeReason'), { action });
   if (!granted) {
-    if (needsParentCode) toast(t('settings.parental.codeHint'), 9000);
+    if (needsParentCode) await noticeDialog(t('consoleSetup.refused.title'), t('settings.parental.codeHint'));
     return false;
   }
   const status = await attempt(() => api.setParental(key, value), t('settings.common.notSaved'));
@@ -1694,7 +1694,7 @@ function categories() {
             const result = await attempt(() => api.allowFirewall(), t('settings.network.firewallFailed'));
             if (result === undefined) return;
             // Windows' own block rules for CouchHud.exe win against the allow rule: say so instead of "allowed".
-            if (result?.blocked?.length) toast(t('settings.network.firewallBlocked', { names: result.blocked.join(', ') }), 12000);
+            if (result?.blocked?.length) await noticeDialog(t('settings.network.firewall'), t('settings.network.firewallBlocked', { names: result.blocked.join(', ') }));
             else toast(t('settings.network.firewallDone'));
           }),
           info(t('settings.network.rule'), t('settings.network.ruleDesc'))

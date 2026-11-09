@@ -5,7 +5,7 @@
 import { api } from '../core/api.js';
 import { t } from '../core/i18n.js';
 import { toast } from '../core/feedback.js';
-import { openOverlay, renderOverlay } from './overlay.js';
+import { noticeDialog, openOverlay, renderOverlay } from './overlay.js';
 import { state } from '../core/state.js';
 import { sound } from '../sound.js';
 import { secondFactorText } from '../core/second-factor-rules.js';
@@ -98,7 +98,11 @@ function ask(info) {
       }
       if (outcome === 'confirmed') sound.select?.();
       else if (outcome === 'wrong') toast(t('twofa.wrong'), 8000);
-      else if (outcome === 'locked') toast(t('twofa.lockedOutToast'), 8000);
+      else if (outcome === 'locked') {
+        // A dialog, not a toast: the reason stays until it is read. The refusal itself (cancel) is the same, only a moment later.
+        noticeDialog(t('consoleSetup.refused.title'), t('twofa.lockedOutToast')).then(() => resolve('cancel'));
+        return;
+      }
       else if (outcome === 'expired' || outcome === 'ended') toast(t('twofa.expired'), 6000);
       resolve(outcome === 'confirmed' || outcome === 'admin' ? outcome : 'cancel');
     }

@@ -2,6 +2,44 @@
 
 Ein Abschnitt je Version, gegliedert nach Bereichen, erst Deutsch, dann Englisch. / One section per version, starting with a short summary (Kurz / Summary), then grouped by area, German first, then English.
 
+## 0.7.2 (2026-11-09)
+
+### Kurz / Summary
+
+- **Ablehnungen:** Mehrere Ablehnungen, die nur als kurzer Hinweis erschienen, kommen jetzt als Dialog mit Grund (Eltern-Code fehlt nach abgebrochener Freigabe, Firewall-Blockregeln, Einrichtung nicht gestartet, wartender Moduswechsel, zu viele Fehlversuche bei der Handy-Bestätigung); Ablehnungen von Administrator-Freigaben stehen jetzt in der Code-Eingabe.
+- **Katalog:** Installierte Plugins mit abweichender Plugin-ID (z. B. Weather) werden dem Katalogeintrag zugeordnet; kein falsches „Nicht mehr im Katalog“ mehr.
+- **Gesperrte Couch:** Plugin-Änderungen, Plugin-Seiten und Schnellaktionen öffnen die Entsperrung statt nur „Gesperrt: erst entsperren“.
+
+---
+
+- **Refusals:** several refusals that only showed as a short hint now come as a dialog with the reason (parents' code missing after a cancelled approval, firewall block rules, setup not started, a waiting mode switch, too many wrong tries on the phone confirmation); the reason of a refused administrator approval now stands in the code entry.
+- **Catalog:** installed plugins whose plugin id differs (e.g. Weather) are matched to their catalog entry; no false "No longer in the catalog" any more.
+- **Locked couch:** plugin changes, plugin pages and quick actions open the unlock instead of ending in "Locked: unlock first".
+
+### Deutsch
+
+**Ablehnungen**
+- Wie schon bei „Alles zurücksetzen“ und der Kindersicherung (0.7.1) erscheint der Grund jetzt in einem Dialog statt als Hinweis, der verschwindet, bevor man hinsieht: nach einer abgebrochenen Eltern-Freigabe beim Einschalten der Kindersicherung („Eltern-Code ist noch nicht gesetzt“), wenn Windows CouchHUD mit eigenen Firewall-Regeln blockiert, wenn die Einrichtung nicht startet (mit „Noch einmal versuchen“, Fokus auf „Abbrechen“), wenn ein unterbrochener Moduswechsel noch wartet und wenn die Handy-Bestätigung wegen zu vieler Fehlversuche gesperrt ist (die Ablehnung selbst kommt erst nach „Verstanden“). Neu dafür: ein Dialog mit einer Taste „Verstanden“.
+- Lehnt Windows die Administrator-Freigabe in der Code-Eingabe ab, steht der Grund jetzt in der Eingabe selbst und nicht in einem Hinweis, der nach 6 s weg ist.
+- Unverändert als Hinweis: „Einer der Bereiche bleibt an“ (die Liste zeigt den Zustand weiter) und der Eltern-Code-Hinweis nach dem Einschalten (die Seite „Kindersicherung“ zeigt „Eltern-Code fehlt“ dauerhaft). Sperre, Eltern-Code und Rechte sind unverändert; nur die Anzeige.
+
+**Plugins**
+- Installierte Plugins, deren Plugin-ID anders lautet als die Katalog-ID (z. B. Weather), werden jetzt dem Katalogeintrag zugeordnet: kein falsches „Nicht mehr im Katalog“ mehr, Update-Hinweis und Deinstallieren funktionieren. Solange eine Katalogquelle Probleme hat, gilt nichts als entfernt.
+- Ein Katalogeintrag einer anderen Quelle bietet für ein von dort nicht installiertes Plugin keine Aktionen mehr an.
+- Plugin freigeben, andere Plugin-Änderungen, Plugin-Seiten und Schnellaktionen öffnen auf der gesperrten Couch jetzt die Entsperrung, statt nur mit „Gesperrt: erst entsperren“ zu enden; bleibt eine Ablehnung bestehen, erscheint sie als Dialog mit Grund.
+
+### English
+
+**Refusals**
+- As with "Reset everything" and parental controls (0.7.1), the reason now comes in a dialog instead of a hint that is gone before one looks: after a cancelled parent approval when switching parental controls on ("The parents' code is not set yet"), when Windows blocks CouchHUD with its own firewall rules, when setup does not start (with "Try again", focus on "Cancel"), when an interrupted mode switch is still waiting, and when the phone confirmation is locked after too many wrong tries (the refusal itself follows after "Got it"). New for this: a dialog with one button, "Got it".
+- When Windows refuses the administrator approval in the code entry, the reason now stands in the entry itself instead of a hint that is gone after 6 s.
+- Unchanged as a hint: "one area stays on" (the list keeps showing the state) and the parents' code hint after switching on (the parental controls page shows "No parents' code yet" all the time). Lock, parents' code and rights are unchanged; only the display.
+
+**Plugins**
+- Installed plugins whose plugin id differs from the catalog id (e.g. Weather) are now matched to their catalog entry: no false "No longer in the catalog", and the update hint and uninstall work. While a catalog source has a problem, nothing is shown as removed.
+- A catalog entry from another source no longer offers actions for a plugin it did not install.
+- Approving a plugin, other plugin changes, plugin pages and quick actions on a locked couch now open the unlock instead of ending in "Locked: unlock first"; a refusal that remains comes as a dialog with the reason.
+
 ## 0.7.1 (2026-11-04)
 
 ### Kurz / Summary

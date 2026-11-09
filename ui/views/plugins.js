@@ -9,7 +9,7 @@ import { el, formatSize, keepInView, setFocused } from '../core/dom.js';
 import { offerRestart } from '../core/power.js';
 import { attempt, toast } from '../core/feedback.js';
 import { currentView, pop, push, render, renderHints } from '../core/nav.js';
-import { chooseDialog, confirmDialog } from '../components/overlay.js';
+import { chooseDialog, confirmDialog, noticeDialog } from '../components/overlay.js';
 import { ensureUnlocked } from '../components/passcode.js';
 import { ensureParentGrant, parental, refreshParental } from '../components/parental.js';
 import { openKeyboard } from '../components/keyboard.js';
@@ -22,8 +22,8 @@ import { afterSkinUninstalled } from '../components/skin-menu.js';
 import { withParentGrant } from '../core/parent-retry.js';
 import { withUnlock } from '../core/downloads-rules.js';
 import {
-  afterSkinUninstall, afterUninstall, badgeOf, capabilityKeys, categoriesIn, categoryGroups, cleanKey, effectiveFilter, nextCategoryFilter, entryActions, entryState, grantAction, installBlock, installPlan, installedFor, isDelisted, isRisky,
-  gateOrigin, grantChange, isPageSetting, isThirdParty, needsCode, publisherOf, runGates, safeImage, sourceAddCheck, sourceErrorKey, sourceRows, sourcesVisible, uninstallPlan
+  afterSkinUninstall, afterUninstall, badgeOf, capabilityKeys, categoriesIn, categoryGroups, cleanKey, effectiveFilter, nextCategoryFilter, entryActions, entryState, grantAction, installBlock, installPlan, installedFor, isDelisted, isRisky, updateOf,
+  gateOrigin, grantChange, openGate, isPageSetting, isThirdParty, needsCode, publisherOf, runGates, safeImage, sourceAddCheck, sourceErrorKey, sourceRows, sourcesVisible, uninstallPlan
 } from '../core/plugin-rules.js';
 
 /** Generic list page: rows of { icon, img, label, detail, meta, value, on, badge, run }; a { section } row is a heading the cursor skips. */
@@ -154,7 +154,7 @@ const STATUS = () => ({
 });
 
 /** Update row of the plugin list: the catalog says a newer version exists. */
-const updateFor = (p) => (state.catalogUpdates ?? []).find((u) => u.kind === 'plugin' && (u.id.toLowerCase() === p.id.toLowerCase() || u.id.toLowerCase() === p.folder.toLowerCase()));
+const updateFor = (p) => updateOf(p, state.catalogUpdates);
 
 /** The text of a badge. */
 function badgeText(x) {
@@ -177,13 +177,19 @@ const isExpert = async () => !!(await attempt(() => api.getSettings()))?.expertM
 
 /**
  * Asked before any question or code prompt: may this change go ahead at all (locked couch, child's profile, expert mode, developer
- * switch)? When not, the host's refusal is shown at once as a toast and nothing else is asked.
+ * switch)? A locked couch (the host's `locked` flag) is not a dead end: the existing unlock (code entry or Windows sign-in) opens and the host is asked again;
+ * cancelled, the press ends quietly. Any other refusal (and a refusal that still stands after the unlock, a child's profile for
+ * one) is shown as a dialog with the host's reason. The host refuses the change itself again, whatever this page does.
  */
 async function gateOpen(change, origin = 'local') {
-  const gate = await attempt(() => api.getPluginGate?.(change, origin), undefined, { quietLocked: true });
-  if (!gate?.refused) return true;
+  const result = await openGate(
+    () => attempt(() => api.getPluginGate?.(change, origin), undefined, { quietLocked: true }),
+    () => ensureUnlocked(t('plugins.codeReason'))
+  );
+  if (result.ok) return true;
+  if (result.cancelled) return false;
   sound.bump();
-  toast(gate.refused, 6000);
+  await noticeDialog(t('consoleSetup.refused.title'), result.refused);
   return false;
 }
 
@@ -418,7 +424,7 @@ export function pluginsPage(startTab = 0, { expert = false, openId = null } = {}
     { icon: '🎨', label: t('plugins.installed.skinZip'), detail: t('plugins.installed.skinZipDetail'), highlight: true, run: () => installZip('skin') },
     ...store.plugins.map((p) => {
       const update = updateFor(p);
-      const delisted = isDelisted(p, store.catalog?.entries);
+      const delisted = isDelisted(p, store.catalog?.entries, { error: store.catalog?.error });
       const badge = p.revoked ? t('plugin.revoked.badge') : badgeText(p);
       return {
         icon: p.removedAtRestart ? '↻' : p.revoked ? '⛔' : p.loaded ? '◆' : p.enabled ? '⚠' : '○',

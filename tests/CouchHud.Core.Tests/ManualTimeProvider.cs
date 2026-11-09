@@ -7,6 +7,15 @@ internal sealed class ManualTimeProvider : TimeProvider
     private readonly List<ManualTimer> _timers = [];
     private DateTimeOffset _now = new(2026, 11, 1, 12, 0, 0, TimeSpan.Zero);
 
+    /// <summary>How many timers are armed right now (a fired or disposed timer is gone), so a test can tell when work that owned timers is over.</summary>
+    public int PendingTimers
+    {
+        get
+        {
+            lock (_lock) return _timers.Count;
+        }
+    }
+
     public override DateTimeOffset GetUtcNow()
     {
         lock (_lock) return _now;

@@ -19,7 +19,7 @@ import { el, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
 import { currentView, pop, renderHints } from '../core/nav.js';
 import { state } from '../core/state.js';
-import { chooseDialog, confirmDialog } from '../components/overlay.js';
+import { chooseDialog, confirmDialog, noticeDialog } from '../components/overlay.js';
 import { parental } from '../components/parental.js';
 import { ensureUnlocked, isLocked, onApprovalAnnounced } from '../components/passcode.js';
 import { beginSetupHold, codeLockPlan, lockStepStatus, setupCouchLock } from '../core/lock-rules.js';
@@ -255,7 +255,7 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
         const settled = await resolveInterruptedSwitch(deps, (await api.getSettings())?.modeSwitchJournal ?? '', { chooseDialog, allowFinish: false });
         if (settled === 'undone') state.info.modeSwitchPending = false;
         else {
-          toast(t('consoleSetup.recover.waiting'), 9000);
+          await noticeDialog(t('consoleSetup.refused.title'), t('consoleSetup.recover.waiting'));
           return;
         }
       }
@@ -267,7 +267,8 @@ function stepsPage({ id, title, intro, notes, doneNotes = () => [], startLabel, 
         phase = 'overview';
         this.paint();
         if (begun.reason !== 'locked') {
-          toast(reason, 7000);
+          // A dialog, not a short toast: the reason stays until it is read; "Try again" begins once more (B or Cancel changes nothing).
+          if (await confirmDialog(t('consoleSetup.refused.title'), t('consoleSetup.action.retry'), { message: reason, focusCancel: true })) return this.start();
           return;
         }
         // The couch locked again before the run began: a dialog (not a toast) says why; "Enter code" asks the unlock and begins again.

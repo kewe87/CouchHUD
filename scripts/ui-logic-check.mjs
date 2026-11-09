@@ -1238,6 +1238,79 @@ for (const a of AREAS) assert.ok(AREA_NAME_KEYS[a] && AREA_DESC_KEYS[a], a);
   const consoleSrc = readFileSync(new URL('../ui/views/console-setup.js', import.meta.url), 'utf8');
   assert.ok(/confirmDialog\(t\('consoleSetup\.refused\.title'\), t\('passcode\.enter'\), \{ message: t\('consoleSetup\.refused\.locked'\), focusCancel: true \}\)/.test(consoleSrc), 'console setup: locked refusal dialog');
   assert.ok(!/toast\(blockedText/.test(consoleSrc), 'console setup: blocked refusal is no toast');
+  // Refusals that used to be a short toast are dialogs now (the reason stays until it is read); where the cause stays visible, the toast stays.
+  const settingsSrc0 = readFileSync(new URL('../ui/views/settings.js', import.meta.url), 'utf8');
+  assert.ok(!/toast\(reason, 7000\)/.test(consoleSrc) && /confirmDialog\(t\('consoleSetup\.refused\.title'\), t\('consoleSetup\.action\.retry'\), \{ message: reason, focusCancel: true \}\)/.test(consoleSrc), 'console setup: not-started refusal is a dialog with a retry');
+  assert.ok(/noticeDialog\(t\('consoleSetup\.refused\.title'\), t\('consoleSetup\.recover\.waiting'\)\)/.test(consoleSrc) && !/toast\(t\('consoleSetup\.recover\.waiting'\)/.test(consoleSrc), 'console setup: waiting journal is a dialog');
+  assert.ok(/noticeDialog\(t\('settings\.network\.firewall'\), t\('settings\.network\.firewallBlocked'/.test(settingsSrc0) && !/toast\(t\('settings\.network\.firewallBlocked'/.test(settingsSrc0), 'firewall block rules: dialog');
+  assert.ok(/await noticeDialog\(.*settings\.parental\.codeHint/.test(settingsSrc0), 'parents code hint after a refused grant: dialog');
+  const secondFactorSrc = readFileSync(new URL('../ui/components/second-factor.js', import.meta.url), 'utf8');
+  assert.ok(/noticeDialog\(t\('consoleSetup\.refused\.title'\), t\('twofa\.lockedOutToast'\)\)\.then\(\(\) => resolve\('cancel'\)\)/.test(secondFactorSrc) && !/toast\(t\('twofa\.lockedOutToast'/.test(secondFactorSrc), 'second factor lock-out: dialog');
+  const passcodeSrc = readFileSync(new URL('../ui/components/passcode.js', import.meta.url), 'utf8');
+  assert.ok(!/toast\(viaAdmin/.test(passcodeSrc) && (passcodeSrc.match(/error = adminBlocked \|\|/g) ?? []).length === 2, 'admin refusal reason goes into the code entry (both entries), no toast');
+  // A locked couch is no dead end on a plugin page: the gate asks the existing unlock and the host again, a refusal that stands is a dialog;
+  // pressed rows and actions of a plugin page retry once after the unlock (the host refuses both times while locked).
+  {
+    const { withUnlock: wu } = await import('../ui/core/downloads-rules.js');
+    const lockedErr = () => Object.assign(new Error('Locked'), { locked: true });
+    // The press wrapper (plugin page, quick actions): withUnlock around the call. Unlock cancelled: one call, no retry.
+    {
+      let calls = 0; let prompts = 0;
+      const call = async () => { calls++; throw lockedErr(); };
+      assert.equal(await wu(call, async () => { prompts++; return false; }), undefined);
+      assert.deepEqual([calls, prompts], [1, 1], 'press: cancelled unlock = one call, no retry');
+    }
+    // Unlock succeeded: exactly two calls, one prompt (the second answer is the result).
+    {
+      let calls = 0; let prompts = 0;
+      const call = async () => { if (++calls === 1) throw lockedErr(); return 'done'; };
+      assert.equal(await wu(call, async () => { prompts++; return true; }), 'done');
+      assert.deepEqual([calls, prompts], [2, 1], 'press: unlock succeeded = exactly two calls');
+      calls = 0;
+      await assert.rejects(wu(async () => { calls++; throw lockedErr(); }, async () => true), (e) => e.locked === true);
+      assert.equal(calls, 2, 'press: still locked after the unlock = no third call');
+    }
+    // A non-locked error: no prompt, no retry. A success first time: no prompt.
+    {
+      let calls = 0; let prompts = 0;
+      await assert.rejects(wu(async () => { calls++; throw new Error('boom'); }, async () => { prompts++; return true; }), /boom/);
+      assert.deepEqual([calls, prompts], [1, 0], 'press: other error = no prompt, no retry');
+      assert.equal(await wu(async () => { calls++; return 'ok'; }, async () => { prompts++; return true; }), 'ok');
+      assert.deepEqual([calls, prompts], [2, 0], 'press: success = no prompt');
+    }
+    // The gate question (plugins.js gateOpen uses pr.openGate): only the host's lock flag prompts.
+    {
+      let asks = 0; let prompts = 0;
+      const lockedThenOpen = async () => (++asks === 1 ? { refused: 'Locked', locked: true } : { refused: null });
+      assert.deepEqual(await pr.openGate(lockedThenOpen, async () => { prompts++; return true; }), { ok: true });
+      assert.deepEqual([asks, prompts], [2, 1], 'gate: lock refusal prompts and asks again');
+      asks = 0; prompts = 0;
+      assert.deepEqual(await pr.openGate(lockedThenOpen, async () => { prompts++; return false; }), { ok: false, cancelled: true });
+      assert.deepEqual([asks, prompts], [1, 1], 'gate: cancelled unlock does not ask again');
+      asks = 0; prompts = 0;
+      const expert = async () => { asks++; return { refused: 'Expert mode needed', locked: false }; };
+      assert.deepEqual(await pr.openGate(expert, async () => { prompts++; return true; }), { ok: false, refused: 'Expert mode needed' });
+      assert.deepEqual([asks, prompts], [1, 0], 'gate: other refusal never prompts');
+      const noFlag = async () => { asks++; return { refused: 'x' }; };
+      asks = 0;
+      assert.equal((await pr.openGate(noFlag, async () => { prompts++; return true; })).ok, false);
+      assert.deepEqual([asks, prompts], [1, 0], 'gate: a refusal without the lock flag never prompts');
+      const stays = async () => { asks++; return { refused: 'Child profile', locked: asks === 1 }; };
+      asks = 0;
+      assert.deepEqual(await pr.openGate(stays, async () => true), { ok: false, refused: 'Child profile' });
+      assert.equal(asks, 2, 'gate: refusal after the unlock stands, no second prompt');
+      assert.deepEqual(await pr.openGate(async () => ({ refused: null }), async () => { throw new Error('no prompt'); }), { ok: true });
+    }
+    // Wiring that cannot be run in Node (DOM modules): the pages use exactly these helpers, and nothing bypasses them.
+    const pageSrc = readFileSync(new URL('../ui/views/plugin-page.js', import.meta.url), 'utf8');
+    assert.ok(/const pressCall = \(call\) => withUnlock\(\(\) => withParentGrant\(call\), \(\) => ensureUnlocked\(t\('plugins\.codeReason'\)\)\)/.test(pageSrc), 'plugin page: pressCall wiring');
+    assert.equal((pageSrc.match(/pressCall\(\(\) => api\./g) ?? []).length, 5, 'plugin page: every press goes through pressCall');
+    assert.ok(!/withParentGrant\(\(\) => api\./.test(pageSrc), 'plugin page: no press bypasses pressCall');
+    const quickSrc = readFileSync(new URL('../ui/components/quick-menu.js', import.meta.url), 'utf8');
+    assert.ok(/withUnlock\(\(\) => withParentGrant\(\(\) => api\.runQuickAction\(a\.plugin, a\.id\)\), \(\) => ensureUnlocked\(t\('plugins\.codeReason'\)\)\)/.test(quickSrc), 'quick actions: unlock wiring');
+    const gateSrc = readFileSync(new URL('../ui/views/plugins.js', import.meta.url), 'utf8');
+    assert.ok(/openGate\(/.test(gateSrc.slice(gateSrc.indexOf('async function gateOpen'))) && !/toast\(gate\.refused/.test(gateSrc), 'plugins page: gateOpen uses openGate, refusal is no toast');
+  }
   // Parental page: no parents' code in the service while parental controls are on: recommendation and a button to the code row.
   const settingsSrc = readFileSync(new URL('../ui/views/settings.js', import.meta.url), 'utf8');
   assert.ok(/p\.enabled && security\?\.couchLock === 'code' && security\?\.serviceCodes && security\.serviceCodes\.parent !== true\s*\? \[info\(t\('settings\.parental\.noParentCode'\)[\s\S]*?settingsView\.jump\('console', 'code'\)/.test(settingsSrc), 'parental page: recommendation to set a parents code');
@@ -1291,6 +1364,46 @@ for (const a of AREAS) assert.ok(AREA_NAME_KEYS[a] && AREA_DESC_KEYS[a], a);
   assert.equal(pr.isDelisted({ id: 'kodi', folder: 'Kodi', origin: 'thirdParty', userInstalled: true }, undefined), false);
   assert.equal(pr.isDelisted({ id: 'mine', folder: 'Mine', origin: 'local', userInstalled: true }, listed), false);
   assert.equal(pr.isDelisted({ id: 'shipped', folder: 'Shipped', origin: 'firstParty', userInstalled: false }, listed), false);
+  // Regression (0.7.1 VM test): the plugin id is "CouchHud.Plugin.Weather", the catalog id is "weather"; the folder the index names links them. Both views use one rule.
+  {
+    const weather = { id: 'CouchHud.Plugin.Weather', folder: 'CouchHud.Plugin.Weather', origin: 'firstParty', userInstalled: true };
+    const rows = [{ id: 'weather', folder: 'CouchHud.Plugin.Weather', kind: 'plugin', status: 'installed' }];
+    assert.equal(pr.isDelisted(weather, rows), false, 'listed under another id form is not delisted');
+    assert.equal(pr.installedFor(rows[0], [weather]), weather);
+    assert.equal(pr.updateOf(weather, [{ id: 'weather', folder: 'CouchHud.Plugin.Weather', kind: 'plugin', version: '1.1.0' }])?.version, '1.1.0');
+    assert.equal(pr.afterUninstall(rows, weather)[0].status, 'notInstalled');
+    // Truly delisted: the catalog loaded but has no entry for it.
+    assert.equal(pr.isDelisted(weather, [{ id: 'wand', folder: 'CouchHud.Plugin.Wand', kind: 'plugin' }]), true);
+    assert.equal(pr.isDelisted(weather, [{ id: 'wand', folder: 'CouchHud.Plugin.Wand', kind: 'plugin' }, { id: 'weather', folder: 'CouchHud.Plugin.Weather', kind: 'skin' }]), true, 'a skin entry does not list a plugin');
+    // Catalog unavailable: nothing is called delisted.
+    for (const none of [undefined, null, [], { entries: [] }]) assert.equal(pr.isDelisted(weather, none), false);
+    // Exact matches only: no prefix, suffix or look-alike claims an installed plugin or its update.
+    for (const bad of [{ id: 'weather', folder: 'CouchHud.Plugin.Weather2' }, { id: 'weather2', folder: 'Weather' }, { id: 'weather', folder: 'CouchHud.Plugin.Weathe' }, { id: 'ouchHud.Plugin.Weather' }, { id: 'x', folder: '' }]) {
+      assert.equal(pr.installedFor({ ...bad, kind: 'plugin' }, [weather]), undefined, JSON.stringify(bad));
+      assert.equal(pr.updateOf(weather, [{ ...bad, kind: 'plugin' }]), undefined, JSON.stringify(bad));
+    }
+    assert.equal(pr.installedFor({ id: 'x', kind: 'plugin' }, [{ id: 'y', folder: undefined }]), undefined);
+    // Kelvin sign: JS toLowerCase folds U+212A to "k", the host's OrdinalIgnoreCase does not. Only A-Z fold.
+    assert.equal(pr.installedFor({ id: 'x', folder: 'WeaKer', kind: 'plugin' }, [{ id: 'y', folder: 'Weaker' }]), undefined);
+    assert.equal(pr.installedFor({ id: 'x', folder: 'WEAKER', kind: 'plugin' }, [{ id: 'y', folder: 'Weaker' }])?.id, 'y');
+    // An entry of another source (it names the folder of a plugin it does not own) manages nothing and does not list the plugin.
+    const foreign = { id: 'weather', folder: 'CouchHud.Plugin.Weather', kind: 'plugin', status: 'installed', otherSource: true, extra: true };
+    assert.deepEqual(pr.entryActions(foreign, weather, { expert: true }), []);
+    assert.deepEqual(pr.entryActions({ ...foreign, otherSource: false }, { ...weather, enabled: true }, { expert: true }), ['disable', 'uninstall']);
+    assert.equal(pr.isDelisted(weather, [{ id: 'wand', folder: 'W', kind: 'plugin' }, foreign]), true);
+    // Any source with a problem (the official one down, a second source from the developer list loaded with extra:false): nobody is called delisted.
+    const community = { id: 'glow', folder: 'GlowBar', origin: 'thirdParty', userInstalled: true };
+    const other = [{ id: 'kodi', folder: 'Kodi', kind: 'plugin', extra: false }];
+    const err = { error: 'Katalog nicht erreichbar' };
+    assert.equal(pr.isDelisted(weather, other, err), false);
+    assert.equal(pr.isDelisted(community, other, err), false);
+    // No error: a plugin with no entry is delisted, first party or not.
+    assert.equal(pr.isDelisted(weather, other, { error: null }), true);
+    assert.equal(pr.isDelisted(community, other, { error: null }), true);
+    assert.equal(pr.isDelisted(weather, other), true);
+    // The old cross-match (entry id equal to the plugin's folder) is gone: the host does not do it either.
+    assert.equal(pr.installedFor({ id: 'kodi', kind: 'plugin' }, [{ id: 'other', folder: 'Kodi' }]), undefined);
+  }
   // After an uninstall the catalog row says "not installed" at once (the list was read before), for that plugin only: not for another one or a skin of the same id.
   {
     const rows = [{ id: 'wand', kind: 'plugin', status: 'installed', installedVersion: '1.0.0' }, { id: 'wand', kind: 'skin', status: 'installed' }, { id: 'other', kind: 'plugin', status: 'update', installedVersion: '1.0.0' }];

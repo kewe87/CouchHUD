@@ -8,6 +8,7 @@ namespace CouchHud.Core.Tests;
 /// An unsigned package (a local install) must never take over or break a plugin that is already there. The refusal comes before anything is
 /// written, staged, trusted or registered; the plugin that was there stays exactly as it was.
 /// </summary>
+[Collection("Language")]
 public class LocalPackageGuardTests : IDisposable
 {
     private readonly string _root = Directory.CreateTempSubdirectory("couchhud-guard-").FullName;
