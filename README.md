@@ -359,6 +359,12 @@ CI builds the setup (Inno Setup 6); the steps are in [.github/workflows/build.ym
 - The installer is built with Inno Setup (Inno Setup License).
 - Logo, banner and screenshots are made for this project; the games shown are made up.
 
+## Gefällt dir CouchHUD? / Like CouchHUD?
+
+Dann freue ich mich über einen ⭐ auf [GitHub](https://github.com/kewe87/CouchHUD). Das hilft anderen, das Projekt zu finden. Fehler und Ideen gerne als [Issue](https://github.com/kewe87/CouchHUD/issues).
+
+Then I'd be happy about a ⭐ on [GitHub](https://github.com/kewe87/CouchHUD). It helps others find the project. Bugs and ideas are welcome as [issues](https://github.com/kewe87/CouchHUD/issues).
+
 ## Lizenz / License
 
 Copyright © 2026 **kewe87**
