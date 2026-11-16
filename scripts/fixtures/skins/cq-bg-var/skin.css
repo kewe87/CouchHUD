@@ -1,2 +1,2 @@
 :root[data-skin="user:cq-bg-var"]{--x:1}
-:root{--bg:var(--nonexistent);--fg:env(safe-area-inset-top);--muted:attr(x)}
+:root{--bg:var(--nonexistent);--fg:env(safe-area-inset-top)}

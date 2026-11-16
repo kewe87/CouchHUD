@@ -656,7 +656,7 @@ public sealed class PluginFunctionTests : IDisposable
         visits.Clear();
         Assert.False(visits.Active("tool", "b", "kid"));
         var hud = Hud();
-        Assert.Contains("EndPluginVisits();", Body(hud, "private void ForgetUnlock()"));
+        Assert.Contains("EndPluginVisits();", Body(hud, "private void ForgetUnlock(GameSession? resuming = null)"));
         Assert.Contains("if (locked) EndPluginVisits();", hud);
         // Leaving the page: the page tells the host, which only ever ends a visit.
         var ui = ReadSource(Path.Combine(RepoRoot(), "ui", "views", "plugin-page.js"));

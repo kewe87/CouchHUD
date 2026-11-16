@@ -33,6 +33,13 @@ public sealed record OpenLaunchNote(string ItemId, long Serial, DateTimeOffset A
 
     /// <summary>Does the note belong to this session (it ends with it).</summary>
     public bool Belongs(GameSession session) => Serial != 0 && session.Launch == Serial;
+
+    /// <summary>
+    /// The note after the unlock is forgotten. Bringing the session's own game forward (its hand-over, a resume) keeps the note of exactly that
+    /// launch; every other occasion (a trip to the HUD, a profile switch, a new start, a resume of another session) ends it.
+    /// </summary>
+    public static OpenLaunchNote? AfterForgetUnlock(OpenLaunchNote? note, GameSession? resuming) =>
+        note is not null && resuming is not null && note.Belongs(resuming) && !resuming.External ? note : null;
 }
 
 /// <summary>

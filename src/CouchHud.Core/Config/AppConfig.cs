@@ -1818,18 +1818,71 @@ public sealed class ConfigStore
     /// <see cref="UpdateOrThrow"/>; callers that change state outside the file (the service's codes and mode) refuse up front while
     /// <see cref="Fault"/> is set, so the two cannot drift apart.
     /// </summary>
-    public bool Update(Action<AppConfig> change)
+    public bool Update(Action<AppConfig> change) => Update(change, growing: false);
+
+    private bool Update(Action<AppConfig> change, bool growing)
     {
         lock (_lock)
         {
+            // Reset first: a faulted store reports its fault, never an old "full" from the call before.
+            RefusedForSize = false;
             if (Fault is not null) TryRecover();
             else ReloadIfChangedOnDisk();
             if (Fault is null) MergeRecoveryNotes(save: false);
             else return RefuseWhileFaulted(change);
-            change(Current);
-            return TrySave(Current);
+            // The state before the change, kept in memory as the exact bytes a save writes (UTF-8, same format: the size is measured on what
+            // lands in the file): a change that is refused (too large) or throws after it changed something is taken back to exactly this, so an
+            // earlier change that is only in memory (its save failed on a locked file) is never lost with it, and nothing depends on the disk.
+            var snapshot = JsonSerializer.SerializeToUtf8Bytes(Current, JsonOptions);
+            try
+            {
+                change(Current);
+            }
+            catch
+            {
+                // A refusal that changed nothing (a grant that is still needed) keeps the very same object: others hold references to it.
+                if (!JsonSerializer.SerializeToUtf8Bytes(Current, JsonOptions).AsSpan().SequenceEqual(snapshot)) Restore(snapshot);
+                throw;
+            }
+            // Serialized once: the size checks and the save use these bytes.
+            var written = JsonSerializer.SerializeToUtf8Bytes(Current, JsonOptions);
+            if (growing)
+            {
+                // Refused only when it ends above the soft limit AND is larger than before: removing or shrinking always works.
+                if (written.Length > SoftSaveBytes && written.Length > snapshot.Length)
+                {
+                    Restore(snapshot);
+                    RefusedForSize = true;
+                    LastSaveError = Strings.Get("config.libraryFull");
+                    return false;
+                }
+            }
+            return TrySave(Current, snapshot, written);
         }
     }
+
+    /// <summary>The soft limit for writes that make the file grow (own entries, bookmarks, collections): the rest up to <see cref="MaxPeekBytes"/> is kept for settings and parental rules.</summary>
+    public const int SoftSaveBytes = MaxPeekBytes / 4 * 3;
+
+    /// <summary>
+    /// Like <see cref="UpdateOrThrow"/> for a change that adds user data: refused with a "library full" message (and nothing changed, in memory
+    /// or on disk) when the file would grow beyond <see cref="SoftSaveBytes"/>, so adding entries can never use up the room parents' settings need.
+    /// </summary>
+    public void UpdateGrowing(Action<AppConfig> change)
+    {
+        lock (_lock)
+        {
+            if (Update(change, growing: true)) return;
+            if (RefusedForSize) throw new InvalidOperationException(LastSaveError);
+            throw new IOException(Fault is not null ? Strings.Get("config.notSavedFault") : Strings.Get("config.notSaved", LastSaveError ?? FilePath));
+        }
+    }
+
+    /// <summary>The last refused save was refused for its size (the change was taken back), not because the file could not be written.</summary>
+    private bool RefusedForSize { get; set; }
+
+    /// <summary>Puts memory back to the state a change started from.</summary>
+    private void Restore(byte[] snapshot) => Current = JsonSerializer.Deserialize<AppConfig>(snapshot, JsonOptions)!;
 
     /// <summary>
     /// A change while the file is unusable: nothing is saved, and the stand-in (<see cref="FaultConfig"/>) stays as it is in memory as well (a
@@ -1851,6 +1904,7 @@ public sealed class ConfigStore
     public void UpdateOrThrow(Action<AppConfig> change)
     {
         if (Update(change)) return;
+        if (RefusedForSize) throw new InvalidOperationException(LastSaveError);
         // While the file is unusable nothing is saved on purpose: that is not a file held by another program.
         throw new IOException(Fault is not null ? Strings.Get("config.notSavedFault") : Strings.Get("config.notSaved", LastSaveError ?? FilePath));
     }
@@ -1924,7 +1978,7 @@ public sealed class ConfigStore
         }
     }
 
-    private bool TrySave(AppConfig config)
+    private bool TrySave(AppConfig config, byte[]? before = null, byte[]? serialized = null)
     {
         // A file we could not use is not ours to replace with defaults.
         if (Fault is not null)
@@ -1937,7 +1991,17 @@ public sealed class ConfigStore
         try
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(FilePath)!);
-            var json = JsonSerializer.Serialize(config, JsonOptions);
+            var bytes = serialized ?? JsonSerializer.SerializeToUtf8Bytes(config, JsonOptions);
+            // A file the reader would refuse (MaxPeekBytes) must never replace a good one: the next start would find neither copy usable.
+            if (bytes.Length > MaxPeekBytes)
+            {
+                // Taken back in memory too: a change that is not on disk must not look done (and be gone at the next start).
+                if (before is not null) Restore(before);
+                RefusedForSize = true;
+                LastSaveError = Strings.Get("config.tooLarge");
+                Console.Error.WriteLine($"[config] not saved: {System.IO.Path.GetFileName(FilePath)} would be larger than {MaxPeekBytes} bytes");
+                return false;
+            }
             // Write next to the target and swap, so a power cut never leaves half a file. The swap is "access denied" while another
             // process has the file open without sharing the right to replace it (a reader of the other CouchHud process, a virus
             // scanner, the indexer): that passes in a moment, so it is tried again instead of being lost.
@@ -1946,7 +2010,6 @@ public sealed class ConfigStore
                 try
                 {
                     // Written through to the disk before it replaces the file: a reset right after must not leave zero bytes behind.
-                    var bytes = System.Text.Encoding.UTF8.GetBytes(json);
                     DurableFile.WriteThrough(temp, bytes);
                     MoveOver(temp, FilePath);
                     _lastSeenWrite = File.GetLastWriteTimeUtc(FilePath);

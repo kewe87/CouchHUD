@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "serial": 5,
+  "serial": 7,
   "name": "CouchHUD Katalog",
   "entries": [
     {
@@ -43,12 +43,12 @@
       "name": "CaseHUD",
       "type": "plugin",
       "category": "hardware",
-      "version": "1.1.0",
-      "minCouchHud": "0.7.0",
+      "version": "1.2.1",
+      "minCouchHud": "0.7.2",
       "author": "kewe87",
       "description": {
-        "de": "Schaltet die LCDs in Lüftern und Pumpen von CaseHUD: Szenen, Helligkeit, Beleuchtung, Automatik",
-        "en": "Switch and operate the LCDs in your fans and pumps through CaseHUD: scenes, brightness, lighting, automation"
+        "de": "Schaltet LCDs in Lüftern und Pumpen von CaseHUD: Szenen, Licht, Automatik und Kühlungs-Presets wählen",
+        "en": "Operate the LCDs in your fans and pumps through CaseHUD: scenes, lighting, automation and cooling presets"
       },
       "longDescription": {
         "de": "Bedient CaseHUD vom Sofa aus: Szenen und Stile wählen, Helligkeit, Modus und Farbschema jedes Displays, Beleuchtung, Automatik und Szenenwechsel ein- und ausschalten, Displays finden. Designs, Effekte und Geräte stellst du in CaseHUD am PC ein (\"Am PC öffnen\"). Das Plugin spricht nur mit CaseHUD auf diesem PC; für die erste Installation lädt es die signierte Version von GitHub, das Aktualisieren erledigt CaseHUD selbst.",
@@ -73,11 +73,11 @@
         "uninstallEntry": "CaseHUD"
       },
       "icon": "https://raw.githubusercontent.com/kewe87/CouchHUD-Catalog/main/icons/casehud.png",
-      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/casehud-1.1.0/CouchHud.Plugin.CaseHud-1.1.0.zip",
+      "download": "https://github.com/kewe87/CouchHUD-Catalog/releases/download/casehud-1.2.1/CouchHud.Plugin.CaseHud-1.2.1.zip",
       "sdk": 3,
-      "sha256": "2142ffa5996c9c67096db4b35456751bf8aef7dd6e35a409477568f71fba5e5b",
-      "statement": "eyJpZCI6ImNhc2VodWQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uQ2FzZUh1ZCIsInZlcnNpb24iOiIxLjEuMCIsInNoYTI1NiI6IjIxNDJmZmE1OTk2YzljNjcwOTZkYjRiMzU0NTY3NTFiZjhhZWY3ZGQ2ZTM1YTQwOTQ3NzU2OGY3MWZiYTVlNWIiLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC43LjAiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJxdWlja0FjdGlvbnMiLCJkb3dubG9hZHMiLCJzZXR1cC5ydW4iLCJsb2NrLnJlc3RyaWN0Iiwic3RhcnR1cC5hcmdzIiwicHJvY2VzcyIsInJlZ2lzdHJ5IiwibmF0aXZlIiwibmV0d29yazpsb29wYmFjayIsIm5ldHdvcms6aW50ZXJuZXQiLCJzZW5zb3JzLnB1Ymxpc2giXSwicHVibGlzaGVyS2V5IjoiMjQ3YmJhNjI4NDlkZGZlYWI4NzQ5YTM4NDg4NzkxODA3YmZmYTMzYzcyMzQ3ZWEyMDkzMTg3MGRiYmI3NzA5ZiIsImxpY2Vuc2UiOiJHUEwtMy4wLW9ubHkiLCJhdXRob3IiOiJrZXdlODciLCJuYW1lIjoiQ2FzZUhVRCIsInN1bW1hcnkiOiJTd2l0Y2ggYW5kIG9wZXJhdGUgdGhlIExDRHMgaW4geW91ciBmYW5zIGFuZCBwdW1wcyB0aHJvdWdoIENhc2VIVUQ6IHNjZW5lcywgYnJpZ2h0bmVzcywgbGlnaHRpbmcsIGF1dG9tYXRpb24sIHdpdGggZ3VpZGUgbWVudSBlbnRyaWVzIiwiaWNvbiI6eyJzaGEyNTYiOiIxYTM1ZDU1MDM0YzE2ZmNmZWJmZDMwODZjOThiMTgxMmQwMmQ3YWE2OTI0MjI3NTI5MTBmNmY3Y2RkNGI2MjNmIiwiYnl0ZXMiOjI3OTk2fSwic2l6ZSI6MTgyNTgzfQ==",
-      "signature": "F6IDZ9k9XP6tDGnt74idOYE8KaCKHBP4IR/+17x4ecXQKaALJr7lLQMyWQ0FYJuC0ijp501YWqQQ6EGIy8bW/A=="
+      "sha256": "9b2a1f4e029b583ea405cea0c7b82f55d014d9de39df56d73e25e726756bec06",
+      "statement": "eyJpZCI6ImNhc2VodWQiLCJmb2xkZXIiOiJDb3VjaEh1ZC5QbHVnaW4uQ2FzZUh1ZCIsInZlcnNpb24iOiIxLjIuMSIsInNoYTI1NiI6IjliMmExZjRlMDI5YjU4M2VhNDA1Y2VhMGM3YjgyZjU1ZDAxNGQ5ZGUzOWRmNTZkNzNlMjVlNzI2NzU2YmVjMDYiLCJzZGsiOjMsIm1pbkNvdWNoSHVkIjoiMC43LjIiLCJjYXBhYmlsaXRpZXMiOlsicGFnZXMiLCJxdWlja0FjdGlvbnMiLCJkb3dubG9hZHMiLCJzZXR1cC5ydW4iLCJsb2NrLnJlc3RyaWN0Iiwic3RhcnR1cC5hcmdzIiwicHJvY2VzcyIsInJlZ2lzdHJ5IiwibmF0aXZlIiwibmV0d29yazpsb29wYmFjayIsIm5ldHdvcms6aW50ZXJuZXQiLCJzZW5zb3JzLnB1Ymxpc2giXSwicHVibGlzaGVyS2V5IjoiMjQ3YmJhNjI4NDlkZGZlYWI4NzQ5YTM4NDg4NzkxODA3YmZmYTMzYzcyMzQ3ZWEyMDkzMTg3MGRiYmI3NzA5ZiIsImxpY2Vuc2UiOiJHUEwtMy4wLW9ubHkiLCJhdXRob3IiOiJrZXdlODciLCJuYW1lIjoiQ2FzZUhVRCIsInN1bW1hcnkiOiJTd2l0Y2ggYW5kIG9wZXJhdGUgdGhlIExDRHMgaW4geW91ciBmYW5zIGFuZCBwdW1wcyB0aHJvdWdoIENhc2VIVUQ6IHNjZW5lcywgYnJpZ2h0bmVzcywgbGlnaHRpbmcsIGF1dG9tYXRpb24sIHdpdGggZ3VpZGUgbWVudSBlbnRyaWVzIiwiaWNvbiI6eyJzaGEyNTYiOiIxYTM1ZDU1MDM0YzE2ZmNmZWJmZDMwODZjOThiMTgxMmQwMmQ3YWE2OTI0MjI3NTI5MTBmNmY3Y2RkNGI2MjNmIiwiYnl0ZXMiOjI3OTk2fSwic2l6ZSI6MjA2NjQ5fQ==",
+      "signature": "S9kB2uD4MBkyQy/y+KSkPfcFZQdy/ygvlDas4D4Fr9kR0h311UBpvQojT7t88P5HEGxu2gEp4LFdXq8AnQC8gw=="
     },
     {
       "id": "vpn",

@@ -311,7 +311,7 @@ public sealed class ProfileContractTests
         Assert.Contains("ProfileIdle();", Body("Hud.cs", "    public void DisplayOff()"));
         Assert.Contains("if (AnyGameRunning) return;", Body("HudProfiles.cs", "    public void ProfileIdle()"));
         // ForgetUnlock really drops the unlock and the service's cache (what the switch relies on).
-        var forget = Body("Hud.cs", "    private void ForgetUnlock()");
+        var forget = Body("Hud.cs", "    private void ForgetUnlock(GameSession? resuming = null)");
         Assert.Contains("_unlockedUntil = DateTimeOffset.MinValue;", forget);
         Assert.Contains("AdminService.Ops.Cache.Clear();", forget);
         // A protected profile waiting for its code starts nothing (MCP and the assistant start through Launch too).

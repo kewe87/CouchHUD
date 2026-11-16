@@ -270,6 +270,7 @@ public static partial class Strings
 
         // files
         ["files.folderNotFound"] = "Folder not found: {0}",
+        ["files.foldersFull"] = "The list of game folders is full (at most {0}). Remove one first.",
         ["files.place.desktop"] = "Desktop",
         ["files.place.downloads"] = "Downloads",
         ["files.place.pictures"] = "Pictures",
@@ -365,6 +366,7 @@ public static partial class Strings
         // library
         ["library.notCustom"] = "{0} isn't a custom entry",
         ["library.nothingToAdd"] = "Nothing to add",
+        ["library.entryTooLong"] = "{0} has a program path, link or start parameters that are too long.",
         ["library.ignoreFull"] = "{0} entries are hidden already. Show some again first in Settings › Library › Hidden entries.",
 
         // lock
@@ -780,6 +782,8 @@ public static partial class Strings
         ["remote.firewallBlocked.body"] = "Windows made block rules of its own for CouchHud.exe (Cancel in the firewall prompt). They beat our allow rule: the phone and MCP do not get through. Delete them in Windows Firewall › Advanced settings › Inbound rules.",
         ["config.notSaved"] = "The settings could not be saved ({0}). config.json is locked or belongs to another program. It was tried several times",
         ["config.notSavedFault"] = "Not saved: config.json is damaged, missing or cannot be read, and CouchHUD writes nothing on purpose until it is repaired or put back (see the notice “Settings cannot be used”).",
+        ["config.libraryFull"] = "The library is full: nothing more can be added. Remove something first.",
+        ["config.tooLarge"] = "The settings are too large to be saved, so this change was not made.",
         ["stuck.title"] = "Windows restrictions got stuck",
         ["stuck.body"] = "Values of the CouchHUD lock (Run, Control Panel, command prompt …) are still set in Windows and nothing explains them. Settings › Expert › Services › “Clean up” removes them (administrator once).",
         ["stuck.ask"] = "Windows restrictions of the CouchHUD lock got stuck (for example Run, Control Panel, command prompt). Clean up now? Windows asks for the administrator once.",

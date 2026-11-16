@@ -26,6 +26,10 @@ public static class ConfigLimits
     public const int MaxRemoteDevices = 64;
     public const int MaxDeviceNameLength = 64;
     public const int MaxNameLength = 200;
+    /// <summary>A custom entry's name: its id is made from it, so it is cut when written, never only when loaded.</summary>
+    public const int MaxEntryNameLength = MaxNameLength;
+    /// <summary>Write-side limits of an own entry's program path, working folder, link and all its start parameters together, and of a bookmark's link (not cut on load: an entry that works stays as it is).</summary>
+    public const int MaxEntryPathLength = 2048, MaxEntryArgsLength = 4096, MaxEntryUrlLength = 4096;
     public const int MaxListEntries = 5000;
     public const int MaxFolderEntries = 200;
     /// <summary>The UI sets no limit on collections; far above any real use.</summary>
@@ -232,7 +236,7 @@ internal static class ConfigSanitizer
         if (extraChanged) fix("extra catalog sources");
 
         c.Apps = Cap(c.Apps, ConfigLimits.MaxListEntries, out var appsChanged);
-        foreach (var a in c.Apps) if ((a.Name ?? "").Length > ConfigLimits.MaxNameLength) { a.Name = Cut(a.Name, ConfigLimits.MaxNameLength); appsChanged = true; }
+        foreach (var a in c.Apps) if ((a.Name ?? "").Length > ConfigLimits.MaxEntryNameLength) { a.Name = Cut((a.Name ?? "").Trim(), ConfigLimits.MaxEntryNameLength); appsChanged = true; }
         if (appsChanged) fix("own entries");
 
         c.Bookmarks = Cap(c.Bookmarks, ConfigLimits.MaxListEntries, out var marksChanged);

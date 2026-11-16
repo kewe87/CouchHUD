@@ -98,6 +98,7 @@ public static class SecondFactorActions
         ["storeMatch"] = Not("which store entry fits a game: cosmetics"),
         ["startOptions"] = Not("start parameters of one game, bound to the game"),
         ["editType"] = Not("the kind of one entry, bound to the entry"),
+        ["removeEntry"] = Not("removes one own entry; a locked one only with the parents' code, bound to the entry, and its locks move to the entries that take its id"),
         ["editHidden"] = Not("hides or shows one library entry, bound to the entry; a hidden entry keeps its play time, limits and item lock, so no way past the rules opens"),
         ["companions"] = Yes(CompanionLocked), // plain rules are judged like starting the app by hand (eligible program, couch lock, the child's own list); the second factor is asked only for WhenLocked and mode "all" (HudCompanions)
         ["addGame"] = Not("adds a library entry the child's rules still apply to (the parents' code covers it; a known limit)"),

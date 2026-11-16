@@ -5,10 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AnalysisLevel>latest</AnalysisLevel>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <Version>0.7.2</Version>
+    <Version>0.7.3</Version>
     <!--
       Release or development build. A release build (CI on a tag: environment variable or -p:CouchHudRelease=true) carries exactly
-      <Version>; every other build (a local build, CI without a tag) is a pre-release of it: 0.7.2-dev+<short commit>. A pre-release is
+      <Version>; every other build (a local build, CI without a tag) is a pre-release of it: 0.7.3-dev+<short commit>. A pre-release is
       older than its release, so an installed development build is offered the real release by the updater (a local build with the same
       number as the release once hid the update). The updater ignores the part after "+".
     -->

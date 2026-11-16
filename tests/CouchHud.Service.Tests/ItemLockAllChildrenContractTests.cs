@@ -43,7 +43,7 @@ public sealed class ItemLockAllChildrenContractTests
         var body = Body(Shell("Hud.cs"), Declaration);
         var refuse = body.IndexOf("RefuseWhileConfigFaulted();", StringComparison.Ordinal);
         var grant = body.IndexOf("RequireParentGrant(allChildren ? \"lockAll\" : \"lock\", id);", StringComparison.Ordinal);
-        var update = body.IndexOf("config.Update(", StringComparison.Ordinal);
+        var update = body.IndexOf("config.UpdateOrThrow(", StringComparison.Ordinal);
         Assert.True(refuse >= 0 && refuse < grant && grant < update, "refusal, then the grant for this entry, then the change");
         // Both scopes live in this one body: this method is the only writer of the household list in the shell.
         Assert.Contains("LockedItemsAllChildren", body);
@@ -51,6 +51,23 @@ public sealed class ItemLockAllChildrenContractTests
             .Select(f => Path.GetFileName(f)!).Order().ToList();
         Assert.Equal(["Hud.cs"], writers);
         Assert.Contains("hud.SetParentalItemLock(StringArg(0), Arg(1).ValueKind == JsonValueKind.True, Arg(2).ValueKind == JsonValueKind.True)", Shell("UiHost", "UiBridge.cs"));
+    }
+
+    [Fact]
+    public void Removing_an_own_entry_checks_the_lock_the_shift_and_the_grant_inside_the_removal_and_uses_the_grant_before_removing()
+    {
+        var body = Body(Shell("Hud.cs"), "    public void RemoveEntry(string id)");
+        Assert.Contains("library.RemoveCustomEntry(id, (c, entry, shifts) =>", body);
+        Assert.Contains("c.ParentalEnabled && (shifts || CustomEntryLocks.IsLocked(c, known ?? entry, all))", body);
+        Assert.Contains("UseUp(CheckParentGrant(\"removeEntry\", id))", body);
+        var service = File.ReadAllText(Path.Combine(Root(), "src", "CouchHud.Core", "Library", "LibraryService.cs")).Replace("\r\n", "\n");
+        var remove = service[service.IndexOf("public bool RemoveCustomEntry(", StringComparison.Ordinal)..];
+        var authorize = remove.IndexOf("authorize?.Invoke(c, before[index], moves.Count > 0);", StringComparison.Ordinal);
+        var removal = remove.IndexOf("c.Apps.Remove(valid[index]);", StringComparison.Ordinal);
+        Assert.True(authorize >= 0 && authorize < removal, "the grant is checked and used up inside the update, before anything is removed");
+        Assert.Contains("CustomEntryLocks.Rekey(", remove);
+        // The couch lock: the bridge refuses the call while the couch is locked.
+        Assert.DoesNotContain("removeEntry", CouchHud.Core.Guard.LockPolicy.OpenWhileLocked);
     }
 
     [Fact]
@@ -62,7 +79,7 @@ public sealed class ItemLockAllChildrenContractTests
         var reset = Body(hud, "    public object ResetParentalAllChildrenLocks()");
         var refuse = reset.IndexOf("RefuseWhileConfigFaulted();", StringComparison.Ordinal);
         var grant = reset.IndexOf("RequireParentGrant(\"lockAllReset\");", StringComparison.Ordinal);
-        var update = reset.IndexOf("config.Update(", StringComparison.Ordinal);
+        var update = reset.IndexOf("config.UpdateOrThrow(", StringComparison.Ordinal);
         Assert.True(refuse >= 0 && refuse < grant && grant < update);
         Assert.Contains("LockedItemsAllChildrenUnreadable = false", reset);
         // No other place in the shell clears the mark.

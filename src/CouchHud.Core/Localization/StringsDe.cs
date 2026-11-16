@@ -270,6 +270,7 @@ public static partial class Strings
 
         // files
         ["files.folderNotFound"] = "Ordner nicht gefunden: {0}",
+        ["files.foldersFull"] = "Die Liste der Spielordner ist voll (höchstens {0}). Zuerst einen entfernen.",
         ["files.place.desktop"] = "Desktop",
         ["files.place.downloads"] = "Downloads",
         ["files.place.pictures"] = "Bilder",
@@ -365,6 +366,7 @@ public static partial class Strings
         // library
         ["library.notCustom"] = "{0} ist kein eigener Eintrag",
         ["library.nothingToAdd"] = "Nichts zum Hinzufügen",
+        ["library.entryTooLong"] = "„{0}“ hat einen Programmpfad, Link oder Startparameter, die zu lang sind.",
         ["library.ignoreFull"] = "Schon {0} Einträge ausgeblendet. Zeig unter Einstellungen › Bibliothek › Ausgeblendete Einträge erst welche wieder an.",
 
         // lock
@@ -780,6 +782,8 @@ public static partial class Strings
         ["remote.firewallBlocked.body"] = "Windows hat eigene Blockregeln für CouchHud.exe angelegt (Abbrechen im Firewall-Fenster). Sie gewinnen gegen unsere Erlauben-Regel: Handy und MCP kommen nicht durch. Löschen unter Windows-Firewall › Erweiterte Einstellungen › Eingehende Regeln.",
         ["config.notSaved"] = "Die Einstellungen ließen sich nicht speichern ({0}). Die Datei config.json ist gesperrt oder gehört einem anderen Programm. Es wurde mehrfach versucht",
         ["config.notSavedFault"] = "Nicht gespeichert: config.json ist beschädigt, fehlt oder ist nicht lesbar, und CouchHUD schreibt absichtlich nichts, bis sie repariert oder zurückgelegt ist (siehe Hinweis „Einstellungen nicht nutzbar“).",
+        ["config.libraryFull"] = "Die Bibliothek ist voll: es kann nichts mehr hinzugefügt werden. Zuerst etwas entfernen.",
+        ["config.tooLarge"] = "Die Einstellungen sind zu groß zum Speichern, die Änderung wurde nicht übernommen.",
         ["stuck.title"] = "Windows-Einschränkungen hängen geblieben",
         ["stuck.body"] = "Werte der CouchHUD-Sperre (Ausführen, Systemsteuerung, Eingabeaufforderung …) stehen noch in Windows, aber nichts erklärt sie. Einstellungen › Experte › Dienste › „Aufräumen“ entfernt sie (einmal Administrator).",
         ["stuck.ask"] = "Windows-Einschränkungen der CouchHUD-Sperre sind hängen geblieben (z. B. Ausführen, Systemsteuerung, Eingabeaufforderung). Jetzt aufräumen? Windows fragt dafür einmal nach dem Administrator.",

@@ -26,7 +26,7 @@ public static class ParentCodeKind
     {
         "catalogSourceAdd", "catalogSourceRemove",
         "profileSwitch", "profileManage",
-        "extend", "launch", "lock", "lockAll", "lockAllReset", "saveSettings", "storeMatch", "startOptions", "editType", "editHidden", "addGame", "installGame", "openClientDownloads",
+        "extend", "launch", "lock", "lockAll", "lockAllReset", "saveSettings", "storeMatch", "startOptions", "editType", "removeEntry", "editHidden", "addGame", "installGame", "openClientDownloads",
         // pluginFunction: who may use a plugin function. Without parental controls there are no child profiles and the couch code is the highest
         // protection there is; with parental controls on, or a parents' code held by the service, it stays the parents' code (For below).
         "browserRecent", "tvInput", "pluginFunction"

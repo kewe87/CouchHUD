@@ -860,7 +860,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     /// <summary>The side effects of a resume (the unlock is forgotten, the game thawed). Only when the game is really about to be brought forward.</summary>
     private IReadOnlyList<int> BeginResume(GameSession s)
     {
-        ForgetUnlock();
+        ForgetUnlock(s);
         // The game goes in front now: an activation of the HUD that is still on its way must not freeze it again.
         _pauseOnActivate = false;
         var wasPaused = GamePause.IsPaused;
@@ -1131,10 +1131,12 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     private void UseUp(ParentTicket? ticket) => Gate.Use(ticket);
 
     /// <summary>The unlock and the release do not survive a game start or a trip back to the HUD.</summary>
-    private void ForgetUnlock()
+    private void ForgetUnlock(GameSession? resuming = null)
     {
-        // A trip back to the HUD, a profile switch or a new start ends the open-couch note of an earlier launch.
-        Interlocked.Exchange(ref _openLaunch, null);
+        // A trip back to the HUD, a profile switch or a new start ends the open-couch note of an earlier launch. Only the hand-over of the
+        // note's own session (BeginResume) keeps it: its companions are still judged as at the open couch that started the game.
+        var note = _openLaunch;
+        Interlocked.CompareExchange(ref _openLaunch, OpenLaunchNote.AfterForgetUnlock(note, resuming), note);
         _unlockedUntil = DateTimeOffset.MinValue;
         _parentCodeChainUntil = DateTimeOffset.MinValue;
         _grant.Clear();
@@ -1611,7 +1613,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
                 if (on) _parentCodeChainUntil = MonoNow().AddMinutes(2);
                 // Switched either way: a release of the recent sites from before does not carry over.
                 _browserRecentShown = false;
-                config.Update(c =>
+                config.UpdateOrThrow(c =>
                 {
                     c.ParentalEnabled = on;
                     if (on)
@@ -1674,7 +1676,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         void Rule(Action<ParentalConfig> set, Action<AppConfig>? also = null)
         {
             var found = false;
-            config.Update(c =>
+            config.UpdateOrThrow(c =>
             {
                 var p = c.Profile(profileId);
                 if (p.Id != profileId) return;
@@ -1785,7 +1787,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         RequireParentGrant(allChildren ? "lockAll" : "lock", id);
         _ = library.Find(id) ?? throw new KeyNotFoundException($"unknown item {id}");
         var profileId = Parental.ProfileId;
-        config.Update(c =>
+        config.UpdateOrThrow(c =>
         {
             var rules = c.Profile(profileId).Rules;
             if (allChildren)
@@ -1815,7 +1817,7 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
     {
         RefuseWhileConfigFaulted();
         RequireParentGrant("lockAllReset");
-        config.Update(c =>
+        config.UpdateOrThrow(c =>
         {
             c.LockedItemsAllChildren = [];
             c.LockedItemsAllChildrenUnreadable = false;
@@ -6376,7 +6378,9 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         if (config.Current.ParentalEnabled) RequireParentGrant("addGame");
         config.Update(c =>
         {
-            if (!c.GameFolders.Any(f => f.Equals(full, StringComparison.OrdinalIgnoreCase))) c.GameFolders.Add(full);
+            if (c.GameFolders.Any(f => f.Equals(full, StringComparison.OrdinalIgnoreCase))) return;
+            if (c.GameFolders.Count >= ConfigLimits.MaxFolderEntries) throw new InvalidOperationException(Strings.Get("files.foldersFull", ConfigLimits.MaxFolderEntries));
+            c.GameFolders.Add(full);
         });
         await library.ScanAsync();
         return config.Current.GameFolders;
@@ -6396,7 +6400,21 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         return GameFolderDiscovery.Candidates(roots, config.Current.GameFolders);
     });
 
-    public void RemoveEntry(string id) => library.RemoveCustomEntry(id);
+    /// <summary>
+    /// Removes an own entry. One that is locked for any profile (or whose removal moves a later entry of the same name onto its id, which would reset
+    /// that entry's rules) needs the parents' grant.
+    /// </summary>
+    public void RemoveEntry(string id)
+    {
+        var all = library.Items;
+        // Checked inside the config update the removal runs in, on the state it changes, and the grant is used up there before anything is removed.
+        // The library's own version of the entry (it carries the folder that decides which entries share a lock), else the stored one.
+        var known = all.FirstOrDefault(i => i.Id == id);
+        library.RemoveCustomEntry(id, (c, entry, shifts) =>
+        {
+            if (c.ParentalEnabled && (shifts || CustomEntryLocks.IsLocked(c, known ?? entry, all))) UseUp(CheckParentGrant("removeEntry", id));
+        });
+    }
 
     public IReadOnlyList<SkinInfo> ListSkins()
     {
@@ -7494,13 +7512,16 @@ public sealed partial class Hud(ConfigStore config, LibraryService library, Artw
         return BrowserState();
     }
 
+    private static string ClipName(string name) => name.Length > ConfigLimits.MaxEntryNameLength ? name[..ConfigLimits.MaxEntryNameLength] : name;
+
     public object AddBookmark(string name, string url)
     {
         url = ToUrl(url);
-        config.Update(c =>
+        if (url.Length > ConfigLimits.MaxEntryUrlLength) throw new ArgumentException(Strings.Get("library.entryTooLong", url[..40]));
+        config.UpdateGrowing(c =>
         {
             c.Bookmarks.RemoveAll(b => b.Url == url);
-            c.Bookmarks.Add(new Bookmark { Name = string.IsNullOrWhiteSpace(name) ? url : name.Trim(), Url = url });
+            c.Bookmarks.Add(new Bookmark { Name = ClipName(string.IsNullOrWhiteSpace(name) ? url : name.Trim()), Url = url });
         });
         return BrowserState();
     }

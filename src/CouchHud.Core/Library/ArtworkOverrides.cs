@@ -28,6 +28,7 @@ public static class ArtworkOverrides
     public static string Normalize(string pathOrUrl)
     {
         var value = pathOrUrl.Trim();
+        if (value.Length > CouchHud.Core.Config.ConfigLimits.MaxEntryUrlLength) throw new ArgumentException(Strings.Get("library.entryTooLong", value[..40]));
         if (value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return value;
         if (value.Contains("://") && !value.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException(Strings.Get("artwork.onlyHttps"));

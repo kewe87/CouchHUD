@@ -129,7 +129,7 @@ public sealed class SaveGameService(
         return (int)Math.Clamp(mb, min, max);
     }
 
-    private SaveBackupService Backups() => new(BackupDir, Math.Clamp(config.Current.BackupsToKeep, 1, 50), Math.Clamp(config.Current.AutoBackupsToKeep, 1, MaxAutoKeep));
+    private SaveBackupService Backups() => new(BackupDir, Math.Clamp(config.Current.BackupsToKeep, ConfigLimits.BackupsToKeepMin, ConfigLimits.BackupsToKeepMax), Math.Clamp(config.Current.AutoBackupsToKeep, 1, MaxAutoKeep));
 
     private SaveBackupService BackupsFor(LibraryItem item)
     {
@@ -143,7 +143,7 @@ public sealed class SaveGameService(
     public SaveSettingsDto GetSettings()
     {
         var c = config.Current;
-        return new SaveSettingsDto(BackupDir, DefaultBackupDir, BackupDir != DefaultBackupDir, Math.Clamp(c.BackupsToKeep, 1, 50), c.BackupConfigFiles)
+        return new SaveSettingsDto(BackupDir, DefaultBackupDir, BackupDir != DefaultBackupDir, Math.Clamp(c.BackupsToKeep, ConfigLimits.BackupsToKeepMin, ConfigLimits.BackupsToKeepMax), c.BackupConfigFiles)
         {
             AutoBackup = c.AutoBackupSaves,
             AutoKeep = Math.Clamp(c.AutoBackupsToKeep, 1, MaxAutoKeep),
@@ -200,7 +200,7 @@ public sealed class SaveGameService(
                                                                || full.StartsWith(Long(r!) + "\\", StringComparison.OrdinalIgnoreCase)));
     }
 
-    public void SetKeep(int keep) => config.Update(c => c.BackupsToKeep = Math.Clamp(keep, 1, 50));
+    public void SetKeep(int keep) => config.Update(c => c.BackupsToKeep = Math.Clamp(keep, ConfigLimits.BackupsToKeepMin, ConfigLimits.BackupsToKeepMax));
 
     public void SetAutoBackup(bool on) => config.Update(c => c.AutoBackupSaves = on);
 

@@ -87,7 +87,7 @@ public sealed class ZReviewBypassTests
         Assert.Contains("\"lockMode\" => [ServiceOperation.SetLockMode, ServiceOperation.RemovePasscode],", hud);
         Assert.Contains("\"lockModeCode\" => [ServiceOperation.SetLockMode, ServiceOperation.EnrollPasscode, ServiceOperation.ChangePasscode],", hud);
         Assert.Contains("RequireParentGrant(sequence is null ? \"lockMode\" : \"lockModeCode\")", hud);
-        var forget = hud[hud.IndexOf("private void ForgetUnlock()", StringComparison.Ordinal)..];
+        var forget = hud[hud.IndexOf("private void ForgetUnlock(GameSession? resuming = null)", StringComparison.Ordinal)..];
         Assert.Contains("_parentCodeChainUntil = DateTimeOffset.MinValue;", forget[..forget.IndexOf('}')]);
         var chain = hud[hud.IndexOf("public async Task<object> SetParentCodeAsync", StringComparison.Ordinal)..];
         chain = chain[..chain.IndexOf("Passcode.Validate", StringComparison.Ordinal)];

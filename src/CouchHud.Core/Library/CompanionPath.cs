@@ -16,11 +16,17 @@ public sealed class HeldProgram(FileStream file, string path) : IDisposable
     /// <summary>The open file (read only, writers kept out): what is hashed, verified and started is this one.</summary>
     public FileStream Stream { get; } = file;
 
-    /// <summary>The SHA-256 of the held file's content, lower-case hex.</summary>
+    private string? _sha256Hex;
+
+    /// <summary>
+    /// The SHA-256 of the held file's content, lower-case hex. Hashed once: the file is open with FileShare.Read (see
+    /// <see cref="CompanionPath.Hold"/>), so nobody can write it while it is held and the content cannot differ between two calls.
+    /// </summary>
     public string Sha256Hex()
     {
+        if (_sha256Hex is { } known) return known;
         Stream.Position = 0;
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Stream)).ToLowerInvariant();
+        return _sha256Hex = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Stream)).ToLowerInvariant();
     }
 
     public void Dispose() => Stream.Dispose();

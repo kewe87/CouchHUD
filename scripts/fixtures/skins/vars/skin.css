@@ -2,4 +2,4 @@
 
 @property --tab-size{syntax:"<length>";inherits:true;initial-value:0.1px}
 @property --tab-color{syntax:"<color>";inherits:true;initial-value:transparent}
-:root{--tab-size:var(--nope, 0.0001px); --tab-pad-x:calc(100rem); --tab-gap:999rem; --tab-color:var(--tab-color); --tab-font:var(--tab-font); --tab-letter:attr(x); --tab-weight:inherit; --tab-case: revert; --tab-glow:env(safe-area-inset-top); --tab-pad-y:0.8rem !important}
+:root{--tab-size:var(--nope, 0.0001px); --tab-pad-x:calc(100rem); --tab-gap:999rem; --tab-color:var(--tab-color); --tab-font:var(--tab-font); --tab-weight:inherit; --tab-case: revert; --tab-glow:env(safe-area-inset-top); --tab-pad-y:0.8rem !important}

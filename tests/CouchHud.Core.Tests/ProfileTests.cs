@@ -527,7 +527,7 @@ public sealed class ProfileTests : IDisposable
     public void Only_the_accessor_touches_the_default_profiles_fields()
     {
         var src = Path.Combine(RepoRoot(), "src");
-        var allowed = new[] { Path.Combine("CouchHud.Core", "Config", "AppConfig.cs"), Path.Combine("CouchHud.Core", "Config", "Profiles.cs"), Path.Combine("CouchHud.Core", "Config", "ConfigSanitizer.cs") };
+        var allowed = new[] { Path.Combine("CouchHud.Core", "Config", "AppConfig.cs"), Path.Combine("CouchHud.Core", "Config", "Profiles.cs"), Path.Combine("CouchHud.Core", "Config", "ConfigSanitizer.cs"), Path.Combine("CouchHud.Core", "Library", "CustomEntryLocks.cs") };
         var pattern = DirectUse();
         var found = new List<string>();
         foreach (var file in Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories))

@@ -348,6 +348,18 @@ public class CompanionPinTests : IDisposable
     }
 
     [Fact]
+    public void Forgetting_the_unlock_keeps_the_note_only_for_the_session_being_handed_over()
+    {
+        var note = new OpenLaunchNote("game", 7, DateTimeOffset.UtcNow);
+        Assert.Same(note, OpenLaunchNote.AfterForgetUnlock(note, SessionOf("game", 7)));   // the switch's own hand-over
+        Assert.Null(OpenLaunchNote.AfterForgetUnlock(note, null));                         // trip to the HUD, profile switch, new start
+        Assert.Null(OpenLaunchNote.AfterForgetUnlock(note, SessionOf("game", 8)));         // another launch of the same game
+        Assert.Null(OpenLaunchNote.AfterForgetUnlock(note, SessionOf("other", 9)));        // another game never inherits it
+        Assert.Null(OpenLaunchNote.AfterForgetUnlock(note, SessionOf("game", 7, external: true)));
+        Assert.Null(OpenLaunchNote.AfterForgetUnlock(null, SessionOf("game", 7)));
+    }
+
+    [Fact]
     public void The_tracker_gives_each_launch_a_serial_and_the_session_carries_it()
     {
         var dir = Path.Combine(Path.GetTempPath(), "couchhud-pin-tracker");

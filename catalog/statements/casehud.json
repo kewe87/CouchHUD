@@ -1,10 +1,10 @@
 {
   "id": "casehud",
   "folder": "CouchHud.Plugin.CaseHud",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "sha256": "",
   "sdk": 3,
-  "minCouchHud": "0.7.0",
+  "minCouchHud": "0.7.2",
   "capabilities": [
     "pages",
     "quickActions",

@@ -137,7 +137,7 @@ public sealed class GameFocusContractTests
         }
         Assert.Contains("if (step != NewGameFrontStep.Activate) return (step, null);", look);
         var begun = Body("    private IReadOnlyList<int> BeginResume(GameSession s)");
-        Assert.Contains("ForgetUnlock();", begun);
+        Assert.Contains("ForgetUnlock(s);", begun);   // the unlock is dropped; only the note of this very session survives (OpenLaunchNote.AfterForgetUnlock)
         Assert.Contains("GamePause.ResumeAll();", begun);
         // A plain resume is the gate plus the same side effects.
         var prepare = Body("    private IReadOnlyList<int> PrepareResume()");

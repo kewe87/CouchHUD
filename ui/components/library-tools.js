@@ -4,7 +4,7 @@ import { iconEl } from '../core/glyph-icons.js';
 import { api } from '../core/api.js';
 import { el, formatSize, keepInView, setFocused } from '../core/dom.js';
 import { attempt, toast } from '../core/feedback.js';
-import { SOURCE_LABEL, findItem, setLibrary } from '../core/library.js';
+import { SOURCE_LABEL, findItem, reloadLibrary, setLibrary } from '../core/library.js';
 import { refreshFavorites } from '../core/favorites.js';
 import { move, pop, push, render } from '../core/nav.js';
 import { state } from '../core/state.js';
@@ -24,6 +24,9 @@ import { isWebUrl } from '../core/links.js';
 import { lower, t } from '../core/i18n.js';
 import { TARGET_EXTENSIONS, isScript, launchRows, scriptArgsProblem, targetLabel } from '../core/launch-rules.js';
 import { canGuide, guideRowKey, inGuide } from '../core/companion-rules.js';
+
+// Same as ConfigLimits.MaxEntryNameLength: an entry's id comes from its name, a longer one is cut at the next start.
+const ENTRY_NAME_MAX = 200;
 
 const PROGRAM_EXTENSIONS = ['.exe', '.lnk', '.url', '.bat', '.cmd'];
 
@@ -50,7 +53,7 @@ export async function addEntryFlow(options) {
   if (kind === 'web') {
     const url = await openKeyboard({ title: t('libraryTools.url.title'), value: 'https://', hint: t('libraryTools.url.hint') });
     if (!url || url === 'https://') return;
-    const name = await openKeyboard({ title: t('libraryTools.tile.title'), value: guessSiteName(url) });
+    const name = await openKeyboard({ title: t('libraryTools.tile.title'), value: guessSiteName(url), maxLength: ENTRY_NAME_MAX });
     if (!name) return;
     entry = { name, type: 'app', url };
   } else if (kind === 'app') {
@@ -68,7 +71,7 @@ export async function addEntryFlow(options) {
 async function addFileFlow(kind) {
   const path = await openFileBrowser({ title: kind === 'game' ? t('libraryTools.pickGame') : t('libraryTools.pickApp'), mode: 'file', extensions: PROGRAM_EXTENSIONS });
   if (!path) return;
-  const name = await openKeyboard({ title: t('libraryTools.name'), value: baseName(path) });
+  const name = await openKeyboard({ title: t('libraryTools.name'), value: baseName(path), maxLength: ENTRY_NAME_MAX });
   if (!name) return;
   await saveEntries([{ name, type: kind, path }]);
 }
@@ -267,7 +270,7 @@ function scanResultsPage(folder, rows) {
     },
     async rename() {
       const row = rows[this.index];
-      const name = await openKeyboard({ title: t('libraryTools.name'), value: row.name });
+      const name = await openKeyboard({ title: t('libraryTools.name'), value: row.name, maxLength: ENTRY_NAME_MAX });
       if (name) row.name = name;
       render();
     },
@@ -531,7 +534,7 @@ export async function editItemMenu(item) {
       label: t('libraryTools.edit.rename'),
       icon: '✎',
       run: async () => {
-        const name = await openKeyboard({ title: t('libraryTools.edit.newName'), value: item.name });
+        const name = await openKeyboard({ title: t('libraryTools.edit.newName'), value: item.name, maxLength: ENTRY_NAME_MAX });
         if (name !== undefined) await applyEdit(item, { name }, name ? t('libraryTools.edit.renamedTo', { name }) : t('libraryTools.edit.nameReset'));
       }
     },
@@ -598,8 +601,9 @@ export async function editItemMenu(item) {
       label: t('libraryTools.edit.remove'),
       run: async () => {
         if (!(await confirmDialog(t('libraryTools.edit.removeConfirm', { name: item.name }), t('libraryTools.edit.removeButton'), { danger: true }))) return;
-        if ((await attempt(() => api.removeEntry(item.id), t('libraryTools.edit.removeFailed'))) === undefined) return;
-        state.library = state.library.filter((i) => i.id !== item.id);
+        if ((await attempt(() => withParentGrant(() => api.removeEntry(item.id), t('libraryTools.edit.guardRemoveParental')), t('libraryTools.edit.removeFailed'))) === undefined) return;
+        // The host moved the later entries of the same name up one id: take the current list, not the old ids.
+        await reloadLibrary();
         toast(t('libraryTools.edit.removed', { name: item.name }));
         pop();
       }

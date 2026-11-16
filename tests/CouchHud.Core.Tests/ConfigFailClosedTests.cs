@@ -23,6 +23,108 @@ public class ConfigFailClosedTests : IDisposable
     private const string LockedConfig = """{"couchLock":"code","passcodeHash":"hash-of-the-parents","integrationMode":"full","parental":{"enabled":true}}""";
 
     [Fact]
+    public void A_save_larger_than_the_read_limit_is_refused_and_the_good_file_stays()
+    {
+        var store = new ConfigStore(_dir, 1, Quick);
+        Assert.True(store.Update(c => c.Sounds = false));
+        var good = File.ReadAllText(File_);
+
+        Assert.False(store.Update(c => c.Apps.Add(new CustomEntry { Name = "big", Path = new string('a', ConfigStore.MaxPeekBytes) })));
+
+        Assert.Equal(good, File.ReadAllText(File_));
+        Assert.NotNull(store.LastSaveError);
+        // The refused change is taken back in memory too: nothing looks done that is gone at the next start.
+        Assert.DoesNotContain(store.Current.Apps, a => a.Name == "big");
+        Assert.False(store.Current.Sounds);
+        Assert.Throws<InvalidOperationException>(() => store.UpdateOrThrow(c => c.Apps.Add(new CustomEntry { Name = "big", Path = new string('a', ConfigStore.MaxPeekBytes) })));
+        Assert.Null(new ConfigStore(_dir, 1, Quick).Fault);
+    }
+
+    [Fact]
+    public void Growing_writes_stop_at_the_soft_limit_and_leave_room_for_settings()
+    {
+        var store = new ConfigStore(_dir, 1, Quick);
+        store.UpdateGrowing(c => c.Apps.Add(new CustomEntry { Name = "a", Path = new string('a', ConfigStore.SoftSaveBytes - 10_000) }));
+        var before = File.ReadAllText(File_);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => store.UpdateGrowing(c => c.Apps.Add(new CustomEntry { Name = "b", Path = new string('b', 20_000) })));
+
+        Assert.NotEmpty(ex.Message);
+        Assert.Equal(before, File.ReadAllText(File_));
+        Assert.DoesNotContain(store.Current.Apps, a => a.Name == "b");
+        // What parents set still fits under the hard limit.
+        Assert.True(store.Update(c => c.Sounds = false));
+        Assert.False(new ConfigStore(_dir, 1, Quick).Current.Sounds);
+    }
+
+    [Fact]
+    public void Shrinking_works_while_the_file_is_over_the_soft_limit()
+    {
+        var store = new ConfigStore(_dir, 1, Quick);
+        // Over the soft limit but under the hard one (written by a plain update, as an older version could).
+        Assert.True(store.Update(c => c.Apps.Add(new CustomEntry { Name = "big", Path = new string('a', ConfigStore.SoftSaveBytes + 1000) })));
+        Assert.Throws<InvalidOperationException>(() => store.UpdateGrowing(c => c.Apps.Add(new CustomEntry { Name = "more", Path = "x" })));
+
+        store.UpdateGrowing(c => c.Apps.RemoveAll(a => a.Name == "big"));
+
+        Assert.DoesNotContain(store.Current.Apps, a => a.Name == "big");
+        store.UpdateGrowing(c => c.Apps.Add(new CustomEntry { Name = "more", Path = "x" }));
+    }
+
+    [Fact]
+    public void A_refused_change_does_not_take_back_an_earlier_change_that_is_only_in_memory()
+    {
+        var failing = true;
+        var store = new ConfigStore(_dir, 1, Quick) { MoveOver = (from, to) => { if (failing) throw new IOException("held by another program"); File.Move(from, to, true); } };
+        // The save of this change fails (file held): it stays in memory only.
+        Assert.False(store.Update(c => c.Sounds = false));
+        Assert.False(store.Current.Sounds);
+
+        Assert.False(store.Update(c => c.Apps.Add(new CustomEntry { Name = "big", Path = new string('a', ConfigStore.MaxPeekBytes) })));
+
+        Assert.False(store.Current.Sounds);
+        Assert.DoesNotContain(store.Current.Apps, a => a.Name == "big");
+    }
+
+    [Fact]
+    public void A_refusal_that_changed_nothing_keeps_the_same_object_and_a_refused_change_restores_the_state()
+    {
+        var store = new ConfigStore(_dir, 1, Quick);
+        var held = store.Current;
+
+        Assert.Throws<InvalidOperationException>(() => store.Update(_ => throw new InvalidOperationException("grant needed")));
+        Assert.Same(held, store.Current);
+
+        Assert.Throws<InvalidOperationException>(() => store.Update(c => { c.Sounds = false; throw new InvalidOperationException("late"); }));
+        Assert.NotSame(held, store.Current);
+        Assert.True(store.Current.Sounds);
+    }
+
+    [Fact]
+    public void The_soft_limit_is_three_quarters_of_the_read_limit_in_bytes_of_the_written_file()
+    {
+        Assert.Equal(3 * 1024 * 1024, ConfigStore.SoftSaveBytes);
+        var store = new ConfigStore(_dir, 1, Quick);
+        store.UpdateGrowing(c => c.Apps.Add(new CustomEntry { Name = "a", Path = new string('a', 1000) }));
+        Assert.True(new FileInfo(File_).Length < ConfigStore.SoftSaveBytes);
+    }
+
+    [Fact]
+    public void A_change_that_throws_leaves_no_half_change_and_a_faulted_store_reports_its_fault()
+    {
+        var store = new ConfigStore(_dir, 1, Quick);
+        Assert.Throws<InvalidOperationException>(() => store.Update(c => { c.Sounds = false; throw new InvalidOperationException("no"); }));
+        Assert.True(store.Current.Sounds);
+
+        File.WriteAllText(File_, "{ \"couchLock\": \"code\", \"passcodeHash\": ");
+        File.Delete(File_ + ".bak");
+        var faulted = new ConfigStore(_dir, 1, Quick);
+        Assert.NotNull(faulted.Fault);
+        var ex = Assert.Throws<IOException>(() => faulted.UpdateGrowing(c => c.Apps.Add(new CustomEntry { Name = "a", Path = "x" })));
+        Assert.DoesNotContain("full", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void A_broken_file_starts_locked_and_is_not_overwritten_with_defaults()
     {
         File.WriteAllText(File_, "{ \"couchLock\": \"code\", \"passcodeHash\": ");

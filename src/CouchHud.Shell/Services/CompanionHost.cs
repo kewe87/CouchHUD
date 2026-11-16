@@ -151,12 +151,14 @@ public sealed class CompanionHost(Func<IReadOnlySet<int>> gamePids, Action<strin
             }
         }
         // A locked couch bypasses the child's own list, and the file may sit where the child can write: only exactly what the parent confirmed
-        // starts (path, arguments, folder, file), judged on this held file. In this order: the digest of the held file first (the slow part),
-        // then the lock, read as late as possible so that locked now counts even if the plan was made unlocked, then the decision, which for
-        // a locked start also reads the folder ACLs now (a folder that became writable since the confirmation blocks the start unless the
-        // parent allowed that). An unlocked start (an adult) is not held to the pin.
-        var digest = CompanionPin.DigestOf(plan, held, start.Rule.AllowWritableFolder);
+        // starts (path, arguments, folder, file), judged on this held file. In this order: the digest of the held file first (the slow part,
+        // only when the start is locked: an unlocked start, an adult's, is not held to the pin and Decide does not look at the digest), then
+        // the lock, read as late as possible so that locked now counts even if the plan was made unlocked (then the digest is made after all),
+        // then the decision, which for a locked start also reads the folder ACLs now (a folder that became writable since the confirmation
+        // blocks the start unless the parent allowed that).
+        var digest = start.Locked || (isLockedNow?.Invoke() ?? false) ? CompanionPin.DigestOf(plan, held, start.Rule.AllowWritableFolder) : "";
         var lockedNow = isLockedNow?.Invoke() ?? false;
+        if (digest.Length == 0 && (start.Locked || lockedNow)) digest = CompanionPin.DigestOf(plan, held, start.Rule.AllowWritableFolder);
         var pinDecision = CompanionPin.Decide(start.Rule, start.Locked, lockedNow, digest, () => CompanionFolders.Writable(plan, held));
         if (string.IsNullOrEmpty(start.Rule.Sha256) && (start.Locked || lockedNow) && pinDecision is PinStart.Start or PinStart.SkipChanged or PinStart.SkipFolderWritable)
             lockedPinChecked?.Invoke(start.App.Id, pinDecision != PinStart.SkipChanged);

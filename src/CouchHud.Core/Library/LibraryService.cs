@@ -230,6 +230,8 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     /// Rename, re-categorize or hide any entry; stored as an override (name, type) or on the ignore list (hidden) so rescans keep it.
     /// Who may hide is the host's decision (Hud.SetHidden); this only stores.
     /// </summary>
+    private static string Clip(string name) => name.Length > ConfigLimits.MaxEntryNameLength ? name[..ConfigLimits.MaxEntryNameLength].Trim() : name;
+
     public LibraryItem EditItem(string id, string? name, string? type, bool? hidden)
     {
         if (Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
@@ -238,10 +240,10 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         if (hidden == true) EnsureCanHide(id);
         if (name is not null || type is not null)
         {
-            config.Update(c =>
+            config.UpdateGrowing(c =>
             {
                 var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
-                if (name is not null) o.Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+                if (name is not null) o.Name = string.IsNullOrWhiteSpace(name) ? null : Clip(name.Trim());
                 if (type is not null) o.Type = type;
                 if (o.IsEmpty) c.Overrides.Remove(id);
                 else c.Overrides[id] = o;
@@ -373,7 +375,7 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     {
         if (Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
         ItemOverride? after = null;
-        config.Update(c =>
+        config.UpdateGrowing(c =>
         {
             var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
             ArtworkOverrides.Set(o, slot, url);
@@ -493,7 +495,7 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     /// <summary>Applies one change to the collections and returns the new list.</summary>
     public IReadOnlyList<ItemCollection> UpdateCollections(Action<List<ItemCollection>> change)
     {
-        config.Update(c => change(c.ActiveProfile.Collections));
+        config.UpdateGrowing(c => change(c.ActiveProfile.Collections));
         return GetCollections();
     }
 
@@ -532,7 +534,7 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
     public void SetItemInfo(string id, InfoChange change)
     {
         if (Find(id) is null) throw new KeyNotFoundException($"unknown item {id}");
-        config.Update(c =>
+        config.UpdateGrowing(c =>
         {
             var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
             InfoOverrides.Apply(o, change);
@@ -551,7 +553,7 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         if (!StoreMatches.CanChoose(item)) throw new ArgumentException(Strings.Get("store.steamOwn", item.Name));
         StoreMatches.Validate(match);
         ItemOverride? after = null;
-        config.Update(c =>
+        config.UpdateGrowing(c =>
         {
             var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
             StoreMatches.Apply(o, match, name, previousAge, confirmed);
@@ -593,7 +595,7 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         if (!ArtworkMatches.CanChoose(item)) throw new ArgumentException(Strings.Get("artwork.chooseOwnEntry"));
         var pin = ArtworkMatches.Validate(match);
         ItemOverride? after = null;
-        config.Update(c =>
+        config.UpdateGrowing(c =>
         {
             var o = c.Overrides.TryGetValue(id, out var existing) ? existing : new ItemOverride();
             // Online picks of the old game's pictures go only when another game is pinned; unpinning or the same pin leaves them.
@@ -680,9 +682,26 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
 
     public void AddCustomEntries(IEnumerable<CustomEntry> entries)
     {
-        var valid = entries.Where(e => !string.IsNullOrWhiteSpace(e.Name) && (!string.IsNullOrWhiteSpace(e.Path) || !string.IsNullOrWhiteSpace(e.Url))).ToList();
+        // The id comes from the name: trimmed and cut now, like the load does, or the id changes at the next start and every lock and
+        // favorite on it is lost. Trimmed first, then cut, then checked: 200 spaces and a word must not leave an empty name behind.
+        var list = entries.ToList();
+        foreach (var e in list)
+        {
+            e.Name = (e.Name ?? "").Trim();
+            if (e.Name.Length > ConfigLimits.MaxEntryNameLength) e.Name = e.Name[..ConfigLimits.MaxEntryNameLength].Trim();
+        }
+        var valid = list.Where(e => !string.IsNullOrWhiteSpace(e.Name) && (!string.IsNullOrWhiteSpace(e.Path) || !string.IsNullOrWhiteSpace(e.Url))).ToList();
         if (valid.Count == 0) throw new ArgumentException(Strings.Get("library.nothingToAdd"));
-        config.Update(c => c.Apps.AddRange(valid));
+        foreach (var e in valid) CheckEntryLengths(e);
+        config.UpdateGrowing(c => c.Apps.AddRange(valid));
+    }
+
+    /// <summary>Program, folder, link and parameters of an own entry have a length limit, so entries cannot fill up the settings file.</summary>
+    public static void CheckEntryLengths(CustomEntry e)
+    {
+        if ((e.Path?.Length ?? 0) > ConfigLimits.MaxEntryPathLength || (e.Cwd?.Length ?? 0) > ConfigLimits.MaxEntryPathLength
+            || (e.Url?.Length ?? 0) > ConfigLimits.MaxEntryUrlLength || (e.Image?.Length ?? 0) > ConfigLimits.MaxEntryUrlLength || (e.Hero?.Length ?? 0) > ConfigLimits.MaxEntryUrlLength || e.Args.Sum(a => a.Length + 1) > ConfigLimits.MaxEntryArgsLength)
+            throw new ArgumentException(Strings.Get("library.entryTooLong", e.Name));
     }
 
     /// <summary>
@@ -700,7 +719,9 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
             if (index < 0 || string.IsNullOrEmpty(valid[index].Path) || !string.IsNullOrEmpty(valid[index].Url)) throw new KeyNotFoundException(Strings.Get("library.notCustom", id));
             var entry = valid[index];
             if (LaunchOptions.IsScript(entry.Path)) LaunchOptions.CheckScriptArguments(args);
-            entry.Cwd =LaunchOptions.ValidateWorkingDirectory(workingDirectory, entry.Path!);
+            var cwd = LaunchOptions.ValidateWorkingDirectory(workingDirectory, entry.Path!);
+            if (args.Sum(a => a.Length + 1) > ConfigLimits.MaxEntryArgsLength || (cwd?.Length ?? 0) > ConfigLimits.MaxEntryPathLength) throw new ArgumentException(Strings.Get("library.entryTooLong", entry.Name));
+            entry.Cwd = cwd;
             entry.Args = [.. args];
             rebuilt = CustomEntries.From([entry])[0];
         });
@@ -764,30 +785,67 @@ public sealed class LibraryService(ConfigStore config, ArtworkResolver artwork, 
         if (!found) throw new KeyNotFoundException(Strings.Get("library.notCustom", id));
     }
 
-    /// <summary>Removes an entry the user added; store games are hidden instead.</summary>
-    public void RemoveCustomEntry(string id)
+    private void ForgetBase(string id)
+    {
+        _baseArt.Remove(id);
+        _scannedArt.Remove(id);
+        _baseLastPlayed.Remove(id);
+        _baseNames.Remove(id);
+    }
+
+    private void MoveBase(string from, string to)
+    {
+        static void Move<T>(Dictionary<string, T> map, string from, string to)
+        {
+            if (map.Remove(from, out var value)) map[to] = value;
+        }
+        Move(_baseArt, from, to);
+        Move(_scannedArt, from, to);
+        Move(_baseLastPlayed, from, to);
+        Move(_baseNames, from, to);
+    }
+
+    /// <summary>
+    /// Removes an entry the user added; store games are hidden instead. <paramref name="authorize"/> runs inside the same config update, on the
+    /// state the removal then changes (the entry as it is stored, and whether later entries of the same name change their id): it throws to refuse,
+    /// and uses up a grant, so the check and the removal cannot drift apart. Returns whether later entries changed their id (the library is
+    /// stale until the next scan).
+    /// </summary>
+    public bool RemoveCustomEntry(string id, Action<AppConfig, LibraryItem, bool>? authorize = null)
     {
         var removed = false;
-        config.Update(c =>
+        IReadOnlyList<(string From, string To)> moves = [];
+        config.UpdateOrThrow(c =>
         {
-            var ids = CustomEntries.From(c.Apps).Select(i => i.Id).ToList();
+            var before = CustomEntries.From(c.Apps);
+            var ids = before.Select(i => i.Id).ToList();
             var valid = c.Apps.Where(e => !string.IsNullOrWhiteSpace(e.Name) && (!string.IsNullOrEmpty(e.Url) || !string.IsNullOrEmpty(e.Path))).ToList();
             var index = ids.IndexOf(id);
             if (index < 0) return;
+            var after = CustomEntries.From(c.Apps.Where(e => !ReferenceEquals(e, valid[index])));
+            moves = CustomEntryLocks.Shifts(ids, index, after.Select(i => i.Id).ToList());
+            authorize?.Invoke(c, before[index], moves.Count > 0);
             c.Apps.Remove(valid[index]);
             c.Overrides.Remove(id);
             // Own entries are named after their name: a new entry with the same name must not come back hidden.
             LibraryIgnore.Show(c.Ignored ??= [], [LibraryIgnore.IdPrefix + id]);
-            // The entry is gone for everybody: out of every profile's favorites and collections.
-            foreach (var profile in c.AllProfiles)
-            {
-                profile.Favorites.Remove(id);
-                Collections.Forget(profile.Collections, id);
-            }
+            // The entry is gone for everybody: out of every profile's favorites and collections (also the ones the app ignores).
+            CustomEntryLocks.Forget(c, id);
+            // Later entries of the same name move up one id: locks, hidden mark, play time and the rest move with them (and none is lost).
+            CustomEntryLocks.Rekey(c, before, index, after);
             removed = true;
         });
         if (!removed) throw new KeyNotFoundException(Strings.Get("library.notCustom", id));
-        lock (_lock) _items = _items.Where(i => i.Id != id).ToList();
+        // The library follows at once (the ids the page sends next must be the current ones), not with the next scan.
+        lock (_lock)
+        {
+            var map = moves.ToDictionary(m => m.From, m => m.To);
+            _items = _items.Where(i => i.Id != id).Select(i => map.TryGetValue(i.Id, out var to) ? i with { Id = to } : i).ToList();
+            ForgetBase(id);
+            foreach (var (from, to) in moves) MoveBase(from, to);
+        }
+        if (moves.Count > 0) Changed?.Invoke(Items);
+        return moves.Count > 0;
     }
 
     /// <summary>

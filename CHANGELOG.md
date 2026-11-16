@@ -2,6 +2,70 @@
 
 Ein Abschnitt je Version, gegliedert nach Bereichen, erst Deutsch, dann Englisch. / One section per version, starting with a short summary (Kurz / Summary), then grouped by area, German first, then English.
 
+## 0.7.3 (2026-11-16)
+
+### Kurz / Summary
+
+- **Begleitprogramme:** Overlays, Trainer und Ähnliches eines Spiels, das auf der entsperrten Couch gestartet wurde, starten nach einem Spielwechsel wieder; sie wurden fälschlich als gesperrt übersprungen.
+- **Eigene Einträge:** Namen sind auf 200 Zeichen begrenzt; ein zu langer Name verlor beim nächsten Start seine Sperre, Favoriten und Spielzeit. Das Löschen eines gesperrten Eintrags braucht jetzt den Eltern-Code.
+- **Einstellungen:** Eine Datei, die CouchHUD nicht mehr lesen könnte (über 4 MiB), wird nicht mehr gespeichert; mehr als 200 Spielordner werden mit Hinweis abgelehnt.
+- **Bildschirmtastatur:** Das Handy-Feld zeigt keinen leeren QR-Code mehr und sagt, warum kein Code da ist.
+
+---
+
+- **Companion programs:** overlays, trainers and the like of a game started on the unlocked couch start again after a game switch; they were wrongly skipped as locked.
+- **Own entries:** names are limited to 200 characters; a name that was too long lost its lock, favorites and play time at the next start. Removing a locked entry now needs the parents' code.
+- **Settings:** a file CouchHUD could no longer read (over 4 MiB) is no longer saved; more than 200 game folders are refused with a message.
+- **On-screen keyboard:** the phone panel no longer shows an empty QR code and says why there is no code.
+
+### Deutsch
+
+**Begleitprogramme**
+- Begleitprogramme (Overlays, Trainer …) eines Spiels, das auf der entsperrten Couch gestartet wurde, wurden nach einem Spielwechsel als gesperrt übersprungen. Sie starten jetzt wieder.
+- Ein Begleitprogramm wird nur noch einmal geprüft statt mehrfach (Hash); Start und Bestätigung großer Programme gehen schneller.
+
+**Bildschirmtastatur**
+- Ist der Kopplungscode unter der Kindersicherung verborgen, zeigt das Handy-Feld keinen leeren QR-Code und kein „Code scannen“ mehr. Es nennt den Grund: Eltern-Code auf der Handy-Seite nötig, zweiter Faktor steht aus oder gerade kein Code. „Kein Netzwerk“ steht nur noch da, wenn es wirklich keins gibt.
+
+**Eigene Einträge (Apps, Spiele, Webseiten)**
+- Namen sind beim Hinzufügen auf 200 Zeichen begrenzt. Vorher wurde ein längerer Name beim nächsten Start gekürzt, die ID änderte sich, und Sperre, Favoriten und Spielzeit des Eintrags gingen verloren.
+- Pfade, Parameter und Links haben Längengrenzen; führende Leerzeichen werden entfernt.
+- Sicherheit: Einen eigenen Eintrag zu entfernen, der gesperrt ist (jedes Profil, Liste für alle Kinder, „alles sperren“, beschädigte Liste) oder durch den ein gleichnamiger Eintrag eine andere ID bekäme, braucht jetzt den Eltern-Code.
+- Rücken gleichnamige Einträge nach, ziehen ihre Sperren, die Verbergen-Markierung, Favoriten, Sammlungen, Zeitlimit-Stand und Einstellungen mit. Vorher konnte ein Kind einen gleichnamigen gesperrten Eintrag entsperren, indem es den ersten löschte. Das gab es schon vor 0.7.3.
+
+**Einstellungen und Bibliothek**
+- Ein Speichern, das größer wäre, als CouchHUD wieder lesen kann (4 MiB), wird abgelehnt und mit Hinweis zurückgenommen, statt den nächsten Start scheitern zu lassen.
+- Die Bibliothek wächst nur bis 3 MiB („Bibliothek voll“), damit für die Einstellungen der Eltern immer Platz bleibt. Löschen und Verkleinern geht immer.
+- Mehr als 200 Spielordner: der 201. wird mit Hinweis abgelehnt, statt beim nächsten Start still zu fehlen.
+- „Zu behaltende Sicherungen“ nutzt dieselben Grenzen wie die Einstellungsseite (intern).
+
+**Intern**
+- Die Skin-Testdaten (`vars`, `cq-bg-var`) enthalten kein `attr()` mehr, ihre Härtung wird wieder ausgeliefert und getestet. Nur Tests.
+
+### English
+
+**Companion programs**
+- Companion programs (overlays, trainers …) of a game started on the unlocked couch were skipped as locked after a game switch. They start again.
+- A companion program is hashed once instead of several times; start and confirmation of large programs are faster.
+
+**On-screen keyboard**
+- When the pairing code is hidden under parental controls, the phone panel no longer shows an empty QR code or "scan the code". It says why: the parents' code is needed on the phone page, a second factor is pending, or there is no code right now. "No network" appears only when there is none.
+
+**Own entries (apps, games, websites)**
+- Names are limited to 200 characters when added. Before, a longer name was cut at the next start, its id changed, and the entry's lock, favorites and play time were lost.
+- Paths, parameters and links have length limits; leading spaces are trimmed.
+- Security: removing an own entry that is locked (any profile, the all-children list, lock everything, a damaged list), or that would move a same-named entry onto another id, now needs the parents' code.
+- When same-named entries move up, their locks, hidden mark, favorites, collections, time limit record and settings move with them. Before, a child could unlock a same-named locked entry by deleting the first one. This existed before 0.7.3.
+
+**Settings and library**
+- A save that would be larger than CouchHUD can read back (4 MiB) is refused and taken back with a message instead of making the next start fail.
+- The library grows only up to 3 MiB ("library full") so the parents' settings always have room. Deleting and shrinking always work.
+- More than 200 game folders: the 201st is refused with a message instead of being dropped at the next start.
+- "Backups to keep" uses the same limits as the settings page (internal).
+
+**Internal**
+- The skin test fixtures (`vars`, `cq-bg-var`) no longer contain `attr()`, so their hardening is served and tested again. Tests only.
+
 ## 0.7.2 (2026-11-09)
 
 ### Kurz / Summary
